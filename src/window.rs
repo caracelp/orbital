@@ -30,6 +30,7 @@ struct Inner {
     banner: adw::Banner,
     list_view: gtk::ListView,
     editor: gtk::TextView,
+    content_stack: gtk::Stack,
     vault: RefCell<Option<Rc<Vault>>>,
     tree: RefCell<Rc<Tree>>,
     /// Si es `false` (modo de captura), no se guarda el estado de la app.
@@ -45,23 +46,46 @@ impl Window {
         // --- Visor de notas (contenido) ---
         let editor = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
-            .monospace(true)
             .editable(false)
-            .top_margin(24)
-            .bottom_margin(24)
-            .left_margin(32)
-            .right_margin(32)
+            .top_margin(32)
+            .bottom_margin(48)
+            .left_margin(12)
+            .right_margin(12)
+            .pixels_inside_wrap(4)
+            .pixels_below_lines(6)
             .vexpand(true)
             .build();
+        editor.add_css_class("orbital-reader");
         editor.update_property(&[gtk::accessible::Property::Label("Contenido de la nota")]);
-        let editor_scroll = gtk::ScrolledWindow::builder().child(&editor).build();
+        // Ancho de lectura cómodo: la columna de texto no pasa de ~70 caracteres.
+        let reader = adw::Clamp::builder()
+            .maximum_size(720)
+            .tightening_threshold(560)
+            .child(&editor)
+            .build();
+        let editor_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&reader)
+            .build();
+
+        // Sin nota elegida, el panel muestra qué hacer en vez de quedar vacío.
+        let empty = adw::StatusPage::builder()
+            .icon_name("text-x-generic-symbolic")
+            .title("Ninguna nota abierta")
+            .description("Elegí una nota de la lista para leerla.")
+            .build();
+        let content_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        content_stack.add_named(&empty, Some("vacio"));
+        content_stack.add_named(&editor_scroll, Some("nota"));
 
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
         content_header.set_title_widget(Some(&content_title));
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
-        content_view.set_content(Some(&editor_scroll));
+        content_view.set_content(Some(&content_stack));
         let content_page = adw::NavigationPage::builder()
             .title("Nota")
             .child(&content_view)
@@ -80,7 +104,7 @@ impl Window {
             .build();
 
         let banner = adw::Banner::builder()
-            .title("La estructura de la bóveda está incompleta")
+            .title("Estructura incompleta")
             .button_label("Completar…")
             .action_name("win.complete-structure")
             .revealed(false)
@@ -145,6 +169,7 @@ impl Window {
             banner,
             list_view,
             editor,
+            content_stack,
             vault: RefCell::new(None),
             tree: RefCell::new(Rc::new(Tree::new())),
             persist: Cell::new(true),
@@ -428,6 +453,7 @@ impl Window {
         i.list_view.set_model(Some(&selection));
 
         i.editor.buffer().set_text("");
+        i.content_stack.set_visible_child_name("vacio");
         i.content_title.set_title("");
         i.content_title.set_subtitle("");
         i.stack.set_visible_child_name("boveda");
@@ -466,6 +492,7 @@ impl Window {
                 Ok(t) => i.editor.buffer().set_text(&t),
                 Err(msg) => i.editor.buffer().set_text(&msg),
             }
+            i.content_stack.set_visible_child_name("nota");
             i.split.set_show_content(true);
         });
     }

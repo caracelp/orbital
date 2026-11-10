@@ -62,6 +62,11 @@ fn css() -> String {
         out.push_str(&format!("  --{name}: {};\n", c.hex()));
     }
     out.push_str("}\n");
+    // Texto de lectura: un poco más grande que la interfaz.
+    out.push_str(
+        ".orbital-reader { font-size: 1.08em; } \
+         .orbital-reader, .orbital-reader text { background: transparent; }\n",
+    );
     for (name, c) in vars {
         out.push_str(&format!(
             "@define-color {} {};\n",
