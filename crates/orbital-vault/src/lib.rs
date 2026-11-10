@@ -18,6 +18,7 @@ pub mod note;
 pub mod okf_files;
 pub mod ops;
 pub mod props;
+pub mod rename_links;
 pub mod render;
 pub mod scan;
 pub mod session;
@@ -33,10 +34,11 @@ pub use error::VaultError;
 pub use link_graph::LinkGraph;
 pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
-    parse_link_target, percent_decode, rewrite_links,
+    parse_link_target, percent_decode,
 };
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
+pub use rename_links::{LinkChange, LinkUpdatePlan};
 pub use vault::{
     Creation, CreationKind, ExternalChange, Layout, OpenAsPlan, Presence, Vault, apply_open_as,
     open, plan_open_as,

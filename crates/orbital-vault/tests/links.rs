@@ -1,6 +1,6 @@
 //! Tests de extracción, parsing y reescritura de enlaces (especificación 003).
 
-use orbital_vault::links::{LinkKind, LinkTarget, extract_links, parse_link_target, rewrite_links};
+use orbital_vault::links::{LinkKind, LinkTarget, extract_links, parse_link_target};
 
 #[test]
 fn parse_target_forms() {
@@ -167,29 +167,4 @@ fn extract_html_links_basic() {
 
     assert_eq!(links[3].kind, LinkKind::Transclusion);
     assert_eq!(links[3].target.path, "Resumen");
-}
-
-#[test]
-fn rewrite_links_replaces_target_cleanly() {
-    let input = r#"# Nota origen
-Ver [[viejo]] y también [[viejo|Mi alias]].
-Sección específica: [[viejo#Introducción]].
-Ambos: [[viejo#Sección|Alias]].
-Transclusión: ![[viejo]].
-Markdown: [Enlace](/wiki/viejo.md) o [Con ancla](/wiki/viejo.md#sec).
-Otro archivo no afectado: [[otro_archivo]].
-"#;
-
-    let (out, count) = rewrite_links(input, false, "viejo", "nuevo");
-    assert_eq!(count, 7);
-
-    assert!(out.contains("[[nuevo]]"));
-    assert!(out.contains("[[nuevo|Mi alias]]"));
-    assert!(out.contains("[[nuevo#Introducción]]"));
-    assert!(out.contains("[[nuevo#Sección|Alias]]"));
-    assert!(out.contains("![[nuevo]]"));
-    assert!(out.contains("[Enlace](/wiki/nuevo.md)"));
-    assert!(out.contains("[Con ancla](/wiki/nuevo.md#sec)"));
-    assert!(out.contains("[[otro_archivo]]"));
-    assert!(!out.contains("viejo"));
 }
