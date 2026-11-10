@@ -20,5 +20,7 @@ pub mod write;
 pub use config::{LinkStyle, VaultConfig};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
-pub use vault::{Layout, Presence, Vault, open};
+pub use vault::{
+    Creation, CreationKind, Layout, OpenAsPlan, Presence, Vault, apply_open_as, open, plan_open_as,
+};
 pub use write::{Actor, Date, Offset, Time, WriteCtx, WriteReceipt};

@@ -3,7 +3,7 @@
 //! Toda la E/S (abrir la bóveda, leer notas, guardar el estado) corre con `gio::spawn_blocking`;
 //! el hilo principal solo arma widgets.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -13,7 +13,9 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::{Entry, EntryKind, Vault};
 
+use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
+use crate::write_ctx;
 
 /// Hijos de cada carpeta (`""` = raíz), ordenados: primero carpetas, después archivos.
 type Tree = HashMap<String, Vec<Arc<Entry>>>;
@@ -30,6 +32,8 @@ struct Inner {
     editor: gtk::TextView,
     vault: RefCell<Option<Rc<Vault>>>,
     tree: RefCell<Rc<Tree>>,
+    /// Si es `false` (modo de captura), no se guarda el estado de la app.
+    persist: Cell<bool>,
 }
 
 /// Ventana de Orbital.
@@ -77,6 +81,8 @@ impl Window {
 
         let banner = adw::Banner::builder()
             .title("La estructura de la bóveda está incompleta")
+            .button_label("Completar…")
+            .action_name("win.complete-structure")
             .revealed(false)
             .build();
 
@@ -141,6 +147,7 @@ impl Window {
             editor,
             vault: RefCell::new(None),
             tree: RefCell::new(Rc::new(Tree::new())),
+            persist: Cell::new(true),
         }));
         this.setup_actions(app);
         this.setup_list();
@@ -158,17 +165,38 @@ impl Window {
                 move |_: &adw::ApplicationWindow, _, _| this.choose_and_open()
             })
             .build();
-        // «Abrir como bóveda de Orbital» llega con la historia US2.
-        let open_as = gio::SimpleAction::new("open-as", None);
-        open_as.set_enabled(false);
+        let open_as = gio::ActionEntry::builder("open-as")
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, _| this.choose_and_open_as()
+            })
+            .build();
+        let complete = gio::ActionEntry::builder("complete-structure")
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, _| {
+                    let root = this
+                        .0
+                        .vault
+                        .borrow()
+                        .as_ref()
+                        .map(|v| v.root().to_path_buf());
+                    if let Some(root) = root {
+                        let this = this.clone();
+                        glib::spawn_future_local(async move { this.open_as_path(root).await });
+                    }
+                }
+            })
+            .build();
         let shortcuts = gio::ActionEntry::builder("shortcuts")
             .activate({
                 let this = self.clone();
                 move |_: &adw::ApplicationWindow, _, _| this.show_shortcuts()
             })
             .build();
-        self.0.window.add_action_entries([open, shortcuts]);
-        self.0.window.add_action(&open_as);
+        self.0
+            .window
+            .add_action_entries([open, open_as, complete, shortcuts]);
         app.set_accels_for_action("win.open", &["<Control>o"]);
         app.set_accels_for_action("win.open-as", &["<Control><Shift>o"]);
         app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
@@ -276,25 +304,73 @@ impl Window {
             .cloned()
     }
 
-    /// Elige una carpeta con el diálogo del sistema y la abre.
+    /// Diálogo del sistema para elegir una carpeta.
+    async fn choose_folder(&self, title: &str) -> Option<PathBuf> {
+        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
+        match dialog.select_folder_future(Some(&self.0.window)).await {
+            Ok(folder) => folder.path(),
+            Err(e)
+                if e.matches(gtk::DialogError::Dismissed)
+                    || e.matches(gtk::DialogError::Cancelled) =>
+            {
+                None
+            }
+            Err(e) => {
+                self.toast(&format!("No se pudo elegir la carpeta: {e}"));
+                None
+            }
+        }
+    }
+
+    /// Elige una carpeta y la abre con «Abrir».
     pub fn choose_and_open(&self) {
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let dialog = gtk::FileDialog::builder()
-                .title("Abrir una carpeta")
-                .modal(true)
-                .build();
-            match dialog.select_folder_future(Some(&this.0.window)).await {
-                Ok(folder) => {
-                    if let Some(path) = folder.path() {
-                        this.open_path(path).await;
-                    }
-                }
-                Err(e) if e.matches(gtk::DialogError::Dismissed) => {}
-                Err(e) if e.matches(gtk::DialogError::Cancelled) => {}
-                Err(e) => this.toast(&format!("No se pudo elegir la carpeta: {e}")),
+            if let Some(path) = this.choose_folder("Abrir una carpeta").await {
+                this.open_path(path).await;
             }
         });
+    }
+
+    /// Elige una carpeta y la abre con «Abrir como bóveda de Orbital».
+    pub fn choose_and_open_as(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            if let Some(path) = this.choose_folder("Abrir como bóveda de Orbital").await {
+                this.open_as_path(path).await;
+            }
+        });
+    }
+
+    /// «Abrir como»: muestra lo que falta, pide confirmación y crea solo eso.
+    pub async fn open_as_path(&self, path: PathBuf) {
+        let for_plan = path.clone();
+        let plan = match gio::spawn_blocking(move || orbital_vault::plan_open_as(&for_plan)).await {
+            Ok(Ok(plan)) => plan,
+            Ok(Err(e)) => return self.toast(&format!("No se pudo revisar la carpeta: {e}")),
+            Err(_) => return self.toast("No se pudo revisar la carpeta"),
+        };
+        if open_dialog::confirm(&self.0.window, &plan).await == Answer::Cancel {
+            return;
+        }
+        let for_apply = path.clone();
+        let result = gio::spawn_blocking(move || {
+            let (config, _) = orbital_vault::VaultConfig::load(&for_apply);
+            let ctx = write_ctx::now(Some(&config));
+            orbital_vault::apply_open_as(&for_apply, &plan, &ctx).map(|v| {
+                let tree = build_tree(v.entries());
+                (v, tree)
+            })
+        })
+        .await;
+        match result {
+            Ok(Ok((vault, tree))) => {
+                self.show_vault(vault, tree);
+                self.remember(path);
+            }
+            Ok(Err(e)) => self.toast(&format!("No se pudo crear la estructura: {e}")),
+            Err(_) => self.toast("No se pudo crear la estructura"),
+        }
     }
 
     /// Abre `path` con «Abrir»: no escribe nada en la bóveda.
@@ -310,7 +386,7 @@ impl Window {
         match result {
             Ok(Ok((vault, tree))) => {
                 self.show_vault(vault, tree);
-                save_state_opened(path);
+                self.remember(path);
             }
             Ok(Err(e)) => self.toast(&format!("No se pudo abrir la bóveda: {e}")),
             Err(_) => self.toast("No se pudo abrir la bóveda"),
@@ -392,6 +468,38 @@ impl Window {
             }
             i.split.set_show_content(true);
         });
+    }
+
+    fn remember(&self, path: PathBuf) {
+        if self.0.persist.get() {
+            save_state_opened(path);
+        }
+    }
+
+    /// Modo de captura: no guarda el estado de la app.
+    pub fn set_persist(&self, persist: bool) {
+        self.0.persist.set(persist);
+    }
+
+    /// Muestra una nota por su ruta relativa (para el modo de captura).
+    pub fn show_path(&self, rel: &str) {
+        if let Some(e) = self.entry(rel) {
+            self.show_entry(e);
+        }
+    }
+
+    /// Dibuja la ventana en un PNG, sin depender de capturas del compositor.
+    pub fn capture(&self, out: &Path) -> Result<(), String> {
+        let w = &self.0.window;
+        let (width, height) = (w.width(), w.height());
+        let paintable = gtk::WidgetPaintable::new(Some(w));
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
+        let node = snapshot.to_node().ok_or("la ventana no dibujó nada")?;
+        let renderer = w.renderer().ok_or("la ventana no tiene renderizador")?;
+        let bounds = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+        let texture = renderer.render_texture(node, Some(&bounds));
+        texture.save_to_png(out).map_err(|e| e.to_string())
     }
 
     fn toast(&self, msg: &str) {
