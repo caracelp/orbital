@@ -66,3 +66,19 @@ fn scripts_in_body_only() {
         &splice_body(NOTA, "<!-- <script> -->").unwrap()
     ));
 }
+
+#[test]
+fn scripts_on_body_are_detected() {
+    assert!(body_has_scripts(
+        "<html><head></head><body onload='x()'><p>Texto</p></body></html>"
+    ));
+}
+
+#[test]
+fn raw_text_does_not_define_the_body() {
+    let source = "<html><head><title>Texto <body> falso</title></head><body><textarea></body></textarea><p>Real</p></body></html>";
+    assert_eq!(
+        splice_body(source, "nuevo").unwrap(),
+        "<html><head><title>Texto <body> falso</title></head><body>nuevo</body></html>"
+    );
+}

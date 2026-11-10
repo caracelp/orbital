@@ -34,7 +34,17 @@ fn tags(s: &str, from: usize) -> impl Iterator<Item = Tag> + '_ {
                 continue;
             };
             i = tag.range.end;
-            if matches!(tag.name.as_str(), "script" | "style") {
+            if matches!(
+                tag.name.as_str(),
+                "script"
+                    | "style"
+                    | "title"
+                    | "textarea"
+                    | "xmp"
+                    | "iframe"
+                    | "noembed"
+                    | "noframes"
+            ) {
                 // El contenido es texto crudo hasta su cierre.
                 let close = format!("</{}", tag.name);
                 let lower = s[i..].to_ascii_lowercase();
@@ -193,7 +203,8 @@ pub fn body_has_scripts(source: &str) -> bool {
     let Some(r) = body_range(source) else {
         return false;
     };
-    tags(source, r.start)
+    tags(source, 0)
+        .skip_while(|t| t.name != "body")
         .take_while(|t| t.range.start < r.end)
         .any(|t| t.name == "script" || t.attrs.iter().any(|a| a.len() > 2 && a.starts_with("on")))
 }

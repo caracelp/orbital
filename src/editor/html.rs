@@ -235,16 +235,21 @@ impl Visual {
     /// El contenido de `<body>` y las reglas de las clases usadas.
     pub async fn contents(&self) -> Option<(String, String)> {
         let web = self.0.web.borrow().clone()?;
-        let body = web
-            .evaluate_javascript_future("document.body.innerHTML", Some(WORLD), None)
+        // Una sola evaluación: cuerpo y estilos pertenecen a la misma edición.
+        let snapshot = web
+            .evaluate_javascript_future(
+                "[document.body.innerHTML, window.orbital.css()]",
+                Some(WORLD),
+                None,
+            )
             .await
-            .ok()?
+            .ok()?;
+        let body = snapshot
+            .object_get_property_at_index(0)?
             .to_str()
             .to_string();
-        let css = web
-            .evaluate_javascript_future("window.orbital.css()", Some(WORLD), None)
-            .await
-            .ok()?
+        let css = snapshot
+            .object_get_property_at_index(1)?
             .to_str()
             .to_string();
         Some((body, css))
@@ -254,11 +259,23 @@ impl Visual {
         let Some(web) = self.0.web.borrow().clone() else {
             return;
         };
+        let weak = Rc::downgrade(&self.0);
         glib::spawn_future_local(async move {
-            let _ = web
-                .evaluate_javascript_future(&script, Some(WORLD), None)
+            let remembered = web
+                .evaluate_javascript_future("window.orbital.rememberSelection()", Some(WORLD), None)
                 .await;
             web.grab_focus();
+            let script = format!("window.orbital.restoreSelection();{script}");
+            if (remembered.is_err()
+                || web
+                    .evaluate_javascript_future(&script, Some(WORLD), None)
+                    .await
+                    .is_err())
+                && let Some(inner) = weak.upgrade()
+            {
+                Visual(inner)
+                    .error("No se pudo aplicar el formato; esperá a que termine de cargar la nota");
+            }
         });
     }
 
@@ -308,6 +325,7 @@ impl Visual {
                 return;
             }
             let rel = relative(&note_dir, &path);
+            let rel = glib::uri_escape_string(&rel, Some("/"), false);
             let alt = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -333,6 +351,7 @@ impl Visual {
         let button = |icon: &str, name: &str, f: Box<dyn Fn(&Visual)>| {
             let b = gtk::Button::builder()
                 .icon_name(icon)
+                .focus_on_click(false)
                 .tooltip_text(name)
                 .css_classes(["flat"])
                 .build();
@@ -346,6 +365,8 @@ impl Visual {
             b
         };
         for (icon, name, cmd) in [
+            ("edit-undo-symbolic", "Deshacer (Ctrl+Z)", "undo"),
+            ("edit-redo-symbolic", "Rehacer (Ctrl+Mayús+Z)", "redo"),
             ("format-text-bold-symbolic", "Negrita (Ctrl+B)", "bold"),
             ("format-text-italic-symbolic", "Cursiva (Ctrl+I)", "italic"),
             (
@@ -492,19 +513,7 @@ impl Visual {
             });
             column.append(&b);
         }
-        let mb = gtk::MenuButton::builder()
-            .popover(&popover)
-            .tooltip_text(name)
-            .css_classes(["flat"])
-            .build();
-        if let Some(i) = icon {
-            mb.set_icon_name(i);
-        }
-        if let Some(l) = label {
-            mb.set_label(l);
-        }
-        mb.update_property(&[gtk::accessible::Property::Label(name)]);
-        mb.upcast()
+        popover_button(&popover, icon, label, name).upcast()
     }
 
     fn color_menu(&self) -> gtk::Widget {
@@ -567,14 +576,7 @@ impl Visual {
             }
             column.append(&grid);
         }
-        let mb = gtk::MenuButton::builder()
-            .icon_name("color-select-symbolic")
-            .popover(&popover)
-            .tooltip_text("Colores")
-            .css_classes(["flat"])
-            .build();
-        mb.update_property(&[gtk::accessible::Property::Label("Colores")]);
-        mb.upcast()
+        popover_button(&popover, Some("color-select-symbolic"), None, "Colores").upcast()
     }
 
     fn link_button(&self) -> gtk::Widget {
@@ -600,15 +602,38 @@ impl Visual {
             }
             e.set_text("");
         });
-        let mb = gtk::MenuButton::builder()
-            .icon_name("insert-link-symbolic")
-            .popover(&popover)
-            .tooltip_text("Enlace")
-            .css_classes(["flat"])
-            .build();
-        mb.update_property(&[gtk::accessible::Property::Label("Enlace")]);
-        mb.upcast()
+        popover_button(&popover, Some("insert-link-symbolic"), None, "Enlace").upcast()
     }
+}
+
+/// GtkMenuButton no expone acciones AT-SPI en GTK 4.24. El botón conserva la
+/// activación nativa por teclado/accesibilidad y abre el mismo popover.
+fn popover_button(
+    popover: &gtk::Popover,
+    icon: Option<&str>,
+    label: Option<&str>,
+    name: &str,
+) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .tooltip_text(name)
+        .css_classes(["flat"])
+        .build();
+    if let Some(icon) = icon {
+        button.set_icon_name(icon);
+    }
+    if let Some(label) = label {
+        button.set_label(label);
+    }
+    button.update_property(&[
+        gtk::accessible::Property::Label(name),
+        gtk::accessible::Property::HasPopup(true),
+    ]);
+    popover.set_parent(&button);
+    let popup = popover.clone();
+    button.connect_clicked(move |_| popup.popup());
+    let popup = popover.clone();
+    button.connect_destroy(move |_| popup.unparent());
+    button
 }
 
 fn separator() -> gtk::Separator {
@@ -652,3 +677,7 @@ mod tests {
         assert!(rules().contains("\"o-color-rosa\": \"color: #ff8cc6\""));
     }
 }
+
+#[cfg(test)]
+#[path = "html_tests.rs"]
+mod webkit_tests;

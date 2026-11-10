@@ -5,7 +5,30 @@
   // Reglas de las clases de Orbital; las pone Rust al cargar el script.
   const RULES = __RULES__;
   const post = (msg) => window.webkit.messageHandlers.orbital.postMessage(msg);
-  document.addEventListener('input', () => post('input'), true);
+  document.addEventListener('input', changed, true);
+  document.execCommand('styleWithCSS', false, false);
+
+  // Los controles GTK y sus popovers están fuera del documento. Conservamos el
+  // rango antes de devolverle el foco a WebKit para aplicar el formato allí.
+  let savedRange = null;
+  let selectionLocked = false;
+  function rememberSelection() {
+    const sel = getSelection();
+    if (sel.rangeCount && document.body.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      savedRange = sel.getRangeAt(0).cloneRange();
+    }
+  }
+  function restoreSelection() {
+    selectionLocked = false;
+    if (!savedRange || !savedRange.commonAncestorContainer.isConnected) return;
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(savedRange);
+  }
+  document.addEventListener('selectionchange', () => {
+    if (!selectionLocked) rememberSelection();
+  });
+
 
   // Las reglas de las clases que se usan van en un único <style data-orbital> del <head>.
   function css() {
@@ -42,34 +65,46 @@
     if (!el.classList.length) el.removeAttribute('class');
   }
 
+  // Usar la pila de edición de WebKit también para clases y tablas: mutar el DOM
+  // directamente no crea una operación deshacible.
+  function replaceElement(original, edited) {
+    const range = document.createRange();
+    range.selectNode(original);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertHTML', false, edited.outerHTML);
+    changed();
+  }
+
   function blockClass(prefix, cls) {
     const b = block();
     if (!b) return;
-    dropPrefix(b, prefix);
-    if (cls) b.classList.add(cls);
-    changed();
+    const edited = b.cloneNode(true);
+    dropPrefix(edited, prefix);
+    if (cls) edited.classList.add(cls);
+    replaceElement(b, edited);
   }
 
   // Color de texto o de fondo sobre la selección: un <span class="o-…">.
   function spanClass(prefix, cls) {
     const sel = getSelection();
     if (!sel.rangeCount || sel.isCollapsed) return;
-    const r = sel.getRangeAt(0);
-    const frag = r.extractContents();
+    const frag = sel.getRangeAt(0).cloneContents();
     frag.querySelectorAll('span[class]').forEach((s) => {
       dropPrefix(s, prefix);
       if (!s.attributes.length) s.replaceWith(...s.childNodes);
     });
-    let node = frag;
+    const wrapper = document.createElement('div');
     if (cls) {
-      node = document.createElement('span');
-      node.className = cls;
-      node.appendChild(frag);
+      const span = document.createElement('span');
+      span.className = cls;
+      span.appendChild(frag);
+      wrapper.appendChild(span);
+    } else {
+      wrapper.appendChild(frag);
     }
-    const first = node.firstChild;
-    r.insertNode(node);
-    if (cls) sel.selectAllChildren(node);
-    else if (first) sel.collapse(first, 0);
+    document.execCommand('insertHTML', false, wrapper.innerHTML);
     changed();
   }
 
@@ -90,9 +125,10 @@
     }
     const c = cell();
     if (!c) return;
-    const tr = c.parentNode;
-    const tbl = c.closest('table');
-    const idx = [...tr.children].indexOf(c);
+    const original = c.closest('table');
+    const tbl = original.cloneNode(true);
+    const tr = tbl.rows[c.parentNode.rowIndex];
+    const idx = c.cellIndex;
     if (op === 'row-add') {
       const nr = document.createElement('tr');
       for (let k = 0; k < tr.children.length; k++) {
@@ -118,7 +154,7 @@
     } else if (op === 'col-del') {
       if (tr.children.length > 1) [...tbl.rows].forEach((r) => r.children[idx] && r.children[idx].remove());
     }
-    changed();
+    replaceElement(original, tbl);
   }
 
   function escapeAttr(s) {
@@ -130,7 +166,14 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script, iframe, object, embed, style, link, meta, form, input, button')
       .forEach((e) => e.remove());
+    const allowed = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL',
+      'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'TABLE',
+      'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'IMG', 'HR', 'BR', 'DIV', 'SPAN']);
     doc.body.querySelectorAll('*').forEach((e) => {
+      if (!allowed.has(e.tagName)) {
+        e.replaceWith(...e.childNodes);
+        return;
+      }
       [...e.attributes].forEach((a) => {
         const n = a.name.toLowerCase();
         const keep = ['href', 'src', 'alt', 'title', 'colspan', 'rowspan'].includes(n)
@@ -152,6 +195,11 @@
 
   // Lo que llama Orbital desde la barra de formato.
   window.orbital = {
+    rememberSelection() {
+      rememberSelection();
+      selectionLocked = true;
+    },
+    restoreSelection,
     run(cmd, arg) {
       switch (cmd) {
         case 'color': return spanClass('o-color-', arg);

@@ -139,7 +139,9 @@ def main():
         if action is None or action.get_n_actions() == 0:
             print(f"[{node.get_role_name()}] {node.get_name()!r} no tiene acciones")
             return 1
-        action.do_action(0)
+        if not action.do_action(0):
+            print(f"AT-SPI rechazó la acción de [{node.get_role_name()}] {node.get_name()!r}")
+            return 1
         print(f"Activé [{node.get_role_name()}] {node.get_name()!r} ({Atspi.Action.get_action_name(action, 0)})")
     elif cmd == "escribir":
         editable = node.get_editable_text_iface()
