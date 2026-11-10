@@ -118,6 +118,73 @@ pub fn center_column(scroller: &gtk::ScrolledWindow, view: &impl IsA<gtk::TextVi
     h.connect_page_size_notify(move |a| apply(a.page_size()));
 }
 
+/// Verifica si el cursor está dentro de una secuencia `[[...` no cerrada en la misma línea.
+/// Retorna `Some((query, start_offset))` donde `start_offset` es la posición de carácter donde
+/// empieza `[[`, y `query` es el texto entre `[[` y el cursor.
+pub fn link_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32)> {
+    let cursor_iter = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_start = cursor_iter;
+    line_start.set_line_offset(0);
+
+    let line_text = buffer.text(&line_start, &cursor_iter, false);
+    // Buscar el último "[[" antes del cursor en la línea
+    let last_open = line_text.rfind("[[")?;
+    let after_open = &line_text[last_open + 2..];
+
+    // Si entre "[[" y el cursor ya hay "]]", "|" o "#", no estamos autocompletando el nombre de la nota
+    if after_open.contains("]]") || after_open.contains('|') || after_open.contains('#') {
+        return None;
+    }
+
+    let chars_before = line_text[..last_open].chars().count() as i32;
+    let start_offset = line_start.offset() + chars_before;
+    Some((after_open.to_string(), start_offset))
+}
+
+/// Rectángulo en coordenadas de ventana para anclar el popover de autocompletado al cursor.
+pub fn cursor_popup_rect(
+    view: &sourceview5::View,
+    buffer: &sourceview5::Buffer,
+) -> gtk::gdk::Rectangle {
+    let it = buffer.iter_at_offset(buffer.cursor_position());
+    let loc = view.iter_location(&it);
+    let (wx, wy) = view.buffer_to_window_coords(gtk::TextWindowType::Widget, loc.x(), loc.y());
+    gtk::gdk::Rectangle::new(wx, wy, loc.width().max(1), loc.height().max(18))
+}
+
+/// Reemplaza la secuencia `[[...` por el wikilink seleccionado `[[target]]`,
+/// cerrando automáticamente con `]]` y situando el cursor después de `]]`.
+pub fn insert_link_completion(
+    buffer: &sourceview5::Buffer,
+    view: &sourceview5::View,
+    start_offset: i32,
+    target: &str,
+) {
+    let cursor_iter = buffer.iter_at_offset(buffer.cursor_position());
+    let mut end_iter = cursor_iter;
+
+    // Si inmediatamente después del cursor hay ']]', incluirlos en el reemplazo para no duplicar
+    if end_iter.char() == ']' {
+        let mut next = end_iter;
+        if next.forward_char() && next.char() == ']' {
+            next.forward_char();
+            end_iter = next;
+        }
+    }
+
+    buffer.begin_user_action();
+    let mut start_iter = buffer.iter_at_offset(start_offset);
+    buffer.delete(&mut start_iter, &mut end_iter);
+
+    let replacement = format!("[[{target}]]");
+    let mut at = buffer.iter_at_offset(start_offset);
+    buffer.insert(&mut at, &replacement);
+    buffer.place_cursor(&at);
+    buffer.end_user_action();
+
+    view.grab_focus();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +195,42 @@ mod tests {
         assert!(xml.contains("id=\"orbital-dark\""));
         assert!(xml.contains(&crate::style::SYNTAX_KEYWORD.hex()));
         assert!(xml.contains(&crate::style::VIEW_BG.hex()));
+    }
+
+    #[test]
+    fn code_completion_helpers() {
+        let _ = gtk::init();
+        let (view, buffer) = new_view();
+
+        buffer.set_text("Inicio de la nota [[bio");
+        buffer.place_cursor(&buffer.end_iter());
+
+        let res = link_query_at_cursor(&buffer);
+        assert_eq!(res, Some(("bio".to_string(), 18)));
+
+        // Si ya está cerrado con ]]
+        buffer.set_text("Inicio de la nota [[bio]] y más texto");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(link_query_at_cursor(&buffer), None);
+
+        // Con caracteres acentuados antes
+        buffer.set_text("Café con [[al");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(link_query_at_cursor(&buffer), Some(("al".to_string(), 9)));
+
+        // Reemplazo y posicionamiento del cursor
+        buffer.set_text("Ver [[bio");
+        buffer.place_cursor(&buffer.end_iter());
+
+        let (query, start_offset) = link_query_at_cursor(&buffer).unwrap();
+        assert_eq!(query, "bio");
+
+        insert_link_completion(&buffer, &view, start_offset, "biologia");
+
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text, "Ver [[biologia]]");
+
+        // El cursor debe estar al final, justo después de ]]
+        assert_eq!(buffer.cursor_position(), text.chars().count() as i32);
     }
 }

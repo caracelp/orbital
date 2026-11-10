@@ -16,6 +16,8 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use webkit6::prelude::*;
 
+use crate::editor::completion::{self, CompletionCandidate};
+
 /// Nombre del *world* aislado donde corre el script de Orbital.
 const WORLD: &str = "orbital";
 const SCRIPT: &str = include_str!("visual.js");
@@ -110,6 +112,9 @@ struct Inner {
     dirs: RefCell<Option<(PathBuf, PathBuf)>>,
     /// Hash del texto cargado en la página (para no recargar si no cambió).
     loaded: Cell<Option<u64>>,
+    candidates: RefCell<Vec<CompletionCandidate>>,
+    link_popover: RefCell<Option<gtk::Popover>>,
+    link_entry: RefCell<Option<adw::EntryRow>>,
     on_input: RefCell<Option<Callback>>,
     on_error: RefCell<Option<ErrorFn>>,
     on_link: RefCell<Option<LinkFn>>,
@@ -140,6 +145,9 @@ impl Visual {
             web: RefCell::new(None),
             dirs: RefCell::new(None),
             loaded: Cell::new(None),
+            candidates: RefCell::new(Vec::new()),
+            link_popover: RefCell::new(None),
+            link_entry: RefCell::new(None),
             on_input: RefCell::new(None),
             on_error: RefCell::new(None),
             on_link: RefCell::new(None),
@@ -148,6 +156,11 @@ impl Visual {
 
     pub fn widget(&self) -> &gtk::Box {
         &self.0.root
+    }
+
+    /// Actualiza los candidatos de autocompletado de enlaces para la vista Visual.
+    pub fn set_candidates(&self, candidates: Vec<CompletionCandidate>) {
+        *self.0.candidates.borrow_mut() = candidates;
     }
 
     /// El usuario cambió algo en la página.
@@ -198,8 +211,18 @@ impl Visual {
         ));
         content.register_script_message_handler("orbital", Some(WORLD));
         let weak = Rc::downgrade(&self.0);
-        content.connect_script_message_received(Some("orbital"), move |_, _| {
-            if let Some(i) = weak.upgrade()
+        content.connect_script_message_received(Some("orbital"), move |_, val| {
+            let msg = val.to_str();
+            if msg.as_str() == "link-autocomplete" {
+                if let Some(i) = weak.upgrade() {
+                    if let Some(p) = i.link_popover.borrow().as_ref() {
+                        p.popup();
+                    }
+                    if let Some(e) = i.link_entry.borrow().as_ref() {
+                        e.grab_focus();
+                    }
+                }
+            } else if let Some(i) = weak.upgrade()
                 && let Some(f) = i.on_input.borrow().as_ref()
             {
                 f();
@@ -600,13 +623,124 @@ impl Visual {
             .title("Dirección del enlace")
             .show_apply_button(true)
             .build();
+
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .width_request(320)
             .build();
         list.add_css_class("boxed-list");
         list.append(&entry);
-        let popover = gtk::Popover::builder().child(&list).build();
+
+        let suggestions_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["orbital-completion-list"])
+            .build();
+        suggestions_list
+            .update_property(&[gtk::accessible::Property::Label("Sugerencias de notas")]);
+
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height(180)
+            .min_content_width(320)
+            .child(&suggestions_list)
+            .build();
+
+        let box_container = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        box_container.append(&list);
+        box_container.append(&scroller);
+
+        let popover = gtk::Popover::builder()
+            .child(&box_container)
+            .css_classes(["orbital-completion-popover"])
+            .build();
+        popover.update_property(&[gtk::accessible::Property::Label("Diálogo de enlace")]);
+
+        *self.0.link_popover.borrow_mut() = Some(popover.clone());
+        *self.0.link_entry.borrow_mut() = Some(entry.clone());
+
+        let (weak, slist) = (Rc::downgrade(&self.0), suggestions_list.clone());
+        let update_suggestions = move |query: &str| {
+            let Some(i) = weak.upgrade() else { return };
+            while let Some(row) = slist.first_child() {
+                slist.remove(&row);
+            }
+            let candidates = i.candidates.borrow();
+            let matches = completion::filter_candidates(&candidates, query, 6);
+            for c in matches {
+                let row_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                row_box.set_margin_top(4);
+                row_box.set_margin_bottom(4);
+                row_box.set_margin_start(8);
+                row_box.set_margin_end(8);
+
+                let title_text = c.title.as_deref().unwrap_or(&c.stem);
+                let title_lbl = gtk::Label::builder()
+                    .label(title_text)
+                    .xalign(0.0)
+                    .css_classes(["heading"])
+                    .build();
+                row_box.append(&title_lbl);
+
+                if let Some(alias) = c
+                    .matching_alias(query)
+                    .or_else(|| c.aliases.first().map(String::as_str))
+                {
+                    let sub_lbl = gtk::Label::builder()
+                        .label(format!("alias: {alias}"))
+                        .xalign(0.0)
+                        .css_classes(["dim-label"])
+                        .build();
+                    row_box.append(&sub_lbl);
+                }
+
+                let row = gtk::ListBoxRow::builder().child(&row_box).build();
+                row.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Sugerencia: {}",
+                    c.stem
+                ))]);
+                slist.append(&row);
+            }
+        };
+
+        let us = Rc::new(update_suggestions);
+        {
+            let us = us.clone();
+            entry.connect_changed(move |e| {
+                us(&e.text());
+            });
+        }
+        {
+            let us = us.clone();
+            let entry_clone = entry.clone();
+            popover.connect_show(move |_| {
+                us(&entry_clone.text());
+            });
+        }
+
+        let (weak, p, e_row) = (Rc::downgrade(&self.0), popover.clone(), entry.clone());
+        suggestions_list.connect_row_activated(move |_, row| {
+            let Some(i) = weak.upgrade() else { return };
+            let idx = row.index();
+            if idx >= 0 {
+                let q = e_row.text();
+                let candidate = {
+                    let candidates = i.candidates.borrow();
+                    completion::filter_candidates(&candidates, &q, 6)
+                        .get(idx as usize)
+                        .cloned()
+                };
+                if let Some(c) = candidate {
+                    let target = c.link_target(&q);
+                    let url = format!("[[{target}]]");
+                    p.popdown();
+                    Visual(i).exec("createLink", Some(&url));
+                    e_row.set_text("");
+                }
+            }
+        });
+
         let (weak, p) = (Rc::downgrade(&self.0), popover.clone());
         entry.connect_apply(move |e| {
             let url = e.text().trim().to_owned();

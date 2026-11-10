@@ -48,6 +48,17 @@
     }
     s.textContent = css();
     post('input');
+
+    const sel = getSelection();
+    if (sel.rangeCount && sel.isCollapsed) {
+      const node = sel.anchorNode;
+      if (node && node.nodeType === 3) {
+        const text = node.textContent.slice(0, sel.anchorOffset);
+        if (text.endsWith('[[')) {
+          post('link-autocomplete');
+        }
+      }
+    }
   }
 
   // El bloque de primer nivel donde está el cursor.

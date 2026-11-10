@@ -142,7 +142,9 @@ fn css() -> String {
     out.push_str(
         ".orbital-reader { font-size: 1.08em; } \
          .orbital-reader, .orbital-reader text { background: transparent; }\n\
-         a.orbital-link-missing, .orbital-link-missing { color: var(--link-missing-fg); text-decoration: underline; }\n",
+         a.orbital-link-missing, .orbital-link-missing { color: var(--link-missing-fg); text-decoration: underline; }\n\
+         popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
+         listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
     );
     for (name, c) in vars {
         out.push_str(&format!(

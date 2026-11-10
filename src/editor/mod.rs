@@ -5,6 +5,7 @@
 //! o cerrar ([`Editor::flush`]).
 
 pub mod code;
+pub mod completion;
 pub mod conflict;
 pub mod html;
 pub mod props;
@@ -18,7 +19,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::session::{EditSession, ExternalAction, SaveOutcome, SessionState};
-use orbital_vault::{Format, Note, RelPath, Vault};
+use orbital_vault::{EntryKind, Format, Note, RelPath, Vault, Zone};
 
 use crate::write_ctx;
 
@@ -146,6 +147,9 @@ struct Inner {
     meta: RefCell<Option<Note>>,
     /// Cuenta los cambios del texto; sirve para saber si «Deshacer» sigue siendo lo último.
     edits: Cell<u64>,
+    completion: completion::LinkCompletionPopover,
+    completion_dismissed_at: Cell<Option<i32>>,
+    completion_active_start: Cell<Option<i32>>,
 }
 
 /// El editor de la nota abierta.
@@ -213,6 +217,7 @@ impl Editor {
         switcher
             .upcast_ref::<gtk::Widget>()
             .update_property(&[gtk::accessible::Property::Label("Vista de la nota")]);
+        let completion = completion::LinkCompletionPopover::new(&view);
         let this = Self(Rc::new(Inner {
             view,
             buffer,
@@ -246,7 +251,62 @@ impl Editor {
             on_saved: RefCell::new(None),
             meta: RefCell::new(None),
             edits: Cell::new(0),
+            completion,
+            completion_dismissed_at: Cell::new(None),
+            completion_active_start: Cell::new(None),
         }));
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&this.0);
+        key_ctrl.connect_key_pressed(move |_, keyval, _keycode, _state| {
+            let Some(i) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if i.completion.is_visible() {
+                match keyval {
+                    gtk::gdk::Key::Up => {
+                        i.completion.select_prev();
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Down => {
+                        i.completion.select_next();
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Escape => {
+                        i.completion.popdown();
+                        i.completion_dismissed_at
+                            .set(i.completion_active_start.get());
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab
+                        if i.completion.activate_selected() =>
+                    {
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        this.0.view.add_controller(key_ctrl);
+
+        let weak = Rc::downgrade(&this.0);
+        this.0
+            .completion
+            .connect_selected(move |_candidate, target| {
+                let Some(i) = weak.upgrade() else { return };
+                if let Some(start_offset) = i.completion_active_start.get() {
+                    code::insert_link_completion(&i.buffer, &i.view, start_offset, &target);
+                }
+            });
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.buffer.connect_cursor_position_notify(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                Editor(inner).check_link_completion();
+            }
+        });
+
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_changed(move |_| {
             if let Some(inner) = weak.upgrade() {
@@ -638,7 +698,8 @@ impl Editor {
             };
             v.resolve_link(&from_note, url) == orbital_vault::Resolution::Missing
         });
-        *i.vault.borrow_mut() = Some(vault);
+        *i.vault.borrow_mut() = Some(vault.clone());
+        self.refresh_completion_candidates(&vault);
         let mut meta = note.clone();
         meta.source = String::new();
         *i.meta.borrow_mut() = Some(meta);
@@ -832,6 +893,107 @@ impl Editor {
         *self.0.session.borrow_mut() = None;
     }
 
+    fn check_link_completion(&self) {
+        let i = &self.0;
+        if i.loading.get() || i.mode.get() == View::Lectura || i.mode.get() == View::Visual {
+            return;
+        }
+
+        let query_info = code::link_query_at_cursor(&i.buffer);
+        match query_info {
+            Some((query, start_offset)) => {
+                if i.completion_dismissed_at.get() == Some(start_offset) {
+                    return;
+                }
+                i.completion_active_start.set(Some(start_offset));
+                let matches = i.completion.filter(&query);
+                if matches > 0 {
+                    let rect = code::cursor_popup_rect(&i.view, &i.buffer);
+                    i.completion.popup_at(&rect);
+                } else {
+                    i.completion.popdown();
+                }
+            }
+            None => {
+                i.completion_dismissed_at.set(None);
+                i.completion_active_start.set(None);
+                if i.completion.is_visible() {
+                    i.completion.popdown();
+                }
+            }
+        }
+    }
+
+    /// Actualiza los candidatos de autocompletado en memoria y en segundo plano (US3, FR-009).
+    pub fn refresh_completion_candidates(&self, vault: &Arc<Vault>) {
+        let i = &self.0;
+        let mut baseline = Vec::new();
+        for e in vault.entries() {
+            if e.zone == Zone::Wiki
+                && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
+            {
+                let name = e.path.file_name();
+                let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+                baseline.push(completion::CompletionCandidate {
+                    stem: stem.to_string(),
+                    title: None,
+                    aliases: Vec::new(),
+                    path: e.path.clone(),
+                });
+            }
+        }
+        i.completion.set_candidates(baseline.clone());
+        i.visual.set_candidates(baseline);
+
+        let vault_clone = vault.clone();
+        let completion = i.completion.clone();
+        let visual = i.visual.clone();
+        glib::spawn_future_local(async move {
+            let full = gio::spawn_blocking(move || {
+                let mut list = Vec::new();
+                for e in vault_clone.entries() {
+                    if e.zone == Zone::Wiki
+                        && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
+                    {
+                        let name = e.path.file_name();
+                        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+                        let (title, aliases) =
+                            if let Ok(Some(props)) = vault_clone.read_props(&e.path) {
+                                let title = orbital_vault::props::find(&props.entries, "title")
+                                    .and_then(|v| v.value.as_text())
+                                    .map(|s| s.to_string());
+                                let aliases = orbital_vault::props::find(&props.entries, "aliases")
+                                    .map(|v| match &v.value {
+                                        orbital_vault::props::PropValue::List(l) => l
+                                            .iter()
+                                            .filter_map(|x| x.as_text().map(|s| s.to_string()))
+                                            .collect(),
+                                        orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
+                                        _ => Vec::new(),
+                                    })
+                                    .unwrap_or_default();
+                                (title, aliases)
+                            } else {
+                                (None, Vec::new())
+                            };
+                        list.push(completion::CompletionCandidate {
+                            stem: stem.to_string(),
+                            title,
+                            aliases,
+                            path: e.path.clone(),
+                        });
+                    }
+                }
+                list
+            })
+            .await
+            .unwrap_or_default();
+
+            completion.set_candidates(full.clone());
+            visual.set_candidates(full);
+        });
+    }
+
     fn on_changed(&self) {
         let i = &self.0;
         if i.loading.get() {
@@ -846,6 +1008,7 @@ impl Editor {
             }
         }
         i.edits.set(i.edits.get() + 1);
+        self.check_link_completion();
         let Some(session) = i.session.borrow_mut().as_mut().map(|s| {
             s.edited();
             s.state().clone()

@@ -99,10 +99,16 @@ def main():
             "return": (0xFF0D, Atspi.KeySynthType.SYM),
             "space": (0x0020, Atspi.KeySynthType.SYM),
             "escape": (0xFF1B, Atspi.KeySynthType.SYM),
+            "up": (0xFF52, Atspi.KeySynthType.SYM),
+            "down": (0xFF54, Atspi.KeySynthType.SYM),
+            "left": (0xFF51, Atspi.KeySynthType.SYM),
+            "right": (0xFF53, Atspi.KeySynthType.SYM),
         }
         val, synth = mapping.get(name.lower(), (0, None))
         if synth:
-            Atspi.generate_keyboard_event(val, None, synth)
+            Atspi.generate_keyboard_event(val, None, Atspi.KeySynthType.PRESS | synth)
+            time.sleep(0.05)
+            Atspi.generate_keyboard_event(val, None, Atspi.KeySynthType.RELEASE | synth)
         else:
             Atspi.generate_keyboard_event(0, name, Atspi.KeySynthType.STRING)
         return 0
