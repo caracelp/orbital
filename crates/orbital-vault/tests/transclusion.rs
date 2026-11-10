@@ -184,3 +184,34 @@ fn transclusions_inside_lists_and_fingerprint_changes() {
     assert_ne!(before[0], after[0]);
     assert_eq!(before[1], after[1]);
 }
+
+#[test]
+fn card_html_for_html_notes() {
+    let (_t, v) = vault(&[
+        (
+            "wiki/a.md",
+            "# A <b>\n\nTexto [x](javascript:alert(1)) y [y](https://e.com).\n\n- [x] hecha\n\n![[b]]\n",
+        ),
+        ("wiki/b.md", "Dentro de B.\n"),
+        ("wiki/s.html", ""),
+    ]);
+    let (embed, deps) = v.embed_one(&rel("wiki/s.html"), "a", None);
+    assert_eq!(deps, vec![rel("wiki/a.md"), rel("wiki/b.md")]);
+    let href = |p: &RelPath| p.as_str().strip_prefix("wiki/").unwrap().to_owned();
+    let html = orbital_vault::transclusion::card_html("a", None, &embed, &href);
+    assert!(html.starts_with(
+        "<div class=\"orbital-embed\" data-orbital-embed=\"\" contenteditable=\"false\">"
+    ));
+    assert!(html.contains("<a href=\"a.md\">a</a>"));
+    assert!(html.contains("<h1>A &lt;b&gt;</h1>"), "{html}");
+    assert!(!html.contains("javascript:"), "{html}");
+    assert!(html.contains("<a href=\"https://e.com\">y</a>"));
+    assert!(html.contains("<input type=\"checkbox\" disabled checked>"));
+    // La transclusión anidada es otra tarjeta adentro.
+    assert_eq!(html.matches("data-orbital-embed").count(), 2);
+    assert!(html.contains("<p>Dentro de B.</p>"));
+
+    let (missing, _) = v.embed_one(&rel("wiki/s.html"), "nada", None);
+    let html = orbital_vault::transclusion::card_html("nada", None, &missing, &href);
+    assert!(html.contains("Nota inexistente: «nada»"));
+}

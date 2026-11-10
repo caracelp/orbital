@@ -118,6 +118,10 @@ struct Inner {
     on_input: RefCell<Option<Callback>>,
     on_error: RefCell<Option<ErrorFn>>,
     on_link: RefCell<Option<LinkFn>>,
+    /// Tarjetas de transclusión (objeto de JavaScript `{"![[x]]": "<div…>"}`), para aplicarlas
+    /// cuando termine de cargar la página.
+    embeds: RefCell<String>,
+    page_ready: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -151,6 +155,8 @@ impl Visual {
             on_input: RefCell::new(None),
             on_error: RefCell::new(None),
             on_link: RefCell::new(None),
+            embeds: RefCell::new("{}".to_owned()),
+            page_ready: Cell::new(false),
         }))
     }
 
@@ -237,6 +243,15 @@ impl Visual {
             }
         });
         let web = crate::html_view::new_editable_view(&content, Some(link_handler));
+        let weak = Rc::downgrade(&self.0);
+        web.connect_load_changed(move |_, event| {
+            if event == webkit6::LoadEvent::Finished
+                && let Some(i) = weak.upgrade()
+            {
+                i.page_ready.set(true);
+                Visual(i).apply_embeds();
+            }
+        });
         web.update_property(&[gtk::accessible::Property::Label(
             "Página editable de la nota",
         )]);
@@ -254,9 +269,35 @@ impl Visual {
             return;
         }
         self.0.loaded.set(Some(h));
+        self.0.page_ready.set(false);
         let base = gio::File::for_path(note_dir).uri().to_string() + "/";
         self.web()
             .load_html(&crate::html_view::with_csp(html), Some(&base));
+    }
+
+    /// Las tarjetas de transclusión: para cada `![[…]]` tal como está escrito, su HTML (US5).
+    pub fn set_embeds(&self, cards: &[(String, String)]) {
+        let body: Vec<String> = cards
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js_string(k), js_string(v)))
+            .collect();
+        *self.0.embeds.borrow_mut() = format!("{{{}}}", body.join(", "));
+        if self.0.page_ready.get() {
+            self.apply_embeds();
+        }
+    }
+
+    /// Inserta las tarjetas (sin tomar el foco: no es una acción del usuario).
+    fn apply_embeds(&self) {
+        let Some(web) = self.0.web.borrow().clone() else {
+            return;
+        };
+        let script = format!("window.orbital.setEmbeds({})", self.0.embeds.borrow());
+        glib::spawn_future_local(async move {
+            let _ = web
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+        });
     }
 
     /// El texto que muestra la página ya es `html` (lo escribió la propia página).
@@ -277,7 +318,7 @@ impl Visual {
         // Una sola evaluación: cuerpo y estilos pertenecen a la misma edición.
         let snapshot = web
             .evaluate_javascript_future(
-                "[document.body.innerHTML, window.orbital.css()]",
+                "[window.orbital.body(), window.orbital.css()]",
                 Some(WORLD),
                 None,
             )

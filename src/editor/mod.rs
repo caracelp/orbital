@@ -847,6 +847,64 @@ impl Editor {
         let dir = file.parent().unwrap_or(vault.root());
         i.visual.load(&text, dir, vault.root());
         self.visual_header();
+        self.visual_embeds();
+    }
+
+    /// Calcula en segundo plano las tarjetas de las transclusiones `![[…]]` de la nota `.html`
+    /// y se las pasa a la vista Visual (US5, T027).
+    fn visual_embeds(&self) {
+        let i = &self.0;
+        let (Some(vault), Some(from)) = (i.vault.borrow().clone(), self.current_path()) else {
+            return;
+        };
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let from_c = from.clone();
+            let result = gio::spawn_blocking(move || {
+                let dir = from_c
+                    .as_str()
+                    .rsplit_once('/')
+                    .map_or("", |(d, _)| d)
+                    .to_owned();
+                // Enlace de una tarjeta: la nota, relativa a la carpeta de la nota `.html`.
+                let href = move |p: &RelPath| relative_href(&dir, p.as_str());
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                let mut cards: Vec<(String, String)> = Vec::new();
+                let mut deps = Vec::new();
+                for occ in orbital_vault::links::extract_links(body, true) {
+                    if occ.kind != orbital_vault::links::LinkKind::Transclusion {
+                        continue;
+                    }
+                    let raw = body[occ.byte_range.clone()].to_owned();
+                    if cards.iter().any(|(k, _)| *k == raw) {
+                        continue;
+                    }
+                    let anchor = occ.target.anchor.as_deref();
+                    let (embed, d) = vault.embed_one(&from_c, &occ.target.path, anchor);
+                    deps.extend(d);
+                    let html = orbital_vault::transclusion::card_html(
+                        &occ.target.path,
+                        anchor,
+                        &embed,
+                        &href,
+                    );
+                    cards.push((raw, html));
+                }
+                deps.sort();
+                deps.dedup();
+                (cards, deps)
+            })
+            .await;
+            let Ok((cards, deps)) = result else { return };
+            if this.current_path() != Some(from) {
+                return;
+            }
+            *this.0.embed_deps.borrow_mut() = deps;
+            this.0.visual.set_embeds(&cards);
+        });
     }
 
     /// Las propiedades arriba de la vista Visual.
@@ -891,7 +949,12 @@ impl Editor {
     /// incrusta con `![[…]]`, la vista formateada se vuelve a dibujar: solo cambia esa tarjeta y
     /// no se pierde la posición de lectura (FR-016).
     pub fn dependency_changed(&self, path: &RelPath) {
-        if self.0.embed_deps.borrow().contains(path) {
+        if !self.0.embed_deps.borrow().contains(path) {
+            return;
+        }
+        if self.0.mode.get() == View::Visual {
+            self.visual_embeds();
+        } else {
             self.render_now();
         }
     }
@@ -1419,4 +1482,19 @@ fn fill_toggles(group: &adw::ToggleGroup, format: Format) {
                 .build(),
         );
     }
+}
+
+/// Ruta de `target` (relativa a la bóveda) vista desde la carpeta `dir`, con `/` y espacios
+/// codificados: el `href` de una tarjeta de transclusión en una nota `.html`.
+fn relative_href(dir: &str, target: &str) -> String {
+    let a: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+    let b: Vec<&str> = target.split('/').collect();
+    let common = a
+        .iter()
+        .zip(&b[..b.len().saturating_sub(1)])
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut parts: Vec<&str> = vec![".."; a.len() - common];
+    parts.extend(&b[common..]);
+    parts.join("/").replace(' ', "%20")
 }
