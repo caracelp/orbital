@@ -1,130 +1,123 @@
+mod html_view;
+mod open_dialog;
+mod preferences;
+mod state;
+mod style;
+mod watcher;
+mod window;
+mod write_ctx;
+
+use std::path::PathBuf;
+use std::time::Duration;
+
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
+
+use state::AppState;
+use window::Window;
 
 const APP_ID: &str = "io.github.caracelp.Orbital";
 
-fn main() -> glib::ExitCode {
-    let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
-    app.run()
+/// Modo de desarrollo: `orbital --captura <salida.png> [carpeta] [nota relativa]`.
+/// Abre la carpeta con «Abrir», dibuja la ventana en un PNG y sale, sin guardar estado.
+struct Capture {
+    out: PathBuf,
+    vault: Option<PathBuf>,
+    note: Option<String>,
 }
 
-fn build_ui(app: &adw::Application) {
-    // --- Editor (contenido) ---
-    let editor = gtk::TextView::builder()
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .monospace(true)
-        .top_margin(24)
-        .bottom_margin(24)
-        .left_margin(32)
-        .right_margin(32)
-        .vexpand(true)
-        .build();
-
-    let editor_scroll = gtk::ScrolledWindow::builder().child(&editor).build();
-
-    let content_header = adw::HeaderBar::new();
-    let content_title = adw::WindowTitle::new("Orbital", "");
-    content_header.set_title_widget(Some(&content_title));
-
-    let content_view = adw::ToolbarView::new();
-    content_view.add_top_bar(&content_header);
-    content_view.set_content(Some(&editor_scroll));
-
-    let content_page = adw::NavigationPage::builder()
-        .title("Nota")
-        .child(&content_view)
-        .build();
-
-    // --- Lista de notas (barra lateral) ---
-    let notes = [
-        (
-            "Bienvenida",
-            "# Bienvenida a Orbital\n\nTu espacio de notas en **Markdown**.\n",
-        ),
-        (
-            "Ideas",
-            "# Ideas\n\n- Enlaces entre notas `[[...]]`\n- Vista de grafo\n- Tareas\n",
-        ),
-        (
-            "Tareas",
-            "# Tareas\n\n- [ ] Guardar notas en disco\n- [ ] Vista previa Markdown\n",
-        ),
-    ];
-
-    let list = gtk::ListBox::new();
-    list.add_css_class("navigation-sidebar");
-    for (title, _) in notes {
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .activatable(true)
-            .build();
-        list.append(&row);
+fn parse_capture() -> Option<Capture> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--captura") {
+        return None;
     }
+    Some(Capture {
+        out: PathBuf::from(args.next()?),
+        vault: args.next().map(PathBuf::from),
+        note: args.next(),
+    })
+}
 
-    let sidebar_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&list)
-        .vexpand(true)
-        .build();
-
-    let sidebar_header = adw::HeaderBar::new();
-    let new_button = gtk::Button::from_icon_name("list-add-symbolic");
-    new_button.set_tooltip_text(Some("Nueva nota"));
-    sidebar_header.pack_start(&new_button);
-
-    let sidebar_view = adw::ToolbarView::new();
-    sidebar_view.add_top_bar(&sidebar_header);
-    sidebar_view.set_content(Some(&sidebar_scroll));
-
-    let sidebar_page = adw::NavigationPage::builder()
-        .title("Notas")
-        .child(&sidebar_view)
-        .build();
-
-    // --- Vista dividida adaptable ---
-    let split = adw::NavigationSplitView::builder()
-        .sidebar(&sidebar_page)
-        .content(&content_page)
-        .build();
-
-    // Al seleccionar una nota, mostrar su contenido en el editor
-    {
-        let editor = editor.clone();
-        let content_title = content_title.clone();
-        let split = split.clone();
-        list.connect_row_activated(move |_, row| {
-            let (title, body) = notes[row.index() as usize];
-            editor.buffer().set_text(body);
-            content_title.set_title(title);
-            split.set_show_content(true);
-        });
+/// `orbital <carpeta>`: abre esa carpeta con «Abrir» en vez de la última bóveda.
+/// `orbital --salir-al-mostrar <carpeta>`: lo mismo, y sale apenas la lista se dibuja (para medir
+/// el arranque con hyperfine).
+fn parse_folder() -> Option<(PathBuf, bool)> {
+    let mut args = std::env::args().skip(1);
+    let first = args.next()?;
+    if first == "--salir-al-mostrar" {
+        return args.next().map(|p| (PathBuf::from(p), true));
     }
+    (!first.starts_with('-')).then(|| (PathBuf::from(first), false))
+}
 
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title("Orbital")
-        .default_width(1000)
-        .default_height(680)
-        .width_request(360)
-        .height_request(300)
-        .content(&split)
-        .build();
-
-    // En pantallas estrechas, la barra lateral y el editor se apilan
-    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-        adw::BreakpointConditionLengthType::MaxWidth,
-        600.0,
-        adw::LengthUnit::Sp,
-    ));
-    breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-    window.add_breakpoint(breakpoint);
-
-    // Abrir la primera nota al inicio
-    if let Some(first) = list.row_at_index(0) {
-        list.select_row(Some(&first));
-        first.emit_activate();
+fn main() -> glib::ExitCode {
+    let capture = parse_capture();
+    let folder = if capture.is_none() {
+        parse_folder()
+    } else {
+        None
+    };
+    let mut builder = adw::Application::builder().application_id(APP_ID);
+    if capture.is_some() || folder.as_ref().is_some_and(|f| f.1) {
+        // Instancia propia, para no reusar una ventana de Orbital ya abierta.
+        builder = builder.flags(gio::ApplicationFlags::NON_UNIQUE);
     }
+    let app = builder.build();
+    app.connect_startup(|_| style::apply());
+    let capture = std::rc::Rc::new(std::cell::RefCell::new(capture));
+    let folder = std::cell::RefCell::new(folder);
+    app.connect_activate(move |app| {
+        activate(app, capture.borrow_mut().take(), folder.borrow_mut().take())
+    });
+    // Los argumentos propios no se pasan a GApplication.
+    app.run_with_args(&[std::env::args().next().unwrap_or_default()])
+}
 
+fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(PathBuf, bool)>) {
+    let window = Window::new(app);
     window.present();
+    if let Some(cap) = capture {
+        window.set_persist(false);
+        let app = app.clone();
+        glib::spawn_future_local(async move {
+            if let Some(vault) = cap.vault {
+                window.open_path(vault).await;
+            }
+            if let Some(note) = &cap.note {
+                window.show_path(note);
+            }
+            // WebKit dibuja en otro proceso: se le da tiempo para que la página aparezca.
+            glib::timeout_future(Duration::from_millis(2500)).await;
+            match window.capture(&cap.out) {
+                Ok(()) => println!("Captura guardada en {}", cap.out.display()),
+                Err(e) => eprintln!("No se pudo capturar la ventana: {e}"),
+            }
+            app.quit();
+        });
+        return;
+    }
+    if let Some((path, exit_when_shown)) = folder {
+        if exit_when_shown {
+            window.set_persist(false);
+        }
+        let app = app.clone();
+        glib::spawn_future_local(async move {
+            window.open_path(path).await;
+            if exit_when_shown {
+                // Sale después del próximo cuadro: la lista ya está dibujada.
+                window.after_next_frame(move || app.quit());
+            }
+        });
+        return;
+    }
+    // Reabre la última bóveda, si todavía existe; si no, queda la pantalla inicial.
+    glib::spawn_future_local(async move {
+        let last = gio::spawn_blocking(|| AppState::load().last_vault.filter(|p| p.is_dir()))
+            .await
+            .ok()
+            .flatten();
+        if let Some(path) = last {
+            window.open_path(path).await;
+        }
+    });
 }

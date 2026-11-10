@@ -1,0 +1,3 @@
+# Solo cuerpo
+
+Sin propiedades.
