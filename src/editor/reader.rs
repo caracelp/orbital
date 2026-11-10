@@ -105,15 +105,40 @@ pub struct Prepared {
     pub hashes: Vec<u64>,
     /// Hash del frontmatter.
     pub header: u64,
+    /// Notas incrustadas con `![[…]]`: si una cambia, hay que volver a dibujar (US5).
+    pub deps: Vec<orbital_vault::RelPath>,
 }
 
 impl Prepared {
     pub fn new(text: &str) -> Self {
-        let doc = orbital_vault::render::render_markdown(text);
+        Self::build(text, None)
+    }
+
+    /// Como [`Prepared::new`], con las transclusiones expandidas (lee las notas incrustadas: va
+    /// en el hilo de fondo).
+    pub fn with_vault(
+        text: &str,
+        vault: &orbital_vault::Vault,
+        from: &orbital_vault::RelPath,
+    ) -> Self {
+        Self::build(text, Some((vault, from)))
+    }
+
+    fn build(text: &str, vault: Option<(&orbital_vault::Vault, &orbital_vault::RelPath)>) -> Self {
+        let mut doc = orbital_vault::render::render_markdown(text);
+        let deps = vault.map_or_else(Vec::new, |(v, from)| v.expand_transclusions(from, &mut doc));
+        // Un bloque con transclusiones cambia también si cambia lo incrustado: la huella entra en
+        // su hash, y la actualización en el sitio reemplaza solo esa tarjeta.
         let hashes = doc
             .blocks
             .iter()
-            .map(|b| orbital_vault::write::hash(text[b.source.clone()].as_bytes()))
+            .map(|b| {
+                let h = orbital_vault::write::hash(text[b.source.clone()].as_bytes());
+                match orbital_vault::transclusion::fingerprint(b) {
+                    0 => h,
+                    fp => orbital_vault::write::hash(&[h.to_le_bytes(), fp.to_le_bytes()].concat()),
+                }
+            })
             .collect();
         let header = orbital_vault::props::markdown::locate(text)
             .map(|r| orbital_vault::write::hash(text[r].as_bytes()))
@@ -122,6 +147,7 @@ impl Prepared {
             doc,
             hashes,
             header,
+            deps,
         }
     }
 }
@@ -389,6 +415,15 @@ impl Reader {
             .name("callout-title")
             .weight(700)
             .build());
+        add(gtk::TextTag::builder()
+            .name("embed-gap")
+            .scale(0.4)
+            .pixels_below_lines(0)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("embed")
+            .paragraph_background(crate::style::EMBED_BG.hex())
+            .build());
     }
 
     /// Etiqueta de sangría: se recalcula con el margen de la columna.
@@ -560,6 +595,7 @@ impl Reader {
             doc,
             hashes,
             header: header_hash,
+            ..
         } = prepared;
         let in_place = {
             let old = i.blocks.borrow();
@@ -607,6 +643,7 @@ impl Reader {
             link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
+            embedded: Cell::new(0),
         });
         if let Some(h) = header() {
             let mut end = state.buffer.end_iter();
@@ -702,6 +739,7 @@ impl Reader {
             link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
+            embedded: Cell::new(0),
         };
         i.focused_link.set(None);
         let mut old = std::mem::take(&mut *i.blocks.borrow_mut());
@@ -952,7 +990,119 @@ impl Reader {
                 buf.insert_with_tags(end, text.trim_end(), &refs);
                 buf.insert(end, "\n");
             }
+            BlockKind::Transclusion(t) => self.transclusion(s, end, t, depth, &base),
         }
+    }
+
+    /// Tarjeta de una transclusión (US5 de la 003): un encabezado con la nota de origen (un enlace
+    /// que la abre) y su contenido, con fondo y sangría. Lo incrustado no se edita desde acá: sus
+    /// casillas quedan deshabilitadas.
+    fn transclusion(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        t: &orbital_vault::render::Transclusion,
+        depth: i32,
+        base: &[gtk::TextTag],
+    ) {
+        use orbital_vault::render::Embed;
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let start = end.offset();
+        let url = match &t.anchor {
+            Some(a) => format!("[[{}#{a}]]", t.target),
+            None => format!("[[{}]]", t.target),
+        };
+        let shown = match &t.anchor {
+            Some(a) => format!("{} › {a}", t.target),
+            None => t.target.clone(),
+        };
+        let link = |text: String| orbital_vault::render::Inline::Link {
+            url: url.clone(),
+            children: vec![orbital_vault::render::Inline::Text(text)],
+        };
+        let mut title: Vec<gtk::TextTag> = base.to_vec();
+        title.extend(table.lookup("callout-title"));
+        let mut dim: Vec<gtk::TextTag> = base.to_vec();
+        dim.extend(table.lookup("dim"));
+        let text = |end: &mut gtk::TextIter, tags: &[gtk::TextTag], t: &str| {
+            buf.insert_with_tags(end, t, &tags.iter().collect::<Vec<_>>());
+        };
+        text(end, &title, "↪  ");
+        match &t.content {
+            Embed::Note { blocks, .. } => {
+                self.inlines(s, end, &[link(shown)], &title);
+                buf.insert(end, "\n");
+                s.embedded.set(s.embedded.get() + 1);
+                for b in blocks {
+                    self.block(s, end, b, depth + 1);
+                }
+                s.embedded.set(s.embedded.get() - 1);
+            }
+            Embed::Missing => {
+                text(end, &dim, "Nota inexistente: ");
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, " (creala desde el enlace)");
+                buf.insert(end, "\n");
+            }
+            Embed::SectionMissing { .. } => {
+                self.inlines(s, end, &[link(t.target.clone())], &title);
+                let a = t.anchor.as_deref().unwrap_or("");
+                text(end, &dim, &format!(" no tiene el encabezado «{a}»"));
+                buf.insert(end, "\n");
+            }
+            Embed::Html { .. } => {
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, " es una nota HTML: abrila para verla");
+                buf.insert(end, "\n");
+            }
+            Embed::Ambiguous(all) => {
+                text(
+                    end,
+                    &dim,
+                    &format!(
+                        "Hay {} notas «{}»: escribí la carpeta, por ejemplo ![[{}]]",
+                        all.len(),
+                        t.target,
+                        all[0]
+                            .as_str()
+                            .strip_prefix("wiki/")
+                            .unwrap_or(all[0].as_str())
+                            .rsplit_once('.')
+                            .map_or("", |(p, _)| p),
+                    ),
+                );
+                buf.insert(end, "\n");
+            }
+            Embed::Cycle { .. } => {
+                text(end, &dim, "↻ Referencia circular a ");
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, ": ya se está mostrando más arriba");
+                buf.insert(end, "\n");
+            }
+            Embed::TooDeep => {
+                text(
+                    end,
+                    &dim,
+                    &format!(
+                        "Demasiados niveles de transclusión (máximo {}): ",
+                        orbital_vault::transclusion::MAX_DEPTH
+                    ),
+                );
+                self.inlines(s, end, &[link(shown)], &title);
+                buf.insert(end, "\n");
+            }
+            Embed::Pending => {
+                text(end, &dim, &format!("![[{}]]", t.target));
+                buf.insert(end, "\n");
+            }
+        }
+        if let Some(bg) = table.lookup("embed") {
+            buf.apply_tag(&bg, &buf.iter_at_offset(start), end);
+        }
+        // Un espacio corto sin fondo: dos tarjetas seguidas no se ven como una sola.
+        let gap: Vec<gtk::TextTag> = table.lookup("embed-gap").into_iter().collect();
+        buf.insert_with_tags(end, "\n", &gap.iter().collect::<Vec<_>>());
     }
 
     /// Casilla de una tarea: un `CheckButton` que cambia un solo byte del texto fuente.
@@ -967,6 +1117,23 @@ impl Reader {
             .active(task.checked)
             .valign(gtk::Align::Center)
             .build();
+        // Una casilla de una nota incrustada no es de esta nota: no se marca desde acá.
+        if s.embedded.get() > 0 {
+            check.set_sensitive(false);
+            check.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Tarea de otra nota: {}",
+                item.blocks
+                    .first()
+                    .map(|b| match &b.kind {
+                        BlockKind::Paragraph(p) => plain_text(p),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default()
+            ))]);
+            self.anchor(s, end, check.upcast());
+            s.buffer.insert(end, " ");
+            return;
+        }
         let label = item
             .blocks
             .first()
@@ -1256,6 +1423,8 @@ struct RenderState {
     link_items: RefCell<Vec<LinkItem>>,
     block_base: RefCell<Rc<Cell<usize>>>,
     block_start: Cell<usize>,
+    /// Profundidad dentro de transclusiones (lo incrustado no se edita desde acá).
+    embedded: Cell<u32>,
 }
 
 #[cfg(test)]

@@ -56,6 +56,49 @@ pub enum BlockKind {
     Rule,
     /// HTML en bruto dentro del Markdown: se muestra como texto.
     Html(String),
+    /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
+    /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
+    Transclusion(Transclusion),
+}
+
+/// Una transclusión `![[destino#ancla]]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transclusion {
+    /// El destino tal como está escrito (`nota`, `carpeta/nota`, `nota.md`).
+    pub target: String,
+    pub anchor: Option<String>,
+    pub content: Embed,
+}
+
+/// Qué muestra una transclusión.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Embed {
+    /// Todavía no se expandió.
+    Pending,
+    /// El contenido de la nota (o de su sección), ya expandido. `hash`: del archivo leído, para
+    /// saber si cambió.
+    Note {
+        path: crate::RelPath,
+        hash: u64,
+        blocks: Vec<Block>,
+    },
+    /// La nota existe pero no tiene ese encabezado.
+    SectionMissing {
+        path: crate::RelPath,
+    },
+    /// Una nota `.html`: no se incrusta en la vista formateada, se ofrece abrirla.
+    Html {
+        path: crate::RelPath,
+    },
+    /// No existe: se puede crear (OKF §6.1).
+    Missing,
+    Ambiguous(Vec<crate::RelPath>),
+    /// La nota ya se está mostrando más arriba (A incrusta a B, que incrusta a A).
+    Cycle {
+        path: crate::RelPath,
+    },
+    /// Más de [`crate::transclusion::MAX_DEPTH`] niveles de anidación.
+    TooDeep,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,7 +239,11 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
         *i += 1;
         let kind = match ev {
             Event::Start(Tag::Paragraph) => {
-                BlockKind::Paragraph(parse_inlines(evs, i, TagEnd::Paragraph))
+                let inlines = parse_inlines(evs, i, TagEnd::Paragraph);
+                match transclusion(&ctx.text[abs.clone()]) {
+                    Some(t) => BlockKind::Transclusion(t),
+                    None => BlockKind::Paragraph(inlines),
+                }
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 let level = *level as u8;
@@ -577,6 +624,23 @@ pub fn plain_text(inlines: &[Inline]) -> String {
         }
     }
     s
+}
+
+/// Un párrafo que es solo `![[destino]]` (con ancla o alias opcionales) es una transclusión.
+fn transclusion(source: &str) -> Option<Transclusion> {
+    let inner = source.trim().strip_prefix("![[")?.strip_suffix("]]")?;
+    if inner.contains("]]") || inner.contains("[[") || inner.contains('\n') {
+        return None;
+    }
+    let t = crate::links::parse_link_target(inner);
+    if t.path.is_empty() {
+        return None;
+    }
+    Some(Transclusion {
+        target: t.path,
+        anchor: t.anchor.filter(|a| !a.is_empty()),
+        content: Embed::Pending,
+    })
 }
 
 /// Si la cita empieza con `[!tipo]`, es un callout (FR-009).

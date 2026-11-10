@@ -1014,6 +1014,8 @@ impl Window {
     /// Pone al día en el grafo los enlaces de `path` (al guardarse o cambiar afuera), en otro hilo.
     fn update_graph(&self, path: RelPath, removed: bool) {
         let i = &self.0;
+        // Las transclusiones de la nota abierta que incrustan a `path` se ponen al día (US5).
+        i.code_editor.dependency_changed(&path);
         let (Some(graph), Some(vault)) = (i.graph.borrow().clone(), i.vault.borrow().clone())
         else {
             return;

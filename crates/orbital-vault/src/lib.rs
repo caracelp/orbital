@@ -23,6 +23,7 @@ pub mod render;
 pub mod scan;
 pub mod session;
 pub mod template;
+pub mod transclusion;
 pub mod vault;
 pub mod write;
 

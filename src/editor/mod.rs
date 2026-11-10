@@ -154,6 +154,8 @@ struct Inner {
     /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
     /// dirección no se reutiliza, así que comparar punteros es seguro.
     completion_vault: RefCell<std::sync::Weak<Vault>>,
+    /// Notas que incrusta la nota abierta (US5).
+    embed_deps: RefCell<Vec<RelPath>>,
 }
 
 /// El editor de la nota abierta.
@@ -259,6 +261,7 @@ impl Editor {
             completion_dismissed_at: Cell::new(None),
             completion_active_start: Cell::new(None),
             completion_vault: RefCell::new(std::sync::Weak::new()),
+            embed_deps: RefCell::new(Vec::new()),
         }));
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -544,9 +547,14 @@ impl Editor {
             .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
             .to_string();
         let this = self.clone();
+        let place = (i.vault.borrow().clone(), self.current_path());
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
-                let prepared = reader::Prepared::new(&text);
+                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
+                let prepared = match &place {
+                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from),
+                    _ => reader::Prepared::new(&text),
+                };
                 let props = orbital_vault::props::markdown::locate(&text)
                     .map(|r| orbital_vault::props::yaml::parse_block(&text[r]));
                 (prepared, props)
@@ -559,6 +567,7 @@ impl Editor {
             let Ok((prepared, props)) = parsed else {
                 return;
             };
+            *i.embed_deps.borrow_mut() = prepared.deps.clone();
             let header = || {
                 let read_only = i.meta.borrow().as_ref().is_none_or(|m| m.read_only);
                 let (entries, error) = match props {
@@ -876,6 +885,15 @@ impl Editor {
     /// Contador de cambios del texto (ver [`Editor::undo_if_last`]).
     pub fn edits(&self) -> u64 {
         self.0.edits.get()
+    }
+
+    /// Una nota de la bóveda cambió (se guardó o la cambió otro programa). Si la nota abierta la
+    /// incrusta con `![[…]]`, la vista formateada se vuelve a dibujar: solo cambia esa tarjeta y
+    /// no se pierde la posición de lectura (FR-016).
+    pub fn dependency_changed(&self, path: &RelPath) {
+        if self.0.embed_deps.borrow().contains(path) {
+            self.render_now();
+        }
     }
 
     /// Muestra la línea `line` (desde 1) en la vista actual, sin cambiarla: el cursor del código

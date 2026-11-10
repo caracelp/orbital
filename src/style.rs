@@ -22,6 +22,8 @@ pub const VIEW_BG: Rgb = Rgb(0x16, 0x16, 0x18);
 pub const SIDEBAR_BG: Rgb = Rgb(0x14, 0x14, 0x17);
 pub const HEADERBAR_BG: Rgb = Rgb(0x18, 0x18, 0x1b);
 pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
+/// Fondo de las transclusiones `![[nota]]` en la vista formateada (rosado muy oscuro).
+pub const EMBED_BG: Rgb = Rgb(0x23, 0x18, 0x20);
 
 /// Enlaces a notas existentes.
 pub const LINK_FG: Rgb = ACCENT_TEXT;
@@ -178,7 +180,14 @@ mod tests {
 
     #[test]
     fn palette_meets_wcag_aa() {
-        for bg in [WINDOW_BG, VIEW_BG, SIDEBAR_BG, HEADERBAR_BG, CARD_BG] {
+        for bg in [
+            WINDOW_BG,
+            VIEW_BG,
+            SIDEBAR_BG,
+            HEADERBAR_BG,
+            CARD_BG,
+            EMBED_BG,
+        ] {
             let r = contrast_ratio(ACCENT_TEXT, bg);
             assert!(r >= 4.5, "acento sobre {bg:?}: {r:.2}");
             let w = contrast_ratio(Rgb(0xff, 0xff, 0xff), bg);
