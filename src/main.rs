@@ -38,15 +38,27 @@ fn build_ui(app: &adw::Application) {
 
     // --- Lista de notas (barra lateral) ---
     let notes = [
-        ("Bienvenida", "# Bienvenida a Orbital\n\nTu espacio de notas en **Markdown**.\n"),
-        ("Ideas", "# Ideas\n\n- Enlaces entre notas `[[...]]`\n- Vista de grafo\n- Tareas\n"),
-        ("Tareas", "# Tareas\n\n- [ ] Guardar notas en disco\n- [ ] Vista previa Markdown\n"),
+        (
+            "Bienvenida",
+            "# Bienvenida a Orbital\n\nTu espacio de notas en **Markdown**.\n",
+        ),
+        (
+            "Ideas",
+            "# Ideas\n\n- Enlaces entre notas `[[...]]`\n- Vista de grafo\n- Tareas\n",
+        ),
+        (
+            "Tareas",
+            "# Tareas\n\n- [ ] Guardar notas en disco\n- [ ] Vista previa Markdown\n",
+        ),
     ];
 
     let list = gtk::ListBox::new();
     list.add_css_class("navigation-sidebar");
     for (title, _) in notes {
-        let row = adw::ActionRow::builder().title(title).activatable(true).build();
+        let row = adw::ActionRow::builder()
+            .title(title)
+            .activatable(true)
+            .build();
         list.append(&row);
     }
 

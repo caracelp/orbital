@@ -7,3 +7,11 @@ license = "GPL-3.0-or-later"
 [dependencies]
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_6"] }
 gtk = { version = "0.11.5", package = "gtk4" }
+
+# Máximo rendimiento en las compilaciones de release
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
