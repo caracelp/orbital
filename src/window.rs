@@ -382,6 +382,7 @@ impl Window {
                     w.launch_file(&e.path.to_path(&root));
                 }
             }),
+            simple("preferences", Window::show_preferences),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -390,6 +391,7 @@ impl Window {
             from_template,
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
+        app.set_accels_for_action("win.preferences", &["<Control>comma"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -407,6 +409,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Abrir como bóveda de Orbital",
             "<Control><Shift>o",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Preferencias de la bóveda",
+            "<Control>comma",
         ));
         section.add(adw::ShortcutsItem::new("Nota nueva", "<Control>n"));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
@@ -670,6 +676,27 @@ impl Window {
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
+        // Bóveda vacía: decir qué hacer en vez de mostrar una lista en blanco.
+        if let Some(empty) = i
+            .content_stack
+            .child_by_name("vacio")
+            .and_downcast::<adw::StatusPage>()
+        {
+            let vault_empty = i
+                .vault
+                .borrow()
+                .as_ref()
+                .is_some_and(|v| v.entries().iter().all(|e| e.kind == EntryKind::Folder));
+            if vault_empty {
+                empty.set_title("La bóveda todavía no tiene notas");
+                empty.set_description(Some(
+                    "Creá una con Ctrl+N o con el botón + de la barra lateral.",
+                ));
+            } else {
+                empty.set_title("Ninguna nota abierta");
+                empty.set_description(Some("Elegí una nota de la lista para leerla."));
+            }
+        }
         i.content_title.set_title("");
         i.content_title.set_subtitle("");
         i.stack.set_visible_child_name("boveda");
@@ -1098,6 +1125,7 @@ impl Window {
             if name.is_empty() || name.contains('/') {
                 return this.toast("El nombre no puede estar vacío ni tener «/»");
             }
+            warn_portable(&this, &name);
             let dir = this.target_dir();
             let result = gio::spawn_blocking(move || {
                 let ctx = write_ctx::now(Some(vault.config()));
@@ -1388,6 +1416,39 @@ impl Window {
         }
     }
 
+    /// «Preferencias de la bóveda».
+    fn show_preferences(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        let current = self
+            .0
+            .current_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.path.clone());
+        crate::preferences::show(
+            &self.0.window,
+            vault.root().to_path_buf(),
+            vault.config().clone(),
+            move |r| {
+                let (this, current) = (this.clone(), current.clone());
+                glib::spawn_future_local(async move {
+                    match r {
+                        Ok(()) => {
+                            this.reload(current).await;
+                            this.toast("Preferencias guardadas");
+                        }
+                        Err(e) => {
+                            this.toast(&format!("No se pudieron guardar las preferencias: {e}"))
+                        }
+                    }
+                });
+            },
+        );
+    }
+
     /// Avisa con un botón «Deshacer» que ejecuta `undo`.
     fn toast_undo(&self, msg: &str, undo: impl Fn() + 'static) {
         // Sin tiempo límite (WCAG 2.2.1): queda hasta que se descarta o lo reemplaza otro aviso.
@@ -1438,6 +1499,7 @@ impl Window {
             let Ok(to) = RelPath::new(field.text().trim()) else {
                 return this.toast("La ruta nueva no es válida");
             };
+            warn_portable(&this, to.file_name());
             if to == entry.path {
                 return;
             }
@@ -1667,6 +1729,17 @@ impl Window {
         }
     }
 
+    /// Ejecuta `f` cuando termina de dibujarse el próximo cuadro de la ventana.
+    pub fn after_next_frame(&self, f: impl FnOnce() + 'static) {
+        let f = std::cell::Cell::new(Some(f));
+        self.0.window.add_tick_callback(move |_, _| {
+            if let Some(f) = f.take() {
+                glib::idle_add_local_once(f);
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
     /// Dibuja la ventana en un PNG, sin depender de capturas del compositor.
     pub fn capture(&self, out: &Path) -> Result<(), String> {
         let w = &self.0.window;
@@ -1755,6 +1828,7 @@ fn open_menu_button() -> gtk::MenuButton {
                 "win.open-as",
                 "Ctrl+Mayús+O",
             ),
+            ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
             ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
         ],
     )
@@ -1953,4 +2027,17 @@ enum NewKind {
     Html,
     /// Ruta de la plantilla.
     Template(String),
+}
+
+/// Caracteres que funcionan en Linux pero rompen la sincronización con Windows y algunas nubes.
+const NOT_PORTABLE: &[char] = &[':', '?', '*', '<', '>', '|', '"', '\\'];
+
+/// Avisa (sin impedirlo) si un nombre tiene caracteres que dan problemas en otros sistemas.
+fn warn_portable(window: &Window, name: &str) {
+    let bad: String = name.chars().filter(|c| NOT_PORTABLE.contains(c)).collect();
+    if !bad.is_empty() {
+        window.toast(&format!(
+            "«{name}» tiene {bad}, que puede dar problemas al sincronizar con Windows o con la nube"
+        ));
+    }
 }

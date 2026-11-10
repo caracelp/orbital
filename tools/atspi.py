@@ -9,7 +9,7 @@ Uso: python3 -I tools/atspi.py <comando> [args]
   escribir <rol> <nombre> <texto>  reemplaza el texto de un campo editable
   elegir <nombre>            elige la fila de la lista de la bóveda cuyo nombre contiene <nombre>
 
-<nombre> es un fragmento del nombre accesible; <rol> es el nombre de rol de AT-SPI
+<nombre> es un fragmento del nombre accesible («=Nombre» exige el nombre exacto); <rol> es el nombre de rol de AT-SPI
 (por ejemplo «push button», «list item», «label») o «*» para cualquiera.
 """
 import sys
@@ -52,7 +52,9 @@ def find(role, name):
             nm = node.get_name() or ""
         except Exception:
             continue
-        if (role == "*" or r == role) and name.lower() in nm.lower():
+        exact = name.startswith("=")
+        hit = nm == name[1:] if exact else name.lower() in nm.lower()
+        if (role == "*" or r == role) and hit:
             return node
     return None
 

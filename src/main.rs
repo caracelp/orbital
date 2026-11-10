@@ -1,5 +1,6 @@
 mod html_view;
 mod open_dialog;
+mod preferences;
 mod state;
 mod style;
 mod watcher;
@@ -38,9 +39,15 @@ fn parse_capture() -> Option<Capture> {
 }
 
 /// `orbital <carpeta>`: abre esa carpeta con «Abrir» en vez de la última bóveda.
-fn parse_folder() -> Option<PathBuf> {
-    let first = std::env::args().nth(1)?;
-    (!first.starts_with('-')).then(|| PathBuf::from(first))
+/// `orbital --salir-al-mostrar <carpeta>`: lo mismo, y sale apenas la lista se dibuja (para medir
+/// el arranque con hyperfine).
+fn parse_folder() -> Option<(PathBuf, bool)> {
+    let mut args = std::env::args().skip(1);
+    let first = args.next()?;
+    if first == "--salir-al-mostrar" {
+        return args.next().map(|p| (PathBuf::from(p), true));
+    }
+    (!first.starts_with('-')).then(|| (PathBuf::from(first), false))
 }
 
 fn main() -> glib::ExitCode {
@@ -51,7 +58,7 @@ fn main() -> glib::ExitCode {
         None
     };
     let mut builder = adw::Application::builder().application_id(APP_ID);
-    if capture.is_some() {
+    if capture.is_some() || folder.as_ref().is_some_and(|f| f.1) {
         // Instancia propia, para no reusar una ventana de Orbital ya abierta.
         builder = builder.flags(gio::ApplicationFlags::NON_UNIQUE);
     }
@@ -66,7 +73,7 @@ fn main() -> glib::ExitCode {
     app.run_with_args(&[std::env::args().next().unwrap_or_default()])
 }
 
-fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<PathBuf>) {
+fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(PathBuf, bool)>) {
     let window = Window::new(app);
     window.present();
     if let Some(cap) = capture {
@@ -89,8 +96,18 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<Pat
         });
         return;
     }
-    if let Some(path) = folder {
-        glib::spawn_future_local(async move { window.open_path(path).await });
+    if let Some((path, exit_when_shown)) = folder {
+        if exit_when_shown {
+            window.set_persist(false);
+        }
+        let app = app.clone();
+        glib::spawn_future_local(async move {
+            window.open_path(path).await;
+            if exit_when_shown {
+                // Sale después del próximo cuadro: la lista ya está dibujada.
+                window.after_next_frame(move || app.quit());
+            }
+        });
         return;
     }
     // Reabre la última bóveda, si todavía existe; si no, queda la pantalla inicial.

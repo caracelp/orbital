@@ -12,6 +12,10 @@ pub const ACCENT_BG: Rgb = Rgb(0xb8, 0x46, 0x7c);
 pub const ACCENT_FG: Rgb = Rgb(0xff, 0xff, 0xff);
 /// Acento rosa para texto e íconos sobre la base oscura.
 pub const ACCENT_TEXT: Rgb = Rgb(0xff, 0x8c, 0xc6);
+/// Anillo de foco (no textual: necesita 3:1 contra lo que lo rodea).
+pub const FOCUS_RING: Rgb = ACCENT_TEXT;
+/// Anillo de foco sobre botones de acento (el rosa sobre rosa queda en 2,3:1).
+pub const FOCUS_ON_ACCENT: Rgb = Rgb(0xff, 0xff, 0xff);
 /// Base casi negra.
 pub const WINDOW_BG: Rgb = Rgb(0x11, 0x11, 0x13);
 pub const VIEW_BG: Rgb = Rgb(0x16, 0x16, 0x18);
@@ -62,6 +66,14 @@ fn css() -> String {
         out.push_str(&format!("  --{name}: {};\n", c.hex()));
     }
     out.push_str("}\n");
+    // Anillo de foco opaco: el de libadwaita (acento al 50 %) queda en 2,9:1 sobre las tarjetas y
+    // no llega al 3:1 de WCAG 1.4.11. Con prioridad de aplicación, esta regla gana siempre.
+    out.push_str(&format!(
+        "*:focus-visible {{ outline-color: {}; }}\n\
+         .suggested-action:focus-visible, .destructive-action:focus-visible {{ outline-color: {}; }}\n",
+        FOCUS_RING.hex(),
+        FOCUS_ON_ACCENT.hex()
+    ));
     // Texto de lectura: un poco más grande que la interfaz.
     out.push_str(
         ".orbital-reader { font-size: 1.08em; } \
@@ -107,6 +119,19 @@ mod tests {
         }
         let r = contrast_ratio(ACCENT_FG, ACCENT_BG);
         assert!(r >= 4.5, "texto sobre el acento: {r:.2}");
+    }
+
+    #[test]
+    fn focus_ring_meets_non_text_contrast() {
+        for bg in [WINDOW_BG, VIEW_BG, SIDEBAR_BG, HEADERBAR_BG, CARD_BG] {
+            let r = contrast_ratio(FOCUS_RING, bg);
+            assert!(r >= 3.0, "foco sobre {bg:?}: {r:.2}");
+        }
+        // En botones de acento el anillo es blanco: contra el botón y contra la ventana.
+        for bg in [ACCENT_BG, WINDOW_BG, CARD_BG] {
+            let r = contrast_ratio(FOCUS_ON_ACCENT, bg);
+            assert!(r >= 3.0, "foco en acento sobre {bg:?}: {r:.2}");
+        }
     }
 
     #[test]
