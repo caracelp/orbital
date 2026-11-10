@@ -108,6 +108,7 @@ impl LinkCompletionPopover {
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["orbital-completion-list"])
+            .focusable(false)
             .build();
         list.update_property(&[gtk::accessible::Property::Label("Sugerencias de enlaces")]);
 
@@ -122,7 +123,11 @@ impl LinkCompletionPopover {
 
         let popover = gtk::Popover::builder()
             .has_arrow(false)
-            .autohide(true)
+            // Sin autohide y sin foco: un popover con autohide toma el teclado al abrirse y las
+            // teclas dejarían de llegar a la nota. Las flechas, Intro, Tab y Escape las maneja el
+            // controlador de teclas de la vista de código.
+            .autohide(false)
+            .can_focus(false)
             .position(gtk::PositionType::Bottom)
             .css_classes(["orbital-completion-popover"])
             .child(&scroller)
@@ -140,6 +145,16 @@ impl LinkCompletionPopover {
             query: RefCell::new(String::new()),
             on_selected: RefCell::new(None),
         }));
+
+        // Sin autohide, se cierra cuando la nota pierde el foco.
+        let focus = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(&this.0);
+        focus.connect_leave(move |_| {
+            if let Some(i) = weak.upgrade() {
+                i.popover.popdown();
+            }
+        });
+        parent.add_controller(focus);
 
         let weak = Rc::downgrade(&this.0);
         this.0.list.connect_row_activated(move |_, row| {
@@ -228,6 +243,7 @@ impl LinkCompletionPopover {
 
             let row_btn = gtk::Button::builder()
                 .has_frame(false)
+                .focusable(false)
                 .css_classes(["flat"])
                 .child(&row_box)
                 .build();
@@ -248,7 +264,10 @@ impl LinkCompletionPopover {
                 }
             });
 
-            let row = gtk::ListBoxRow::builder().child(&row_btn).build();
+            let row = gtk::ListBoxRow::builder()
+                .child(&row_btn)
+                .focusable(false)
+                .build();
             self.0.list.append(&row);
         }
 
