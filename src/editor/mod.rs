@@ -349,7 +349,11 @@ impl Editor {
             let this = self.clone();
             glib::spawn_future_local(async move {
                 this.sync_visual().await;
-                this.enter(v);
+                if !this.0.visual_pending.get() {
+                    this.enter(v);
+                } else {
+                    this.sync_switcher(this.0.mode.get());
+                }
             });
         } else {
             self.enter(v);
@@ -538,6 +542,7 @@ impl Editor {
             .as_ref()
             .is_some_and(EditSession::has_pending)
             || self.0.saving.get()
+            || self.0.visual_pending.get()
     }
 
     /// Carga una nota en el editor. El texto cargado no se puede deshacer.
@@ -658,21 +663,28 @@ impl Editor {
             return;
         }
         let path = self.current_path();
+        let generation = i.visual_gen.get();
         let Some((body, css)) = i.visual.contents().await else {
             return;
         };
         // La nota cambió mientras se leía la página: no se mezcla con la otra.
-        if self.current_path() != path || !i.visual_pending.get() {
+        if self.current_path() != path
+            || !i.visual_pending.get()
+            || i.visual_gen.get() != generation
+        {
             return;
         }
-        i.visual_pending.set(false);
         let b = &i.buffer;
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
         let Some(spliced) = orbital_vault::html_edit::splice_body(&text, &body) else {
             self.error("La nota no tiene <body>: editala en Código");
             return;
         };
-        let new = orbital_vault::html_edit::upsert_orbital_style(&spliced, &css).unwrap_or(spliced);
+        let Some(new) = orbital_vault::html_edit::upsert_orbital_style(&spliced, &css) else {
+            self.error("La nota no tiene </head>: agregalo en Código para guardar los estilos");
+            return;
+        };
+        i.visual_pending.set(false);
         if new != text {
             replace_changed(b, &text, &new);
         }
@@ -684,8 +696,20 @@ impl Editor {
         let i = &self.0;
         let b = &i.buffer;
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        if orbital_vault::html_edit::body_range(&text).is_none()
+            || orbital_vault::html_edit::upsert_orbital_style(&text, "/* comprobar head */")
+                .is_none()
+        {
+            self.error("Para editar en Visual, agregá <head></head> y <body></body> en Código");
+            self.set_view(View::Codigo);
+            return;
+        }
         if orbital_vault::html_edit::body_has_scripts(&text) {
             i.html_scripts.set(true);
+            if let Some(toggle) = i.switcher.toggle_by_name("visual") {
+                toggle.set_enabled(false);
+                toggle.set_tooltip("Esta nota tiene JavaScript: editala en Código");
+            }
             self.error("Esta nota tiene JavaScript: editala en Código");
             self.set_view(View::Codigo);
             return;
@@ -762,6 +786,14 @@ impl Editor {
         if i.loading.get() {
             return;
         }
+        if i.format.get() == Format::Html && i.mode.get() == View::Codigo {
+            // Se vuelve a validar al entrar a Visual, no en cada tecla.
+            i.html_scripts.set(false);
+            if let Some(toggle) = i.switcher.toggle_by_name("visual") {
+                toggle.set_enabled(true);
+                toggle.set_tooltip("Visual (Ctrl+2)");
+            }
+        }
         i.edits.set(i.edits.get() + 1);
         let Some(session) = i.session.borrow_mut().as_mut().map(|s| {
             s.edited();
@@ -805,6 +837,10 @@ impl Editor {
     /// Guarda ya lo pendiente y espera a que termine (FR-002).
     pub async fn flush(&self) {
         self.sync_visual().await;
+        if self.0.visual_pending.get() {
+            self.error("No se pudo sincronizar la edición visual; los cambios siguen en la página");
+            return;
+        }
         // Si hay una escritura en curso, espera a que termine y vuelve a revisar.
         while self.0.saving.get() {
             glib::timeout_future(Duration::from_millis(20)).await;
@@ -893,6 +929,128 @@ impl Editor {
             .as_ref()
             .and_then(EditSession::last_saved)
             .map(|t| format!("{:02}:{:02}", t.hour, t.minute))
+    }
+
+    /// Obtiene el texto actual del buffer de edición.
+    pub fn text(&self) -> String {
+        let b = &self.0.buffer;
+        b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+    }
+
+    /// Formato de la nota abierta.
+    pub fn format(&self) -> Format {
+        self.0.format.get()
+    }
+
+    /// Reemplaza el texto del editor marcando el cambio como editado (para pruebas).
+    #[cfg(test)]
+    pub fn replace_text(&self, new: &str) {
+        let b = &self.0.buffer;
+        let text = self.text();
+        replace_changed(b, &text, new);
+    }
+
+    /// «Conservar la mía»: guarda los cambios del editor; la versión del disco queda en respaldo.
+    pub async fn keep_mine(&self, vault: Arc<Vault>) -> Result<(), orbital_vault::VaultError> {
+        self.sync_visual().await;
+        let text = self.text();
+        let session = self.0.session.borrow().clone().ok_or_else(|| {
+            orbital_vault::VaultError::Io(std::io::Error::other("no hay sesión de edición"))
+        })?;
+        let (v, ctx) = (vault.clone(), write_ctx::now(Some(vault.config())));
+        let res = gio::spawn_blocking(move || {
+            let mut s = session;
+            s.keep_mine(&v, &text, &ctx).map(|()| s)
+        })
+        .await
+        .map_err(|_| {
+            orbital_vault::VaultError::Io(std::io::Error::other("hilo de guardado cancelado"))
+        })?;
+
+        match res {
+            Ok(updated) => {
+                let path = updated.path().clone();
+                let hash = updated.base_hash();
+                *self.0.session.borrow_mut() = Some(updated);
+                if let Some(f) = self.0.on_saved.borrow().as_ref() {
+                    f(&path, hash);
+                }
+                self.emit(&Status::Saved(self.last_saved()));
+                Ok(())
+            }
+            Err(e) => {
+                self.emit(&Status::Failed(e.to_string()));
+                Err(e)
+            }
+        }
+    }
+
+    /// «Usar la del disco»: carga la versión del disco en el editor; la del editor queda en respaldo.
+    pub async fn use_disk(&self, vault: Arc<Vault>) -> Result<(), orbital_vault::VaultError> {
+        self.sync_visual().await;
+        let mine = self.text();
+        let session = self.0.session.borrow().clone().ok_or_else(|| {
+            orbital_vault::VaultError::Io(std::io::Error::other("no hay sesión de edición"))
+        })?;
+        let (v, ctx) = (vault.clone(), write_ctx::now(Some(vault.config())));
+        let res = gio::spawn_blocking(move || {
+            let mut s = session;
+            s.use_disk(&v, &mine, &ctx).map(|disk_text| (s, disk_text))
+        })
+        .await
+        .map_err(|_| {
+            orbital_vault::VaultError::Io(std::io::Error::other("hilo de guardado cancelado"))
+        })?;
+
+        match res {
+            Ok((updated, disk_text)) => {
+                *self.0.session.borrow_mut() = Some(updated);
+                let i = &self.0;
+                i.loading.set(true);
+                i.buffer.begin_irreversible_action();
+                i.buffer.set_text(&disk_text);
+                i.buffer.end_irreversible_action();
+                i.buffer.place_cursor(&i.buffer.start_iter());
+                i.loading.set(false);
+                i.generation.set(i.generation.get() + 1);
+                if i.mode.get() == View::Visual {
+                    self.show_visual();
+                } else if i.mode.get() != View::Codigo {
+                    self.render_now();
+                }
+                self.emit(&Status::Saved(None));
+                Ok(())
+            }
+            Err(e) => {
+                self.emit(&Status::Failed(e.to_string()));
+                Err(e)
+            }
+        }
+    }
+
+    /// «Descartar a respaldo»: respalda la versión del editor sin tocar el disco y cierra la nota.
+    pub async fn discard_to_backup(
+        &self,
+        vault: Arc<Vault>,
+    ) -> Result<(), orbital_vault::VaultError> {
+        self.sync_visual().await;
+        let mine = self.text();
+        let session = self.0.session.borrow().clone().ok_or_else(|| {
+            orbital_vault::VaultError::Io(std::io::Error::other("no hay sesión de edición"))
+        })?;
+        let (v, ctx) = (vault.clone(), write_ctx::now(Some(vault.config())));
+        let res = gio::spawn_blocking(move || {
+            let mut s = session;
+            s.discard_to_backup(&v, &mine, &ctx)
+        })
+        .await
+        .map_err(|_| {
+            orbital_vault::VaultError::Io(std::io::Error::other("hilo de guardado cancelado"))
+        })?;
+
+        res?;
+        self.close();
+        Ok(())
     }
 
     /// Un cambio externo de la nota abierta, con el hash que tiene ahora en el disco.

@@ -42,6 +42,8 @@ struct Inner {
     subtitle_base: RefCell<String>,
     /// La ventana ya guardó lo pendiente y puede cerrarse.
     closing: Cell<bool>,
+    /// Evita abrir más de un diálogo de conflicto a la vez.
+    conflict_dialog_open: Cell<bool>,
     /// Escrituras propias recientes (ruta → hash), que el monitor no debe tomar como externas.
     own_writes: RefCell<HashMap<RelPath, u64>>,
     props_list: gtk::ListBox,
@@ -288,6 +290,7 @@ impl Window {
             code_editor,
             subtitle_base: RefCell::new(String::new()),
             closing: Cell::new(false),
+            conflict_dialog_open: Cell::new(false),
             own_writes: RefCell::new(HashMap::new()),
             props_list,
             note_banner,
@@ -778,6 +781,9 @@ impl Window {
             let editor = this.0.code_editor.clone();
             if editor.current_path().is_some_and(|p| p != entry.path) {
                 editor.flush().await;
+                if editor.has_pending() {
+                    return;
+                }
                 editor.close();
             }
             let is_note = Format::from_name(entry.path.file_name()).is_some();
@@ -1027,6 +1033,9 @@ impl Window {
             let (this, w) = (this.clone(), w.clone());
             glib::spawn_future_local(async move {
                 this.0.code_editor.flush().await;
+                if this.0.code_editor.has_pending() {
+                    return;
+                }
                 this.0.closing.set(true);
                 w.close();
             });
@@ -1477,6 +1486,9 @@ impl Window {
 
     async fn set_archived(&self, path: RelPath, archived: bool) {
         self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1504,6 +1516,9 @@ impl Window {
     /// Guarda archivos como adjuntos de la nota abierta y la vuelve a mostrar.
     async fn attach_files(&self, files: Vec<(String, Vec<u8>)>) {
         self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1643,22 +1658,111 @@ impl Window {
                         .await
                         .ok()
                         .flatten();
-                    let disk_hash = disk.map(|b| orbital_vault::write::hash(&b)).unwrap_or(0);
+                    let disk_hash = disk.as_deref().map(orbital_vault::write::hash).unwrap_or(0);
                     match editor.external_change(disk_hash) {
                         orbital_vault::session::ExternalAction::Ignore => changes.retain(|c| {
                             !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
                         }),
-                        orbital_vault::session::ExternalAction::Reload => editor.close(),
-                        orbital_vault::session::ExternalAction::AskUser => this.toast(
-                            "La nota cambió en otro programa mientras la editabas. Tus cambios siguen acá y no se guardan solos.",
-                        ),
+                        orbital_vault::session::ExternalAction::Reload => {
+                            let (v, p) = (vault.clone(), open.clone());
+                            let note = gio::spawn_blocking(move || v.read_note(&p))
+                                .await
+                                .ok()
+                                .and_then(Result::ok);
+                            if let Some(note) = note {
+                                editor.load(vault.clone(), &note);
+                            }
+                            changes.retain(|c| {
+                                !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                            });
+                        }
+                        orbital_vault::session::ExternalAction::AskUser => {
+                            changes.retain(|c| {
+                                !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                            });
+                            if !this.0.conflict_dialog_open.get() {
+                                this.0.conflict_dialog_open.set(true);
+                                let disk_text = disk
+                                    .and_then(|b| String::from_utf8(b).ok())
+                                    .unwrap_or_default();
+                                let mine_text = editor.text();
+                                let name = open.file_name().to_string();
+                                let format = editor.format();
+                                let this_c = this.clone();
+                                let v_c = vault.clone();
+                                let ed = editor.clone();
+                                crate::editor::conflict::show_conflict_dialog(
+                                    &this.0.window,
+                                    &name,
+                                    mine_text,
+                                    disk_text,
+                                    format,
+                                    move |choice| {
+                                        this_c.0.conflict_dialog_open.set(false);
+                                        let this_choice = this_c.clone();
+                                        let v_choice = v_c.clone();
+                                        let ed_choice = ed.clone();
+                                        glib::spawn_future_local(async move {
+                                            match choice {
+                                                crate::editor::conflict::ConflictChoice::KeepMine => {
+                                                    if let Err(e) = ed_choice.keep_mine(v_choice).await {
+                                                        this_choice.toast(&format!("Error al conservar cambios: {e}"));
+                                                    }
+                                                }
+                                                crate::editor::conflict::ConflictChoice::UseDisk => {
+                                                    if let Err(e) = ed_choice.use_disk(v_choice).await {
+                                                        this_choice.toast(&format!("Error al usar la versión del disco: {e}"));
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
                 let gone = changes
                     .iter()
                     .any(|c| matches!(c, orbital_vault::ExternalChange::Removed(p) if *p == open));
                 if gone && editor.has_pending() {
-                    this.toast("La nota abierta se borró desde otro programa. Tus cambios siguen en el editor.");
+                    if !this.0.conflict_dialog_open.get() {
+                        this.0.conflict_dialog_open.set(true);
+                        let name = open.file_name().to_string();
+                        let this_c = this.clone();
+                        let v_c = vault.clone();
+                        let ed = editor.clone();
+                        crate::editor::conflict::show_deleted_dialog(
+                            &this.0.window,
+                            &name,
+                            move |choice| {
+                                this_c.0.conflict_dialog_open.set(false);
+                                let this_choice = this_c.clone();
+                                let v_choice = v_c.clone();
+                                let ed_choice = ed.clone();
+                                glib::spawn_future_local(async move {
+                                    match choice {
+                                        crate::editor::conflict::DeletedChoice::SaveAgain => {
+                                            if let Err(e) = ed_choice.keep_mine(v_choice).await {
+                                                this_choice.toast(&format!(
+                                                    "Error al guardar la nota: {e}"
+                                                ));
+                                            }
+                                        }
+                                        crate::editor::conflict::DeletedChoice::DiscardToBackup => {
+                                            if let Err(e) =
+                                                ed_choice.discard_to_backup(v_choice).await
+                                            {
+                                                this_choice.toast(&format!(
+                                                    "Error al descartar a respaldo: {e}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                    }
                     return;
                 }
             }
@@ -1848,6 +1952,9 @@ impl Window {
     /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
     async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
         self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1906,6 +2013,9 @@ impl Window {
 
     async fn do_trash(&self, path: RelPath) {
         self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };

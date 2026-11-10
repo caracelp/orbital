@@ -26,6 +26,7 @@ pub mod write;
 
 pub use aux_files::AuxFile;
 pub use config::{LinkStyle, VaultConfig};
+pub use diff::{DiffKind, DiffLine, diff_lines};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
 pub use links::Resolution;

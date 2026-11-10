@@ -167,6 +167,10 @@ impl EditSession {
     pub fn path(&self) -> &RelPath {
         &self.path
     }
+    pub fn base_hash(&self) -> u64 {
+        self.base_hash
+    }
+
     pub fn format(&self) -> Format {
         self.format
     }
@@ -334,5 +338,24 @@ impl EditSession {
         self.base_hash = disk_hash;
         self.state = SessionState::Clean;
         Ok(Self::to_editor(&disk))
+    }
+
+    /// «Descartar a respaldo»: descarta los cambios del editor pero los respalda en
+    /// `.orbital/respaldo/` para no perderlos (principio VI).
+    pub fn discard_to_backup(
+        &mut self,
+        vault: &Vault,
+        mine: &str,
+        ctx: &WriteCtx,
+    ) -> Result<(), VaultError> {
+        backup(
+            vault.root(),
+            &self.path,
+            self.to_disk(mine).as_bytes(),
+            self.base_hash,
+            ctx,
+        )?;
+        self.state = SessionState::Clean;
+        Ok(())
     }
 }

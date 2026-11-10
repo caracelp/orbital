@@ -185,6 +185,13 @@ fn keep_mine_and_use_disk_back_up_the_loser() {
     );
     assert_eq!(s.state(), &SessionState::Clean);
     assert_eq!(backups(&t), before + 1);
+
+    // Descartar a respaldo: respalda la versión del editor sin tocar el disco.
+    s.edited();
+    let before = backups(&t);
+    s.discard_to_backup(&v, "mía descartada\n", &ctx()).unwrap();
+    assert_eq!(s.state(), &SessionState::Clean);
+    assert_eq!(backups(&t), before + 1);
 }
 
 #[test]
