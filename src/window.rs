@@ -66,6 +66,15 @@ struct Inner {
     /// La carpeta de la bóveda dejó de estar disponible (disco desconectado).
     gone: Cell<bool>,
     gone_banner: adw::Banner,
+    /// Panel lateral derecho con los retroenlaces (US4 de la 003).
+    right: crate::editor::right_sidebar::RightSidebar,
+    right_split: adw::OverlaySplitView,
+    /// Grafo de enlaces de la bóveda; `None` mientras se arma en segundo plano.
+    graph: RefCell<Option<Arc<std::sync::Mutex<orbital_vault::LinkGraph>>>>,
+    /// Cada bóveda nueva sube la generación: un grafo viejo que termina tarde se descarta.
+    graph_gen: Cell<u64>,
+    /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
+    pending_line: Cell<Option<(RelPath, usize)>>,
 }
 
 /// Ventana de Orbital.
@@ -193,7 +202,29 @@ impl Window {
         let note_banner = adw::Banner::builder().revealed(true).visible(false).build();
         content_view.add_top_bar(&type_banner);
         content_view.add_top_bar(&note_banner);
-        content_view.set_content(Some(&content_stack));
+        // Panel derecho de retroenlaces, debajo de la cabecera de la nota (Ctrl+Mayús+B).
+        let right = crate::editor::right_sidebar::RightSidebar::new();
+        let right_split = adw::OverlaySplitView::builder()
+            .content(&content_stack)
+            .sidebar(right.widget())
+            .sidebar_position(gtk::PackType::End)
+            .show_sidebar(false)
+            .min_sidebar_width(260.0)
+            .max_sidebar_width(340.0)
+            .build();
+        let backlinks_button = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Retroenlaces (Ctrl+Mayús+B)")
+            .build();
+        backlinks_button
+            .update_property(&[gtk::accessible::Property::Label("Panel de retroenlaces")]);
+        backlinks_button
+            .bind_property("active", &right_split, "show-sidebar")
+            .bidirectional()
+            .sync_create()
+            .build();
+        content_header.pack_end(&backlinks_button);
+        content_view.set_content(Some(&right_split));
         let content_page = adw::NavigationPage::builder()
             .title("Nota")
             .child(&content_view)
@@ -297,6 +328,11 @@ impl Window {
             type_banner,
             current_note: RefCell::new(None),
             current_entry: RefCell::new(None),
+            right,
+            right_split,
+            graph: RefCell::new(None),
+            graph_gen: Cell::new(0),
+            pending_line: Cell::new(None),
             html_props,
             new_button,
             external_page,
@@ -415,6 +451,10 @@ impl Window {
             simple("view-split", |w| {
                 w.0.code_editor.set_view(crate::editor::View::Dividida)
             }),
+            simple("backlinks", |w| {
+                let s = &w.0.right_split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -428,6 +468,7 @@ impl Window {
         app.set_accels_for_action("win.view-code", &["<Control>1"]);
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
+        app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -454,6 +495,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
         section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
         section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar los retroenlaces",
+            "<Control><Shift>b",
+        ));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -684,6 +729,7 @@ impl Window {
             ));
         self.set_gone(false);
         *i.vault.borrow_mut() = Some(Arc::new(vault));
+        self.rebuild_graph();
 
         let root = children_model(&tree, "");
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -808,6 +854,7 @@ impl Window {
             };
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
+            this.refresh_backlinks();
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();
             if entry.read_only {
@@ -931,10 +978,121 @@ impl Window {
         i.props_list.set_visible(false);
         i.code_editor.switcher().set_visible(true);
         i.content_stack.set_visible_child_name("codigo");
+        if let Some((path, line)) = i.pending_line.take() {
+            if path == note.path {
+                i.code_editor.reveal_line(line);
+            } else {
+                i.pending_line.set(Some((path, line)));
+            }
+        }
+    }
+
+    /// Arma el grafo de enlaces de la bóveda en segundo plano (US4; 136 ms con 5000 notas).
+    fn rebuild_graph(&self) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let generation = i.graph_gen.get() + 1;
+        i.graph_gen.set(generation);
+        *i.graph.borrow_mut() = None;
+        self.refresh_backlinks();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let built = gio::spawn_blocking(move || orbital_vault::LinkGraph::build(&vault))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            if this.0.graph_gen.get() != generation {
+                return;
+            }
+            *this.0.graph.borrow_mut() = built.map(|g| Arc::new(std::sync::Mutex::new(g)));
+            this.refresh_backlinks();
+        });
+    }
+
+    /// Pone al día en el grafo los enlaces de `path` (al guardarse o cambiar afuera), en otro hilo.
+    fn update_graph(&self, path: RelPath, removed: bool) {
+        let i = &self.0;
+        let (Some(graph), Some(vault)) = (i.graph.borrow().clone(), i.vault.borrow().clone())
+        else {
+            return;
+        };
+        let Some(format) = Format::from_name(path.file_name()) else {
+            return;
+        };
+        if !path.as_str().starts_with("wiki/") {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let _ = gio::spawn_blocking(move || {
+                let text = if removed {
+                    None
+                } else {
+                    std::fs::read_to_string(path.to_path(vault.root())).ok()
+                };
+                let Ok(mut g) = graph.lock() else { return };
+                match text {
+                    Some(t) => g.update_file(&vault, &path, &t, format == Format::Html),
+                    None => g.remove_file(&path),
+                }
+            })
+            .await;
+            this.refresh_backlinks();
+        });
+    }
+
+    /// Muestra en el panel los retroenlaces de la nota abierta (solo si el panel está a la vista).
+    fn refresh_backlinks(&self) {
+        use crate::editor::right_sidebar::Backlinks;
+        let i = &self.0;
+        if !i.right_split.shows_sidebar() {
+            return;
+        }
+        let path = i
+            .current_entry
+            .borrow()
+            .as_ref()
+            .filter(|e| Format::from_name(e.path.file_name()).is_some())
+            .map(|e| e.path.clone());
+        let Some(path) = path else {
+            i.right.set_backlinks(Backlinks::NoNote);
+            return;
+        };
+        let graph = i.graph.borrow().clone();
+        let Some(graph) = graph else {
+            i.right.set_backlinks(Backlinks::Loading);
+            return;
+        };
+        // Se copian y se suelta el candado antes de armar los widgets.
+        let refs = match graph.lock() {
+            Ok(g) => g.backlinks_for(&path).to_vec(),
+            Err(_) => Vec::new(),
+        };
+        i.right.set_backlinks(Backlinks::Ready(&refs));
     }
 
     /// Conecta el editor con la ventana: estado del guardado, errores y cierre.
     fn setup_editor(&self) {
+        // Retroenlaces: elegir uno abre la nota de origen en la línea del enlace (FR-013).
+        let weak = Rc::downgrade(&self.0);
+        self.0.right.connect_open(move |from, line| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if w.0.code_editor.current_path().as_ref() == Some(from) {
+                w.0.code_editor.reveal_line(line);
+            } else {
+                w.0.pending_line.set(Some((from.clone(), line)));
+                w.show_path(from.as_str());
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.right_split.connect_show_sidebar_notify(move |_| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).refresh_backlinks();
+            }
+        });
         // Las propiedades arriba de la vista formateada (con los botones de fuentes).
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_header(move |path, header| {
@@ -999,6 +1157,7 @@ impl Window {
         self.0.code_editor.set_on_saved(move |path, hash| {
             if let Some(i) = weak.upgrade() {
                 i.own_writes.borrow_mut().insert(path.clone(), hash);
+                Window(i).update_graph(path.clone(), false);
             }
         });
         let weak = Rc::downgrade(&self.0);
@@ -1627,6 +1786,16 @@ impl Window {
             changes.retain(
                 |c| !matches!(c, orbital_vault::ExternalChange::Modified(p) if echoes.contains(p)),
             );
+            // El grafo de enlaces sigue los cambios de otros programas (FR-014).
+            for c in &changes {
+                match c {
+                    orbital_vault::ExternalChange::Modified(p) => {
+                        this.update_graph(p.clone(), false)
+                    }
+                    orbital_vault::ExternalChange::Removed(p) => this.update_graph(p.clone(), true),
+                    _ => {}
+                }
+            }
             let current = this
                 .0
                 .current_entry

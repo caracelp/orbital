@@ -10,6 +10,7 @@ pub mod conflict;
 pub mod html;
 pub mod props;
 pub mod reader;
+pub mod right_sidebar;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -875,6 +876,21 @@ impl Editor {
     /// Contador de cambios del texto (ver [`Editor::undo_if_last`]).
     pub fn edits(&self) -> u64 {
         self.0.edits.get()
+    }
+
+    /// Muestra la línea `line` (desde 1) en la vista actual, sin cambiarla: el cursor del código
+    /// va ahí y la vista formateada se desplaza cuando termina de dibujarse (retroenlaces, US4).
+    pub fn reveal_line(&self, line: usize) {
+        let i = &self.0;
+        let target = line.saturating_sub(1);
+        if let Some(it) = i.buffer.iter_at_line(target as i32) {
+            i.buffer.place_cursor(&it);
+            i.view
+                .scroll_to_mark(&i.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        }
+        if matches!(i.mode.get(), View::Lectura | View::Dividida) {
+            i.reader.scroll_to_line_when_ready(target);
+        }
     }
 
     /// Pasa a la vista Código y pone el cursor en una línea.

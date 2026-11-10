@@ -80,6 +80,9 @@ struct Inner {
     /// Widgets que todavía no se anclaron: se anclan al acercarse a la parte visible. Anclar
     /// cientos de una vez congelaba la ventana medio segundo.
     pending: RefCell<Vec<(gtk::Widget, gtk::TextChildAnchor)>>,
+    /// Línea del texto fuente a mostrar cuando termine el volcado en curso (al abrir una nota
+    /// desde un retroenlace).
+    pending_line: Cell<Option<usize>>,
     attach_scheduled: Cell<bool>,
     on_toggle: RefCell<Option<ToggleFn>>,
     on_link: RefCell<Option<LinkFn>>,
@@ -157,6 +160,7 @@ impl Reader {
             width: Cell::new(120),
             wide: RefCell::new(Vec::new()),
             pending: RefCell::new(Vec::new()),
+            pending_line: Cell::new(None),
             attach_scheduled: Cell::new(false),
             on_toggle: RefCell::new(None),
             on_link: RefCell::new(None),
@@ -269,6 +273,7 @@ impl Reader {
         }
         i.links.borrow_mut().clear();
         i.pending.borrow_mut().clear();
+        i.pending_line.set(None);
         i.header.set(None);
         i.view.set_buffer(Some(&gtk::TextBuffer::new(Some(&table))));
     }
@@ -667,6 +672,9 @@ impl Reader {
         i.header.set(Some(header_hash));
         // La disposición todavía no está calculada: se ancla lo visible en el próximo reposo.
         self.schedule_attach();
+        if let Some(line) = i.pending_line.take() {
+            self.scroll_to_line(line);
+        }
     }
 
     /// Reemplaza en el sitio los bloques que cambiaron; el prefijo `p` y el sufijo `s` quedan.
@@ -767,6 +775,16 @@ impl Reader {
     }
 
     /// Desplaza la vista para mostrar el bloque que contiene la línea `line` del texto fuente.
+    /// Como [`Reader::scroll_to_line`], pero si la nota todavía se está volcando, espera a que
+    /// termine.
+    pub fn scroll_to_line_when_ready(&self, line: usize) {
+        if self.0.blocks.borrow().is_empty() {
+            self.0.pending_line.set(Some(line));
+        } else {
+            self.scroll_to_line(line);
+        }
+    }
+
     pub fn scroll_to_line(&self, line: usize) {
         let blocks = self.0.blocks.borrow();
         let idx = blocks.partition_point(|b| b.line <= line).saturating_sub(1);
