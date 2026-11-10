@@ -899,6 +899,9 @@ impl Window {
                     i.editor.buffer().set_text(note.body());
                     i.content_stack.set_visible_child_name("nota");
                 }
+                // Las notas `.html` editables van al editor (Visual y Código, US4); las de `raw/`
+                // se muestran como página de solo lectura.
+                Format::Html if !note.read_only => self.open_in_code(&note),
                 Format::Html => {
                     self.load_html(&note);
                     i.content_stack.set_visible_child_name("html");
@@ -957,7 +960,7 @@ impl Window {
         });
         // La vista elegida se recuerda (FR-013).
         let persist = self.0.persist.get();
-        self.0.code_editor.set_on_view(move |v| {
+        self.0.code_editor.set_on_view(move |format, v| {
             if !persist {
                 return;
             }
@@ -965,7 +968,10 @@ impl Window {
             glib::spawn_future_local(async move {
                 let _ = gio::spawn_blocking(move || {
                     let mut state = AppState::load();
-                    state.md_view = Some(name);
+                    match format {
+                        Format::Md => state.md_view = Some(name),
+                        Format::Html => state.html_view = Some(name),
+                    }
                     state.save()
                 })
                 .await;
@@ -973,15 +979,21 @@ impl Window {
         });
         let editor = self.0.code_editor.clone();
         glib::spawn_future_local(async move {
-            let saved = gio::spawn_blocking(|| AppState::load().md_view)
-                .await
-                .ok()
-                .flatten();
-            let view = saved
-                .as_deref()
-                .and_then(crate::editor::View::from_name)
-                .unwrap_or(crate::editor::View::Lectura);
-            editor.set_initial_view(view);
+            let saved = gio::spawn_blocking(|| {
+                let s = AppState::load();
+                (s.md_view, s.html_view)
+            })
+            .await
+            .unwrap_or_default();
+            let view = |s: Option<String>, default| {
+                s.as_deref()
+                    .and_then(crate::editor::View::from_name)
+                    .unwrap_or(default)
+            };
+            editor.set_initial_views(
+                view(saved.0, crate::editor::View::Lectura),
+                view(saved.1, crate::editor::View::Visual),
+            );
         });
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_status(move |status| {

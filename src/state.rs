@@ -20,6 +20,8 @@ pub struct AppState {
     pub recent: Vec<PathBuf>,
     /// Última vista usada en notas `.md` (FR-013 de la 002).
     pub md_view: Option<String>,
+    /// Última vista usada en notas `.html`.
+    pub html_view: Option<String>,
 }
 
 fn state_file() -> PathBuf {
@@ -53,10 +55,14 @@ impl AppState {
         let md_view = find(&entries, "md_view")
             .and_then(|e| e.value.as_text())
             .map(str::to_owned);
+        let html_view = find(&entries, "html_view")
+            .and_then(|e| e.value.as_text())
+            .map(str::to_owned);
         Self {
             last_vault,
             recent,
             md_view,
+            html_view,
         }
     }
 
@@ -86,6 +92,9 @@ impl AppState {
             "recent",
             PropValue::List(self.recent.iter().map(|p| text(p)).collect()),
         ));
+        if let Some(v) = &self.html_view {
+            entries.push(("html_view", PropValue::Text(v.clone())));
+        }
         if let Some(v) = &self.md_view {
             entries.push(("md_view", PropValue::Text(v.clone())));
         }

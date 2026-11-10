@@ -65,7 +65,7 @@ pub struct Header {
     pub read_only: bool,
 }
 type LinkFn = Box<dyn Fn(&RelPath, &str)>;
-type ViewFn = Box<dyn Fn(View)>;
+type ViewFn = Box<dyn Fn(Format, View)>;
 
 /// Vistas de una nota `.md` (FR-008).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +73,8 @@ pub enum View {
     Codigo,
     Lectura,
     Dividida,
+    /// Edición directa de una nota `.html` (US4).
+    Visual,
 }
 
 impl View {
@@ -81,6 +83,7 @@ impl View {
             Self::Codigo => "codigo",
             Self::Lectura => "lectura",
             Self::Dividida => "dividida",
+            Self::Visual => "visual",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -88,10 +91,14 @@ impl View {
             "codigo" => Some(Self::Codigo),
             "lectura" => Some(Self::Lectura),
             "dividida" => Some(Self::Dividida),
+            "visual" => Some(Self::Visual),
             _ => None,
         }
     }
 }
+
+/// Espera después de un cambio en la vista Visual antes de llevarlo al texto.
+const VISUAL_SYNC: Duration = Duration::from_millis(300);
 
 /// Actualización de la vista formateada después de la última tecla (research R3).
 const RENDER_DELAY: Duration = Duration::from_millis(150);
@@ -102,6 +109,20 @@ struct Inner {
     code_scroller: gtk::ScrolledWindow,
     reader: reader::Reader,
     root: gtk::Paned,
+    /// `texto` (código y vista formateada) o `visual` (notas `.html`).
+    stack: gtk::Stack,
+    visual: html::Visual,
+    format: Cell<Format>,
+    /// Última vista usada por formato (FR-013).
+    md_pref: Cell<View>,
+    html_pref: Cell<View>,
+    /// La nota `.html` tiene JavaScript en el cuerpo: sin vista Visual.
+    html_scripts: Cell<bool>,
+    /// Hay cambios de la vista Visual que todavía no pasaron al texto.
+    visual_pending: Cell<bool>,
+    visual_gen: Cell<u64>,
+    /// Ignorar el cambio de vista del selector mientras se rearma.
+    switching: Cell<bool>,
     switcher: adw::ToggleGroup,
     mode: Cell<View>,
     render_generation: Cell<u64>,
@@ -183,19 +204,11 @@ impl Editor {
             }
         });
         let switcher = adw::ToggleGroup::new();
-        for (name, label, tip) in [
-            ("codigo", "Código", "Código (Ctrl+1)"),
-            ("lectura", "Lectura", "Lectura (Ctrl+2)"),
-            ("dividida", "Dividida", "Dividida (Ctrl+3)"),
-        ] {
-            switcher.add(
-                adw::Toggle::builder()
-                    .name(name)
-                    .label(label)
-                    .tooltip(tip)
-                    .build(),
-            );
-        }
+        fill_toggles(&switcher, Format::Md);
+        let visual = html::Visual::new();
+        let stack = gtk::Stack::new();
+        stack.add_named(&root, Some("texto"));
+        stack.add_named(visual.widget(), Some("visual"));
         switcher.add_css_class("round");
         switcher
             .upcast_ref::<gtk::Widget>()
@@ -206,6 +219,15 @@ impl Editor {
             code_scroller,
             reader,
             root,
+            stack,
+            visual,
+            format: Cell::new(Format::Md),
+            md_pref: Cell::new(View::Lectura),
+            html_pref: Cell::new(View::Visual),
+            html_scripts: Cell::new(false),
+            visual_pending: Cell::new(false),
+            visual_gen: Cell::new(0),
+            switching: Cell::new(false),
             switcher,
             mode: Cell::new(View::Codigo),
             render_generation: Cell::new(0),
@@ -236,8 +258,21 @@ impl Editor {
             if let (Some(inner), Some(v)) = (
                 weak.upgrade(),
                 g.active_name().and_then(|n| View::from_name(&n)),
-            ) {
+            ) && !inner.switching.get()
+            {
                 Editor(inner).set_view(v);
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.visual.set_on_input(move || {
+            if let Some(inner) = weak.upgrade() {
+                Editor(inner).visual_changed();
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.visual.set_on_error(move |msg| {
+            if let Some(inner) = weak.upgrade() {
+                Editor(inner).error(msg);
             }
         });
         let weak = Rc::downgrade(&this.0);
@@ -276,9 +311,9 @@ impl Editor {
         this
     }
 
-    /// El widget del editor: código y vista formateada en un panel.
-    pub fn widget(&self) -> &gtk::Paned {
-        &self.0.root
+    /// El widget del editor: código y vista formateada en un panel, o la vista Visual.
+    pub fn widget(&self) -> &gtk::Stack {
+        &self.0.stack
     }
 
     /// Selector de vista para la cabecera.
@@ -288,31 +323,85 @@ impl Editor {
 
     /// Cambia de vista (FR-008). Al pasar a Lectura o Dividida, la vista formateada se actualiza.
     pub fn set_view(&self, v: View) {
-        if self.0.mode.get() == v {
+        let i = &self.0;
+        let format = i.format.get();
+        // Ctrl+2 es Lectura en `.md` y Visual en `.html`; Dividida no existe en `.html`.
+        let v = match (format, v) {
+            (Format::Html, View::Lectura | View::Visual) => View::Visual,
+            (Format::Html, View::Dividida) => return,
+            (Format::Md, View::Visual) => View::Lectura,
+            (_, v) => v,
+        };
+        if v == View::Visual && i.html_scripts.get() {
+            self.error("Esta nota tiene JavaScript: editala en Código");
+            self.sync_switcher(i.mode.get());
             return;
         }
-        self.apply_mode(v);
-        if v != View::Codigo {
-            self.render_now();
+        if i.mode.get() == v {
+            return;
         }
-        if let Some(f) = self.0.on_view.borrow().as_ref() {
-            f(v);
+        match format {
+            Format::Md => i.md_pref.set(v),
+            Format::Html => i.html_pref.set(v),
+        }
+        if i.mode.get() == View::Visual {
+            // Lo último escrito en Visual pasa al texto antes de mostrar el código.
+            let this = self.clone();
+            glib::spawn_future_local(async move {
+                this.sync_visual().await;
+                this.enter(v);
+            });
+        } else {
+            self.enter(v);
+        }
+        if let Some(f) = i.on_view.borrow().as_ref() {
+            f(format, v);
         }
     }
 
-    /// Vista inicial (la última usada, FR-013), sin avisar el cambio.
-    pub fn set_initial_view(&self, v: View) {
+    fn enter(&self, v: View) {
         self.apply_mode(v);
+        match v {
+            View::Codigo => {}
+            View::Visual => self.show_visual(),
+            View::Lectura | View::Dividida => self.render_now(),
+        }
+    }
+
+    /// Vistas iniciales por formato (las últimas usadas, FR-013), sin avisar el cambio.
+    pub fn set_initial_views(&self, md: View, html: View) {
+        let i = &self.0;
+        i.md_pref.set(if md == View::Visual {
+            View::Lectura
+        } else {
+            md
+        });
+        i.html_pref.set(match html {
+            View::Codigo => View::Codigo,
+            _ => View::Visual,
+        });
+        if i.session.borrow().is_none() {
+            self.apply_mode(i.md_pref.get());
+        }
+    }
+
+    fn sync_switcher(&self, v: View) {
+        let i = &self.0;
+        if i.switcher.active_name().as_deref() != Some(v.name()) {
+            i.switching.set(true);
+            i.switcher.set_active_name(Some(v.name()));
+            i.switching.set(false);
+        }
     }
 
     fn apply_mode(&self, v: View) {
         let i = &self.0;
         i.mode.set(v);
+        i.stack
+            .set_visible_child_name(if v == View::Visual { "visual" } else { "texto" });
         i.code_scroller.set_visible(v != View::Lectura);
         i.reader.widget().set_visible(v != View::Codigo);
-        if i.switcher.active_name().as_deref() != Some(v.name()) {
-            i.switcher.set_active_name(Some(v.name()));
-        }
+        self.sync_switcher(v);
         if v == View::Dividida {
             let max = i.root.max_position();
             if max > 0 {
@@ -332,14 +421,14 @@ impl Editor {
     }
 
     /// Cambio de vista elegido por el usuario (para recordarlo).
-    pub fn set_on_view(&self, f: impl Fn(View) + 'static) {
+    pub fn set_on_view(&self, f: impl Fn(Format, View) + 'static) {
         *self.0.on_view.borrow_mut() = Some(Box::new(f));
     }
 
     /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
     pub fn render_now(&self) {
         let i = &self.0;
-        if i.mode.get() == View::Codigo || i.session.borrow().is_none() {
+        if !matches!(i.mode.get(), View::Lectura | View::Dividida) || i.session.borrow().is_none() {
             return;
         }
         let generation = i.render_generation.get() + 1;
@@ -456,6 +545,26 @@ impl Editor {
         let (session, text) = EditSession::open(note);
         let i = &self.0;
         i.reader.reset();
+        i.visual.forget();
+        i.visual_pending.set(false);
+        i.visual_gen.set(i.visual_gen.get() + 1);
+        if i.format.get() != note.format || i.switcher.n_toggles() == 0 {
+            i.switching.set(true);
+            fill_toggles(&i.switcher, note.format);
+            i.switching.set(false);
+        }
+        i.format.set(note.format);
+        let scripts =
+            note.format == Format::Html && orbital_vault::html_edit::body_has_scripts(&text);
+        i.html_scripts.set(scripts);
+        if let Some(t) = i.switcher.toggle_by_name("visual") {
+            t.set_enabled(!scripts);
+            t.set_tooltip(if scripts {
+                "Esta nota tiene JavaScript: editala en Código"
+            } else {
+                "Visual (Ctrl+2)"
+            });
+        }
         code::set_language(
             &i.buffer,
             match note.format {
@@ -478,7 +587,14 @@ impl Editor {
         meta.source = String::new();
         *i.meta.borrow_mut() = Some(meta);
         self.emit(&Status::Saved(None));
-        self.render_now();
+        let mut v = match note.format {
+            Format::Md => i.md_pref.get(),
+            Format::Html => i.html_pref.get(),
+        };
+        if v == View::Visual && (scripts || note.read_only) {
+            v = View::Codigo;
+        }
+        self.enter(v);
     }
 
     /// Cambia (o quita, con `None`) una propiedad sobre el texto del editor, no sobre el disco
@@ -514,7 +630,96 @@ impl Editor {
             i.reader.adopt_header(h);
         }
         replace_changed(b, &text, &new);
+        if i.mode.get() == View::Visual && rebuild {
+            self.visual_header();
+        }
         Ok(())
+    }
+
+    /// Un cambio en la vista Visual: pasa al texto 300 ms después del último.
+    fn visual_changed(&self) {
+        let i = &self.0;
+        i.visual_pending.set(true);
+        self.emit(&Status::Pending);
+        let generation = i.visual_gen.get() + 1;
+        i.visual_gen.set(generation);
+        let this = self.clone();
+        glib::timeout_add_local_once(VISUAL_SYNC, move || {
+            if this.0.visual_gen.get() == generation {
+                glib::spawn_future_local(async move { this.sync_visual().await });
+            }
+        });
+    }
+
+    /// Lleva lo de la vista Visual al texto: solo el `<body>` y el `<style data-orbital>` (FR-015).
+    async fn sync_visual(&self) {
+        let i = &self.0;
+        if !i.visual_pending.get() {
+            return;
+        }
+        let path = self.current_path();
+        let Some((body, css)) = i.visual.contents().await else {
+            return;
+        };
+        // La nota cambió mientras se leía la página: no se mezcla con la otra.
+        if self.current_path() != path || !i.visual_pending.get() {
+            return;
+        }
+        i.visual_pending.set(false);
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let Some(spliced) = orbital_vault::html_edit::splice_body(&text, &body) else {
+            self.error("La nota no tiene <body>: editala en Código");
+            return;
+        };
+        let new = orbital_vault::html_edit::upsert_orbital_style(&spliced, &css).unwrap_or(spliced);
+        if new != text {
+            replace_changed(b, &text, &new);
+        }
+        i.visual.mark_loaded(&new);
+    }
+
+    /// Muestra la vista Visual con el texto actual.
+    fn show_visual(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        if orbital_vault::html_edit::body_has_scripts(&text) {
+            i.html_scripts.set(true);
+            self.error("Esta nota tiene JavaScript: editala en Código");
+            self.set_view(View::Codigo);
+            return;
+        }
+        let (Some(vault), Some(path)) = (i.vault.borrow().clone(), self.current_path()) else {
+            return;
+        };
+        let file = path.to_path(vault.root());
+        let dir = file.parent().unwrap_or(vault.root());
+        i.visual.load(&text, dir, vault.root());
+        self.visual_header();
+    }
+
+    /// Las propiedades arriba de la vista Visual.
+    fn visual_header(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let note = i.meta.borrow().as_ref().and_then(|m| m.reparse(text).ok());
+        let Some(note) = note else { return };
+        let (entries, error) = match note.props {
+            Some(p) => (p.entries, p.error),
+            None => (Vec::new(), None),
+        };
+        let h = Header {
+            entries,
+            error,
+            read_only: note.read_only,
+        };
+        let w = match (i.on_header.borrow().as_ref(), self.current_path()) {
+            (Some(f), Some(path)) => f(&path, &h),
+            _ => None,
+        };
+        i.visual.set_header(w);
     }
 
     /// Deshace el último cambio si nada cambió después (para el «Deshacer» de quitar una propiedad).
@@ -599,6 +804,7 @@ impl Editor {
 
     /// Guarda ya lo pendiente y espera a que termine (FR-002).
     pub async fn flush(&self) {
+        self.sync_visual().await;
         // Si hay una escritura en curso, espera a que termine y vuelve a revisar.
         while self.0.saving.get() {
             glib::timeout_future(Duration::from_millis(20)).await;
@@ -782,4 +988,29 @@ fn replace_changed(b: &sourceview5::Buffer, old: &str, new: &str) {
     let mut at = b.iter_at_offset(start);
     b.insert(&mut at, &inserted);
     b.end_user_action();
+}
+
+/// Las vistas del selector según el formato de la nota.
+fn fill_toggles(group: &adw::ToggleGroup, format: Format) {
+    group.remove_all();
+    let toggles: &[(&str, &str, &str)] = match format {
+        Format::Md => &[
+            ("codigo", "Código", "Código (Ctrl+1)"),
+            ("lectura", "Lectura", "Lectura (Ctrl+2)"),
+            ("dividida", "Dividida", "Dividida (Ctrl+3)"),
+        ],
+        Format::Html => &[
+            ("codigo", "Código", "Código (Ctrl+1)"),
+            ("visual", "Visual", "Visual (Ctrl+2)"),
+        ],
+    };
+    for (name, label, tip) in toggles {
+        group.add(
+            adw::Toggle::builder()
+                .name(*name)
+                .label(*label)
+                .tooltip(*tip)
+                .build(),
+        );
+    }
 }

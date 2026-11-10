@@ -4,7 +4,9 @@
 //!   no consume nada si solo se usan notas `.md`.
 //! - Sesión de red efímera (nada en disco) y una política CSP que bloquea toda carga externa: solo
 //!   se permiten archivos locales y `data:` (principio V).
-//! - JavaScript apagado hasta que exista la especificación de aislamiento de las notas HTML.
+//! - El JavaScript de la nota nunca corre. La vista de lectura lo tiene apagado; la vista Visual
+//!   (002) lo enciende solo para el script propio de Orbital, en un *world* aislado, con
+//!   `enable-javascript-markup` apagado: los `<script>` de la nota se descartan al cargar.
 //! - Un enlace se abre en el navegador del sistema solo si el usuario hace clic.
 
 use gtk::{gdk, gio};
@@ -34,10 +36,22 @@ pub fn with_csp(html: &str) -> String {
     out
 }
 
-/// Crea la vista web, ya configurada.
+/// Crea la vista web de lectura, ya configurada.
 pub fn new_view() -> webkit6::WebView {
+    build(None)
+}
+
+/// Crea la vista web de edición (vista Visual): solo corre el script de Orbital, que se agrega
+/// en `content` en un *world* aislado (research R6 de la 002).
+pub fn new_editable_view(content: &webkit6::UserContentManager) -> webkit6::WebView {
+    let view = build(Some(content));
+    view.set_editable(true);
+    view
+}
+
+fn build(content: Option<&webkit6::UserContentManager>) -> webkit6::WebView {
     let settings = webkit6::Settings::new();
-    settings.set_enable_javascript(false);
+    settings.set_enable_javascript(content.is_some());
     settings.set_enable_javascript_markup(false);
     settings.set_enable_webaudio(false);
     settings.set_enable_webgl(false);
@@ -45,12 +59,15 @@ pub fn new_view() -> webkit6::WebView {
     settings.set_enable_page_cache(false);
     settings.set_allow_file_access_from_file_urls(false);
     let session = webkit6::NetworkSession::new_ephemeral();
-    let view = webkit6::WebView::builder()
+    let mut builder = webkit6::WebView::builder()
         .settings(&settings)
         .network_session(&session)
         .vexpand(true)
-        .hexpand(true)
-        .build();
+        .hexpand(true);
+    if let Some(c) = content {
+        builder = builder.user_content_manager(c);
+    }
+    let view = builder.build();
     // Fondo igual al de la app mientras carga.
     view.set_background_color(&gdk::RGBA::new(0.067, 0.067, 0.075, 1.0));
     view.connect_decide_policy(|_, decision, kind| {
