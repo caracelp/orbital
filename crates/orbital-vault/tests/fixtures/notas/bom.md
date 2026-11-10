@@ -1,0 +1,4 @@
+﻿---
+title: Con BOM
+---
+Texto.

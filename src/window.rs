@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use orbital_vault::{Entry, EntryKind, Vault};
+use orbital_vault::props::{PropValue, Warning};
+use orbital_vault::{Entry, EntryKind, Format, Note, Vault};
 
 use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
@@ -31,7 +32,10 @@ struct Inner {
     list_view: gtk::ListView,
     editor: gtk::TextView,
     content_stack: gtk::Stack,
-    vault: RefCell<Option<Rc<Vault>>>,
+    props_list: gtk::ListBox,
+    note_banner: adw::Banner,
+    current_note: RefCell<Option<Note>>,
+    vault: RefCell<Option<Arc<Vault>>>,
     tree: RefCell<Rc<Tree>>,
     /// Si es `false` (modo de captura), no se guarda el estado de la app.
     persist: Cell<bool>,
@@ -58,10 +62,23 @@ impl Window {
         editor.add_css_class("orbital-reader");
         editor.update_property(&[gtk::accessible::Property::Label("Contenido de la nota")]);
         // Ancho de lectura cómodo: la columna de texto no pasa de ~70 caracteres.
+        // Propiedades arriba del texto, como una lista de filas.
+        let props_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .margin_top(24)
+            .margin_start(12)
+            .margin_end(12)
+            .visible(false)
+            .build();
+        props_list.add_css_class("boxed-list");
+        props_list.update_property(&[gtk::accessible::Property::Label("Propiedades de la nota")]);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.append(&props_list);
+        column.append(&editor);
         let reader = adw::Clamp::builder()
             .maximum_size(720)
             .tightening_threshold(560)
-            .child(&editor)
+            .child(&column)
             .build();
         let editor_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -85,6 +102,9 @@ impl Window {
         content_header.set_title_widget(Some(&content_title));
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
+        // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
+        let note_banner = adw::Banner::builder().revealed(false).build();
+        content_view.add_top_bar(&note_banner);
         content_view.set_content(Some(&content_stack));
         let content_page = adw::NavigationPage::builder()
             .title("Nota")
@@ -170,6 +190,9 @@ impl Window {
             list_view,
             editor,
             content_stack,
+            props_list,
+            note_banner,
+            current_note: RefCell::new(None),
             vault: RefCell::new(None),
             tree: RefCell::new(Rc::new(Tree::new())),
             persist: Cell::new(true),
@@ -213,6 +236,12 @@ impl Window {
                 }
             })
             .build();
+        let complete_type = gio::ActionEntry::builder("complete-type")
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, _| this.complete_type()
+            })
+            .build();
         let shortcuts = gio::ActionEntry::builder("shortcuts")
             .activate({
                 let this = self.clone();
@@ -221,7 +250,7 @@ impl Window {
             .build();
         self.0
             .window
-            .add_action_entries([open, open_as, complete, shortcuts]);
+            .add_action_entries([open, open_as, complete, complete_type, shortcuts]);
         app.set_accels_for_action("win.open", &["<Control>o"]);
         app.set_accels_for_action("win.open-as", &["<Control><Shift>o"]);
         app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
@@ -438,7 +467,7 @@ impl Window {
 
         let tree = Rc::new(tree);
         *i.tree.borrow_mut() = tree.clone();
-        *i.vault.borrow_mut() = Some(Rc::new(vault));
+        *i.vault.borrow_mut() = Some(Arc::new(vault));
 
         let root = children_model(&tree, "");
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -466,18 +495,30 @@ impl Window {
         }
     }
 
-    /// Muestra una nota o un archivo de texto (solo lectura hasta la historia US3).
+    /// Muestra una nota (propiedades + texto) o un archivo de texto.
     fn show_entry(&self, entry: Arc<Entry>) {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
         let this = self.clone();
-        let abs = entry.path.to_path(vault.root());
         glib::spawn_future_local(async move {
-            let text = if entry.kind.is_text() {
+            let is_note = Format::from_name(entry.path.file_name()).is_some();
+            let loaded = if is_note {
+                let (v, p) = (vault.clone(), entry.path.clone());
+                match gio::spawn_blocking(move || v.read_note(&p)).await {
+                    Ok(Ok(note)) => Ok(Some(note)),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("No se pudo leer la nota".to_owned()),
+                }
+            } else if entry.kind.is_text() {
+                let abs = entry.path.to_path(vault.root());
                 gio::spawn_blocking(move || read_text(&abs))
                     .await
                     .unwrap_or_else(|_| Err("No se pudo leer el archivo".into()))
+                    .map(|t| {
+                        this.0.editor.buffer().set_text(&t);
+                        None
+                    })
             } else {
                 Err("Este archivo no es una nota de texto".into())
             };
@@ -488,12 +529,101 @@ impl Window {
                 subtitle.push_str(" · solo lectura");
             }
             i.content_title.set_subtitle(&subtitle);
-            match text {
-                Ok(t) => i.editor.buffer().set_text(&t),
+            this.clear_note_view();
+            match loaded {
+                Ok(Some(note)) => this.show_note(note),
+                Ok(None) => {}
                 Err(msg) => i.editor.buffer().set_text(&msg),
             }
             i.content_stack.set_visible_child_name("nota");
             i.split.set_show_content(true);
+        });
+    }
+
+    fn clear_note_view(&self) {
+        let i = &self.0;
+        i.props_list.remove_all();
+        i.props_list.set_visible(false);
+        i.note_banner.set_revealed(false);
+        i.note_banner.set_button_label(None);
+        i.note_banner.set_action_name(None);
+        *i.current_note.borrow_mut() = None;
+    }
+
+    /// Dibuja las propiedades, los avisos y el texto de una nota.
+    fn show_note(&self, note: Note) {
+        let i = &self.0;
+        let error = note.props.as_ref().and_then(|b| b.error.clone());
+        if let Some(err) = &error {
+            // Propiedades inválidas: se muestra todo el archivo tal cual y no se edita nada.
+            i.note_banner.set_title(&format!(
+                "Las propiedades tienen un error en la línea {}: {}",
+                err.line, err.message
+            ));
+            i.note_banner.set_revealed(true);
+            i.editor.buffer().set_text(&note.source);
+        } else {
+            if let Some(block) = &note.props {
+                for e in &block.entries {
+                    let row = adw::ActionRow::builder()
+                        .title(&e.key)
+                        .subtitle(glib::markup_escape_text(&display(&e.value)).as_str())
+                        .subtitle_selectable(true)
+                        .build();
+                    row.add_css_class("property");
+                    i.props_list.append(&row);
+                }
+                i.props_list.set_visible(!block.entries.is_empty());
+            }
+            let warnings = note.warnings();
+            if warnings.contains(&Warning::MissingType) && !note.read_only {
+                i.note_banner.set_title(&Warning::MissingType.message());
+                i.note_banner.set_button_label(Some("Completar"));
+                i.note_banner.set_action_name(Some("win.complete-type"));
+                i.note_banner.set_revealed(true);
+            } else if let Some(w) = warnings.first() {
+                i.note_banner.set_title(&w.message());
+                i.note_banner.set_revealed(true);
+            }
+            i.editor.buffer().set_text(note.body());
+        }
+        *i.current_note.borrow_mut() = Some(note);
+    }
+
+    /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió.
+    fn complete_type(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let Some(note) = self.0.current_note.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let value = PropValue::Text(
+                match note.format {
+                    Format::Md => "atomo",
+                    Format::Html => "sintesis",
+                }
+                .to_owned(),
+            );
+            let path = note.path.clone();
+            let v = vault.clone();
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(v.config()));
+                v.set_prop(&note, "type", &value, &ctx)?;
+                v.read_note(&note.path)
+            })
+            .await;
+            match result {
+                Ok(Ok(fresh)) => {
+                    this.clear_note_view();
+                    this.show_note(fresh);
+                    this.toast(&format!("Se agregó «type» a {path}"));
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo guardar la nota"),
+            }
         });
     }
 
@@ -640,4 +770,24 @@ fn save_state_opened(path: PathBuf) {
         })
         .await;
     });
+}
+
+/// Texto legible de un valor de propiedad.
+fn display(v: &PropValue) -> String {
+    match v {
+        PropValue::Null => "—".to_owned(),
+        PropValue::Text(s)
+        | PropValue::Link(s)
+        | PropValue::Number(s)
+        | PropValue::Date(s)
+        | PropValue::DateTime(s) => s.clone(),
+        PropValue::Bool(true) => "Sí".to_owned(),
+        PropValue::Bool(false) => "No".to_owned(),
+        PropValue::List(items) => items.iter().map(display).collect::<Vec<_>>().join(", "),
+        PropValue::Map(items) => items
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", display(v)))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    }
 }

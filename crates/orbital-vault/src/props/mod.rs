@@ -59,3 +59,107 @@ pub struct PropError {
 pub fn find<'a>(entries: &'a [PropEntry], key: &str) -> Option<&'a PropEntry> {
     entries.iter().find(|e| e.key == key)
 }
+
+/// Bloque de propiedades de una nota.
+#[derive(Clone, PartialEq, Debug)]
+pub struct PropBlock {
+    /// Rango en bytes del YAML dentro del archivo: entre las líneas `---` en `.md`, o el
+    /// contenido de `<script type="application/yaml">` en `.html`.
+    pub region: Range<usize>,
+    /// Propiedades en el orden del archivo. Vacío si hay un error.
+    pub entries: Vec<PropEntry>,
+    /// Error de sintaxis; mientras exista, las propiedades no se pueden editar (FR-029).
+    pub error: Option<PropError>,
+}
+
+/// Aviso no bloqueante sobre las propiedades (nunca impide editar).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Warning {
+    /// Nota de `wiki/` sin `type` (OKF §4.1).
+    MissingType,
+    /// Una propiedad conocida tiene un tipo distinto del esperado.
+    UnexpectedType { key: String },
+    /// `status` fuera de `draft | stable | deprecated` (OKF §5.4).
+    InvalidStatus(String),
+    /// La misma clave aparece más de una vez; vale la primera.
+    DuplicateKey(String),
+    /// La nota HTML tiene más de un bloque de propiedades; vale el primero.
+    ExtraBlocks(usize),
+}
+
+impl Warning {
+    /// Mensaje en español para la interfaz.
+    pub fn message(&self) -> String {
+        match self {
+            Self::MissingType => "Esta nota no tiene «type» (OKF)".into(),
+            Self::UnexpectedType { key } => {
+                format!("La propiedad «{key}» tiene un tipo inesperado")
+            }
+            Self::InvalidStatus(v) => {
+                format!("«status: {v}» no es válido; se usa draft, stable o deprecated")
+            }
+            Self::DuplicateKey(k) => format!("La propiedad «{k}» está repetida; vale la primera"),
+            Self::ExtraBlocks(n) => {
+                format!("Hay {n} bloques de propiedades de más; vale el primero")
+            }
+        }
+    }
+}
+
+fn is_text(v: &PropValue) -> bool {
+    matches!(v, PropValue::Text(_) | PropValue::Link(_))
+}
+
+fn is_text_list(v: &PropValue) -> bool {
+    matches!(v, PropValue::List(items) if items.iter().all(is_text))
+}
+
+fn is_event(v: &PropValue) -> bool {
+    matches!(v, PropValue::Map(_))
+}
+
+/// Avisos sobre las propiedades conocidas (data-model, tabla de propiedades).
+pub fn validate(entries: &[PropEntry], in_wiki: bool) -> Vec<Warning> {
+    let mut out = Vec::new();
+    let mut seen: Vec<&str> = Vec::with_capacity(entries.len());
+    for e in entries {
+        if seen.contains(&e.key.as_str()) {
+            out.push(Warning::DuplicateKey(e.key.clone()));
+            continue;
+        }
+        seen.push(&e.key);
+        let v = &e.value;
+        let ok = match e.key.as_str() {
+            "type" | "title" | "description" | "resource" => is_text(v),
+            "tags" | "aliases" => is_text_list(v),
+            "status" => match v.as_text() {
+                Some("draft" | "stable" | "deprecated") => true,
+                Some(other) => {
+                    out.push(Warning::InvalidStatus(other.to_owned()));
+                    continue;
+                }
+                None => false,
+            },
+            "sources" => matches!(v, PropValue::List(items) if items.iter().all(is_event)),
+            "generated" => is_event(v),
+            // Un mapeo suelto vale como lista de uno (OKF §5.2).
+            "verified" => {
+                is_event(v) || matches!(v, PropValue::List(items) if items.iter().all(is_event))
+            }
+            "stale_after" | "created" | "updated" => matches!(v, PropValue::DateTime(_)),
+            "archived" => matches!(v, PropValue::Bool(_)),
+            _ => true,
+        };
+        if !ok && *v != PropValue::Null {
+            out.push(Warning::UnexpectedType { key: e.key.clone() });
+        }
+    }
+    if in_wiki
+        && !entries
+            .iter()
+            .any(|e| e.key == "type" && e.value != PropValue::Null)
+    {
+        out.push(Warning::MissingType);
+    }
+    out
+}

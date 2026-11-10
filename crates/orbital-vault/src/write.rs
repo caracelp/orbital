@@ -157,6 +157,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<AtomicOutcome> {
     result.map(|()| outcome)
 }
 
+/// Crea un archivo nuevo sin sincronizarlo (falla si ya existe).
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?
+        .write_all(bytes)
+}
+
 /// Carpeta propia de Orbital dentro de la bóveda.
 pub const ORBITAL_DIR: &str = ".orbital";
 
@@ -203,7 +212,9 @@ pub fn backup(
         }
         n += 1;
     };
-    atomic_write(&copy, old)?;
+    // El respaldo no se sincroniza con fsync: la nota se escribe después de forma atómica, así
+    // que un corte nunca deja la nota a medias aunque el respaldo no haya llegado al disco.
+    write_new(&copy, old)?;
 
     let meta = emit::document(
         &[
@@ -219,7 +230,7 @@ pub fn backup(
     );
     let mut meta_path = copy.clone().into_os_string();
     meta_path.push(".yaml");
-    atomic_write(Path::new(&meta_path), meta.as_bytes())?;
+    write_new(Path::new(&meta_path), meta.as_bytes())?;
     Ok(copy)
 }
 

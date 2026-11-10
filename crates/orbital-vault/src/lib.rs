@@ -10,6 +10,7 @@ pub mod config;
 pub mod entry;
 pub mod error;
 pub mod links;
+pub mod note;
 pub mod okf_files;
 pub mod props;
 pub mod scan;
@@ -20,6 +21,7 @@ pub mod write;
 pub use config::{LinkStyle, VaultConfig};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
+pub use note::{Format, Note};
 pub use vault::{
     Creation, CreationKind, Layout, OpenAsPlan, Presence, Vault, apply_open_as, open, plan_open_as,
 };

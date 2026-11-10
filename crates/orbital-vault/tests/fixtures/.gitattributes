@@ -1,0 +1,2 @@
+# Los fixtures se comparan byte a byte: git no tiene que tocar finales de línea ni codificación.
+* -text

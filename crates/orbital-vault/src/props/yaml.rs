@@ -62,7 +62,12 @@ pub fn parse_block(text: &str) -> Result<Vec<PropEntry>, PropError> {
             }
             ev => {
                 if let Some(value) = builder.push(ev) {
-                    let (key, key_line) = pending_key.take().expect("valor sin clave");
+                    let Some((key, key_line)) = pending_key.take() else {
+                        return Err(PropError {
+                            line: line + 1,
+                            message: "hay un valor sin clave".into(),
+                        });
+                    };
                     top.push((key, value, key_line));
                 }
             }
@@ -71,16 +76,15 @@ pub fn parse_block(text: &str) -> Result<Vec<PropEntry>, PropError> {
 
     let lines = line_table(text);
     let n_lines = lines.len();
+    let starts: Vec<usize> = top.iter().map(|t| t.2).collect();
     let mut out = Vec::with_capacity(top.len());
-    for i in 0..top.len() {
-        let start = top[i].2;
-        let mut end = top.get(i + 1).map_or(n_lines, |t| t.2);
+    for (i, (key, value, start)) in top.into_iter().enumerate() {
+        let mut end = starts.get(i + 1).copied().unwrap_or(n_lines);
         // Las líneas en blanco y los comentarios en la columna 0 al final del rango pertenecen a
         // lo que sigue, no a esta propiedad.
         while end > start + 1 && is_trailing_filler(line_text(text, &lines, end - 1)) {
             end -= 1;
         }
-        let (key, value, _) = std::mem::replace(&mut top[i], (String::new(), PropValue::Null, 0));
         out.push(PropEntry {
             key,
             value,
