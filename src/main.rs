@@ -2,6 +2,7 @@ mod html_view;
 mod open_dialog;
 mod state;
 mod style;
+mod watcher;
 mod window;
 mod write_ctx;
 

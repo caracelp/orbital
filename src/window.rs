@@ -18,6 +18,7 @@ use webkit6::prelude::*;
 use crate::html_view;
 use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
+use crate::watcher::{Batch, Watcher};
 use crate::write_ctx;
 
 /// Hijos de cada carpeta (`""` = raíz), ordenados: primero carpetas, después archivos.
@@ -50,6 +51,10 @@ struct Inner {
     tree: RefCell<Rc<Tree>>,
     /// Si es `false` (modo de captura), no se guarda el estado de la app.
     persist: Cell<bool>,
+    watcher: RefCell<Option<Watcher>>,
+    /// La carpeta de la bóveda dejó de estar disponible (disco desconectado).
+    gone: Cell<bool>,
+    gone_banner: adw::Banner,
 }
 
 /// Ventana de Orbital.
@@ -206,6 +211,12 @@ impl Window {
         let sidebar_view = adw::ToolbarView::new();
         sidebar_view.add_top_bar(&sidebar_header);
         sidebar_view.add_top_bar(&banner);
+        let gone_banner = adw::Banner::builder()
+            .title("La bóveda no está disponible. Orbital no va a escribir nada.")
+            .revealed(true)
+            .visible(false)
+            .build();
+        sidebar_view.add_top_bar(&gone_banner);
         sidebar_view.set_content(Some(&sidebar_scroll));
         let sidebar_page = adw::NavigationPage::builder()
             .title("Bóveda")
@@ -272,6 +283,9 @@ impl Window {
             vault: RefCell::new(None),
             tree: RefCell::new(Rc::new(Tree::new())),
             persist: Cell::new(true),
+            watcher: RefCell::new(None),
+            gone: Cell::new(false),
+            gone_banner,
         }));
         this.setup_actions(app);
         let content = this.0.content_stack.clone();
@@ -607,6 +621,23 @@ impl Window {
 
         let tree = Rc::new(tree);
         *i.tree.borrow_mut() = tree.clone();
+        let folders: Vec<PathBuf> = vault
+            .entries()
+            .iter()
+            .filter(|e| e.kind == EntryKind::Folder)
+            .map(|e| e.path.to_path(vault.root()))
+            .collect();
+        let this = self.clone();
+        *i.watcher.borrow_mut() =
+            Some(Watcher::new(
+                vault.root(),
+                folders.into_iter(),
+                move |b| match b {
+                    Batch::Changed(paths) => this.on_disk_changes(paths),
+                    Batch::Gone => this.vault_gone(),
+                },
+            ));
+        self.set_gone(false);
         *i.vault.borrow_mut() = Some(Arc::new(vault));
 
         let root = children_model(&tree, "");
@@ -1245,6 +1276,116 @@ impl Window {
             true
         });
         target.add_controller(drop);
+    }
+
+    /// Otro programa cambió archivos: si de verdad cambió algo, vuelve a leer la bóveda y deja
+    /// abierta la misma nota (FR-030). Como todavía no hay editor, nunca hay cambios locales que
+    /// se puedan perder.
+    fn on_disk_changes(&self, paths: Vec<PathBuf>) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let changes = gio::spawn_blocking(move || vault.on_external_change(&paths))
+                .await
+                .unwrap_or_default();
+            if changes.is_empty() {
+                return;
+            }
+            let current = this
+                .0
+                .current_entry
+                .borrow()
+                .as_ref()
+                .map(|e| e.path.clone());
+            let removed = current.as_ref().is_some_and(|c| {
+                changes
+                    .iter()
+                    .any(|ch| matches!(ch, orbital_vault::ExternalChange::Removed(p) if p == c))
+            });
+            if removed {
+                this.reload(None).await;
+                this.toast("La nota abierta se borró o se movió desde otro programa");
+            } else {
+                this.reload(current).await;
+            }
+        });
+    }
+
+    /// La carpeta de la bóveda desapareció: solo lectura hasta que vuelva.
+    fn vault_gone(&self) {
+        if self.0.gone.get() {
+            return;
+        }
+        self.set_gone(true);
+        let Some(root) = self
+            .0
+            .vault
+            .borrow()
+            .as_ref()
+            .map(|v| v.root().to_path_buf())
+        else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            // Revisa cada 2 s (fuera del hilo principal: un disco de red puede tardar) si volvió.
+            loop {
+                glib::timeout_future_seconds(2).await;
+                let r = root.clone();
+                if gio::spawn_blocking(move || r.is_dir())
+                    .await
+                    .unwrap_or(false)
+                {
+                    let current = this
+                        .0
+                        .current_entry
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.path.clone());
+                    this.reload(current).await;
+                    this.toast("La bóveda volvió a estar disponible");
+                    return;
+                }
+                if !this.0.gone.get() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Activa o desactiva el modo «bóveda no disponible».
+    fn set_gone(&self, gone: bool) {
+        self.0.gone.set(gone);
+        self.0.gone_banner.set_visible(gone);
+        for name in [
+            "rename",
+            "trash",
+            "archive",
+            "paste-image",
+            "new-note",
+            "new-html",
+            "journal",
+            "new-from-template",
+            "complete-type",
+            "complete-structure",
+        ] {
+            if let Some(a) = self
+                .0
+                .window
+                .lookup_action(name)
+                .and_downcast::<gio::SimpleAction>()
+            {
+                a.set_enabled(!gone);
+            }
+        }
+        if gone {
+            self.0.list_view.announce(
+                "La bóveda no está disponible",
+                gtk::AccessibleAnnouncementPriority::High,
+            );
+        }
     }
 
     /// Avisa con un botón «Deshacer» que ejecuta `undo`.

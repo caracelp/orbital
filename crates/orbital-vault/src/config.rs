@@ -89,6 +89,14 @@ impl VaultConfig {
         c
     }
 
+    /// Guarda la configuración en `.orbital/config.yaml` (creando `.orbital/` si hace falta), de
+    /// forma atómica. Es la única escritura que Orbital hace en `.orbital/` fuera de los respaldos.
+    pub fn save(&self, root: &Path) -> std::io::Result<()> {
+        let dir = root.join(ORBITAL_DIR);
+        fs::create_dir_all(&dir)?;
+        crate::write::atomic_write(&dir.join(CONFIG_FILE), self.to_yaml().as_bytes()).map(|_| ())
+    }
+
     /// Representación YAML completa.
     pub fn to_yaml(&self) -> String {
         let mut entries = vec![

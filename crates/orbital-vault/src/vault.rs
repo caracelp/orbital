@@ -204,3 +204,48 @@ pub fn apply_open_as(root: &Path, plan: &OpenAsPlan, ctx: &WriteCtx) -> Result<V
     }
     open(root)
 }
+
+/// Un cambio hecho por otro programa (FR-030).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExternalChange {
+    Added(RelPath),
+    Modified(RelPath),
+    Removed(RelPath),
+}
+
+impl Vault {
+    /// Compara `paths` (rutas absolutas avisadas por el monitor de archivos) con lo que se leyó
+    /// al abrir la bóveda. Ignora los elementos ocultos (`.orbital/`, temporales) y lo que no
+    /// cambió: así, las escrituras propias no se reportan una vez que la bóveda se volvió a leer.
+    pub fn on_external_change(&self, paths: &[PathBuf]) -> Vec<ExternalChange> {
+        let mut out = Vec::new();
+        for abs in paths {
+            let Ok(rel_path) = abs.strip_prefix(&self.root) else {
+                continue;
+            };
+            let Ok(rel) = RelPath::from_path(rel_path) else {
+                continue;
+            };
+            if rel.as_str().split('/').any(|c| c.starts_with('.')) {
+                continue;
+            }
+            let known = self.entries.iter().find(|e| e.path == rel);
+            let change = match (fs::metadata(abs), known) {
+                (Err(_), Some(_)) => Some(ExternalChange::Removed(rel)),
+                (Err(_), None) => None,
+                (Ok(_), None) => Some(ExternalChange::Added(rel)),
+                (Ok(m), Some(e)) if m.is_dir() => {
+                    (e.kind != crate::EntryKind::Folder).then_some(ExternalChange::Modified(rel))
+                }
+                (Ok(m), Some(e)) => (m.len() != e.size || m.modified().ok() != e.mtime)
+                    .then_some(ExternalChange::Modified(rel)),
+            };
+            if let Some(c) = change
+                && !out.contains(&c)
+            {
+                out.push(c);
+            }
+        }
+        out
+    }
+}

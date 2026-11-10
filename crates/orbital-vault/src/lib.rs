@@ -28,6 +28,7 @@ pub use links::Resolution;
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
 pub use vault::{
-    Creation, CreationKind, Layout, OpenAsPlan, Presence, Vault, apply_open_as, open, plan_open_as,
+    Creation, CreationKind, ExternalChange, Layout, OpenAsPlan, Presence, Vault, apply_open_as,
+    open, plan_open_as,
 };
 pub use write::{Actor, Date, Offset, Time, WriteCtx, WriteReceipt};

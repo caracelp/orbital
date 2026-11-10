@@ -129,7 +129,7 @@ def main():
         print(f"Escribí {sys.argv[4]!r} en {node.get_name()!r}")
     elif cmd == "texto":
         t = node.get_text_iface()
-        print(t.get_text(0, t.get_character_count()) if t else node.get_name())
+        print(Atspi.Text.get_text(t, 0, Atspi.Text.get_character_count(t)) if t else node.get_name())
     return 0
 
 
