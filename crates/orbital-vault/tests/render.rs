@@ -48,6 +48,41 @@ fn doc() -> Vec<orbital_vault::render::Block> {
 }
 
 #[test]
+fn wikilinks_in_render() {
+    let md = "Texto con [[Entropía]] y con [[Física|La física]] y [[Nota#Encabezado]].";
+    let blocks = render_markdown(md).blocks;
+    let BlockKind::Paragraph(p) = &blocks[0].kind else {
+        panic!()
+    };
+    assert_eq!(p.len(), 7);
+    assert_eq!(p[0], Inline::Text("Texto con ".into()));
+    assert_eq!(
+        p[1],
+        Inline::Link {
+            url: "[[Entropía]]".into(),
+            children: vec![Inline::Text("Entropía".into())],
+        }
+    );
+    assert_eq!(p[2], Inline::Text(" y con ".into()));
+    assert_eq!(
+        p[3],
+        Inline::Link {
+            url: "[[Física|La física]]".into(),
+            children: vec![Inline::Text("La física".into())],
+        }
+    );
+    assert_eq!(p[4], Inline::Text(" y ".into()));
+    assert_eq!(
+        p[5],
+        Inline::Link {
+            url: "[[Nota#Encabezado]]".into(),
+            children: vec![Inline::Text("Nota#Encabezado".into())],
+        }
+    );
+    assert_eq!(p[6], Inline::Text(".".into()));
+}
+
+#[test]
 fn headings_and_inlines() {
     let b = doc();
     match &b[0].kind {

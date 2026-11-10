@@ -99,6 +99,7 @@ fn js_string(s: &str) -> String {
 
 type Callback = Box<dyn Fn()>;
 type ErrorFn = Box<dyn Fn(&str)>;
+type LinkFn = Box<dyn Fn(&str)>;
 
 struct Inner {
     root: gtk::Box,
@@ -111,6 +112,7 @@ struct Inner {
     loaded: Cell<Option<u64>>,
     on_input: RefCell<Option<Callback>>,
     on_error: RefCell<Option<ErrorFn>>,
+    on_link: RefCell<Option<LinkFn>>,
 }
 
 #[derive(Clone)]
@@ -140,6 +142,7 @@ impl Visual {
             loaded: Cell::new(None),
             on_input: RefCell::new(None),
             on_error: RefCell::new(None),
+            on_link: RefCell::new(None),
         }))
     }
 
@@ -150,6 +153,11 @@ impl Visual {
     /// El usuario cambió algo en la página.
     pub fn set_on_input(&self, f: impl Fn() + 'static) {
         *self.0.on_input.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// El usuario hizo clic en un enlace en la página.
+    pub fn set_on_link(&self, f: impl Fn(&str) + 'static) {
+        *self.0.on_link.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn set_on_error(&self, f: impl Fn(&str) + 'static) {
@@ -197,7 +205,15 @@ impl Visual {
                 f();
             }
         });
-        let web = crate::html_view::new_editable_view(&content);
+        let weak_link = Rc::downgrade(&self.0);
+        let link_handler: crate::html_view::LinkHandler = Rc::new(move |url| {
+            if let Some(i) = weak_link.upgrade()
+                && let Some(f) = i.on_link.borrow().as_ref()
+            {
+                f(url);
+            }
+        });
+        let web = crate::html_view::new_editable_view(&content, Some(link_handler));
         web.update_property(&[gtk::accessible::Property::Label(
             "Página editable de la nota",
         )]);

@@ -35,6 +35,13 @@ const ATTACH_BATCH: usize = 8;
 type ToggleFn = Box<dyn Fn(usize)>;
 type LinkFn = Box<dyn Fn(&str)>;
 
+#[derive(Clone)]
+struct LinkItem {
+    url: String,
+    start: gtk::TextMark,
+    end: gtk::TextMark,
+}
+
 /// Lo que la vista guarda de cada bloque de primer nivel.
 struct BlockInfo {
     hash: u64,
@@ -46,6 +53,10 @@ struct BlockInfo {
     base: Rc<Cell<usize>>,
     /// Etiquetas propias del bloque (enlaces, plegado, tablas): se quitan con el bloque.
     tags: Vec<gtk::TextTag>,
+    /// Texto plano del encabezado si el bloque es un título.
+    heading: Option<String>,
+    /// Enlaces contenidos en el bloque (para navegación por teclado).
+    links: Vec<LinkItem>,
 }
 
 struct Inner {
@@ -57,6 +68,7 @@ struct Inner {
     /// Hash del frontmatter mostrado arriba (`None`: sin mostrar todavía).
     header: Cell<Option<u64>>,
     links: RefCell<HashMap<gtk::TextTag, String>>,
+    focused_link: Cell<Option<usize>>,
     /// Etiquetas con sangría: (etiqueta, sangría extra en píxeles).
     indents: RefCell<Vec<(gtk::TextTag, i32)>>,
     side: Cell<i32>,
@@ -114,6 +126,7 @@ impl Reader {
         let view = gtk::TextView::builder()
             .editable(false)
             .cursor_visible(false)
+            .focusable(true)
             .wrap_mode(gtk::WrapMode::WordChar)
             .top_margin(28)
             .bottom_margin(64)
@@ -136,6 +149,7 @@ impl Reader {
             blocks: RefCell::new(Vec::new()),
             header: Cell::new(None),
             links: RefCell::new(HashMap::new()),
+            focused_link: Cell::new(None),
             indents: RefCell::new(Vec::new()),
             side: Cell::new(12),
             width: Cell::new(120),
@@ -299,6 +313,11 @@ impl Reader {
             .underline(pango::Underline::Single)
             .build());
         add(gtk::TextTag::builder()
+            .name("link-focused")
+            .background(crate::style::ACCENT_BG.hex())
+            .foreground(crate::style::ACCENT_FG.hex())
+            .build());
+        add(gtk::TextTag::builder()
             .name("dim")
             .foreground("rgba(255,255,255,0.70)")
             .build());
@@ -400,11 +419,43 @@ impl Reader {
         h.connect_page_size_notify(move |a| apply(a.page_size()));
     }
 
+    fn all_link_items(&self) -> Vec<LinkItem> {
+        self.0
+            .blocks
+            .borrow()
+            .iter()
+            .flat_map(|b| b.links.iter().cloned())
+            .collect()
+    }
+
+    fn set_focused_link(&self, next: Option<usize>) {
+        let i = &self.0;
+        let buf = self.buffer();
+        if let Some(tag) = buf.tag_table().lookup("link-focused") {
+            let (start, end) = buf.bounds();
+            buf.remove_tag(&tag, &start, &end);
+        }
+        i.focused_link.set(next);
+        if let Some(idx) = next {
+            let items = self.all_link_items();
+            if let Some(item) = items.get(idx) {
+                let start = buf.iter_at_mark(&item.start);
+                let end = buf.iter_at_mark(&item.end);
+                if let Some(tag) = buf.tag_table().lookup("link-focused") {
+                    buf.apply_tag(&tag, &start, &end);
+                }
+                let mut it = start;
+                i.view.scroll_to_iter(&mut it, 0.1, false, 0.0, 0.0);
+            }
+        }
+    }
+
     fn setup_links(&self) {
         let click = gtk::GestureClick::new();
         let weak = Rc::downgrade(&self.0);
         click.connect_released(move |g, _, x, y| {
             let Some(i) = weak.upgrade() else { return };
+            Reader(i.clone()).set_focused_link(None);
             let (bx, by) =
                 i.view
                     .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
@@ -421,6 +472,59 @@ impl Reader {
             }
         });
         self.0.view.add_controller(click);
+
+        let key = gtk::EventControllerKey::new();
+        let weak_key = Rc::downgrade(&self.0);
+        key.connect_key_pressed(move |_, keyval, _, state| {
+            let Some(i) = weak_key.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let reader = Reader(i.clone());
+            let items = reader.all_link_items();
+            if items.is_empty() {
+                return glib::Propagation::Proceed;
+            }
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if keyval == gtk::gdk::Key::Tab || keyval == gtk::gdk::Key::ISO_Left_Tab {
+                let cur = i.focused_link.get();
+                let next = if is_shift {
+                    match cur {
+                        None => Some(items.len().saturating_sub(1)),
+                        Some(0) => None,
+                        Some(idx) => Some(idx.saturating_sub(1)),
+                    }
+                } else {
+                    match cur {
+                        None => Some(0),
+                        Some(idx) if idx + 1 < items.len() => Some(idx + 1),
+                        Some(_) => None,
+                    }
+                };
+                reader.set_focused_link(next);
+                if next.is_some() {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            } else if (keyval == gtk::gdk::Key::Return
+                || keyval == gtk::gdk::Key::KP_Enter
+                || keyval == gtk::gdk::Key::space)
+                && let Some(idx) = i.focused_link.get()
+                && let Some(item) = items.get(idx)
+            {
+                let url = item.url.clone();
+                if let Some(f) = i.on_link.borrow().as_ref() {
+                    f(&url);
+                }
+                glib::Propagation::Stop
+            } else if keyval == gtk::gdk::Key::Escape && i.focused_link.get().is_some() {
+                reader.set_focused_link(None);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.0.view.add_controller(key);
     }
 
     /// Vuelca un documento. `header` arma las propiedades (solo se llama si cambiaron);
@@ -482,6 +586,7 @@ impl Reader {
             base_dir,
             tags: RefCell::new(Vec::new()),
             links: RefCell::new(Vec::new()),
+            link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
         });
@@ -528,6 +633,7 @@ impl Reader {
     /// Pone en la vista el buffer armado por `rebuild` y suelta lo anterior.
     fn swap_in(&self, s: &RenderState, blocks: Vec<BlockInfo>, header_hash: u64) {
         let i = &self.0;
+        i.focused_link.set(None);
         let table = s.buffer.tag_table();
         let mut links = i.links.borrow_mut();
         for b in i.blocks.borrow_mut().drain(..) {
@@ -572,9 +678,11 @@ impl Reader {
             base_dir,
             tags: RefCell::new(Vec::new()),
             links: RefCell::new(Vec::new()),
+            link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
         };
+        i.focused_link.set(None);
         let mut old = std::mem::take(&mut *i.blocks.borrow_mut());
         let suffix = old.split_off(old.len() - s);
         let removed = old.split_off(p);
@@ -592,6 +700,10 @@ impl Reader {
                 for t in &b.tags {
                     links.remove(t);
                     table.remove(t);
+                }
+                for item in &b.links {
+                    buffer.delete_mark(&item.start);
+                    buffer.delete_mark(&item.end);
                 }
                 buffer.delete_mark(&b.mark);
             }
@@ -650,6 +762,21 @@ impl Reader {
         }
     }
 
+    /// Desplaza la vista hasta el encabezado con el texto indicado. Devuelve si lo encontró.
+    pub fn scroll_to_heading(&self, heading: &str) -> bool {
+        let wanted = heading.trim().to_lowercase();
+        let blocks = self.0.blocks.borrow();
+        for b in blocks.iter() {
+            if let Some(h) = &b.heading
+                && h.trim().to_lowercase() == wanted
+            {
+                self.0.view.scroll_to_mark(&b.mark, 0.0, true, 0.0, 0.0);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Un widget anclado que sigue el ancho de la columna (sin fijar un mínimo mayor que el panel).
     fn track_wide(&self, w: &gtk::Widget) {
         w.set_size_request(self.0.width.get(), -1);
@@ -683,12 +810,18 @@ impl Reader {
         *s.block_base.borrow_mut() = base.clone();
         s.block_start.set(block.source.start);
         self.block(s, end, block, 0);
+        let heading = match &block.kind {
+            BlockKind::Heading { inlines, .. } => Some(orbital_vault::render::plain_text(inlines)),
+            _ => None,
+        };
         BlockInfo {
             hash,
             line: block.line,
             mark,
             base,
             tags: std::mem::take(&mut *s.tags.borrow_mut()),
+            heading,
+            links: std::mem::take(&mut *s.link_items.borrow_mut()),
         }
     }
 
@@ -1002,11 +1135,18 @@ impl Reader {
                     self.inlines(s, end, c, &more);
                 }
                 Inline::Link { url, children } => {
+                    let start_mark = buf.create_mark(None, end, true);
                     let tag = self.link_tag(s, url);
                     let mut more = tags.to_vec();
                     more.extend(table.lookup("link"));
                     more.push(tag);
                     self.inlines(s, end, children, &more);
+                    let end_mark = buf.create_mark(None, end, false);
+                    s.link_items.borrow_mut().push(LinkItem {
+                        url: url.clone(),
+                        start: start_mark,
+                        end: end_mark,
+                    });
                 }
                 Inline::Image { url, alt } => self.image(s, end, url, alt, tags),
                 Inline::SoftBreak => buf.insert(end, " "),
@@ -1080,6 +1220,11 @@ struct RenderState {
     /// Etiquetas propias del bloque de primer nivel en curso.
     tags: RefCell<Vec<gtk::TextTag>>,
     links: RefCell<Vec<(gtk::TextTag, String)>>,
+    link_items: RefCell<Vec<LinkItem>>,
     block_base: RefCell<Rc<Cell<usize>>>,
     block_start: Cell<usize>,
 }
+
+#[cfg(test)]
+#[path = "reader_tests.rs"]
+mod reader_tests;

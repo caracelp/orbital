@@ -362,7 +362,7 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
             _ => {
                 let abs = ctx.abs(range);
                 loose_start.get_or_insert(abs.clone()).end = abs.end;
-                loose.extend(parse_inline_one(evs, i));
+                loose.extend(parse_inline_many(evs, i));
             }
         }
     }
@@ -440,52 +440,123 @@ fn parse_table(evs: &[Ev], i: &mut usize, align: &[Alignment]) -> BlockKind {
 }
 
 fn parse_inlines(evs: &[Ev], i: &mut usize, until: TagEnd) -> Vec<Inline> {
-    let mut out = Vec::new();
+    let mut raw = Vec::new();
     while *i < evs.len() {
         if let Event::End(e) = &evs[*i].0
             && *e == until
         {
             *i += 1;
-            return out;
+            break;
         }
-        out.extend(parse_inline_one(evs, i));
+        raw.extend(parse_inline_many(evs, i));
+    }
+    collapse_and_expand_inlines(raw)
+}
+
+/// Fusiona nodos `Inline::Text` contiguos y expande los wikilinks `[[...]]`.
+fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
+    let mut merged: Vec<Inline> = Vec::with_capacity(raw.len());
+    for item in raw {
+        if let Inline::Text(t) = item {
+            if let Some(Inline::Text(last_t)) = merged.last_mut() {
+                last_t.push_str(&t);
+            } else {
+                merged.push(Inline::Text(t));
+            }
+        } else {
+            merged.push(item);
+        }
+    }
+
+    let mut out = Vec::with_capacity(merged.len());
+    for item in merged {
+        match item {
+            Inline::Text(t) => out.extend(expand_text_wikilinks(&t)),
+            Inline::Strong(c) => out.push(Inline::Strong(collapse_and_expand_inlines(c))),
+            Inline::Emph(c) => out.push(Inline::Emph(collapse_and_expand_inlines(c))),
+            Inline::Strike(c) => out.push(Inline::Strike(collapse_and_expand_inlines(c))),
+            Inline::Link { url, children } => out.push(Inline::Link {
+                url,
+                children: collapse_and_expand_inlines(children),
+            }),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Expande texto plano separando los wikilinks `[[...]]` en nodos `Inline::Link`.
+fn expand_text_wikilinks(text: &str) -> Vec<Inline> {
+    let mut out = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(rel_start) = text[search_from..].find("[[") {
+        let start_idx = search_from + rel_start;
+        if start_idx > 0 && text.as_bytes()[start_idx - 1] == b'!' {
+            search_from = start_idx + 2;
+            continue;
+        }
+
+        if let Some(rel_end) = text[start_idx + 2..].find("]]") {
+            let end_idx = start_idx + 2 + rel_end + 2;
+            if start_idx > search_from {
+                out.push(Inline::Text(text[search_from..start_idx].to_string()));
+            }
+            let inner = &text[start_idx + 2..end_idx - 2];
+            let target = crate::links::parse_link_target(inner);
+            let visible = target.alias.unwrap_or_else(|| match &target.anchor {
+                Some(a) => format!("{}#{}", target.path, a),
+                None => target.path.clone(),
+            });
+            out.push(Inline::Link {
+                url: format!("[[{inner}]]"),
+                children: vec![Inline::Text(visible)],
+            });
+            search_from = end_idx;
+        } else {
+            break;
+        }
+    }
+
+    if search_from < text.len() {
+        out.push(Inline::Text(text[search_from..].to_string()));
     }
     out
 }
 
 /// Analiza un elemento en línea (con sus hijos) y avanza `i`.
-fn parse_inline_one(evs: &[Ev], i: &mut usize) -> Option<Inline> {
+fn parse_inline_many(evs: &[Ev], i: &mut usize) -> Vec<Inline> {
     let (ev, _) = &evs[*i];
     *i += 1;
-    Some(match ev {
-        Event::Text(t) => Inline::Text(t.to_string()),
-        Event::Code(t) => Inline::Code(t.to_string()),
-        Event::InlineHtml(t) | Event::Html(t) => Inline::Text(t.to_string()),
-        Event::FootnoteReference(t) => Inline::Text(format!("[^{t}]")),
-        Event::SoftBreak => Inline::SoftBreak,
-        Event::HardBreak => Inline::HardBreak,
-        Event::Start(Tag::Emphasis) => Inline::Emph(parse_inlines(evs, i, TagEnd::Emphasis)),
-        Event::Start(Tag::Strong) => Inline::Strong(parse_inlines(evs, i, TagEnd::Strong)),
+    match ev {
+        Event::Text(t) => vec![Inline::Text(t.to_string())],
+        Event::Code(t) => vec![Inline::Code(t.to_string())],
+        Event::InlineHtml(t) | Event::Html(t) => vec![Inline::Text(t.to_string())],
+        Event::FootnoteReference(t) => vec![Inline::Text(format!("[^{t}]"))],
+        Event::SoftBreak => vec![Inline::SoftBreak],
+        Event::HardBreak => vec![Inline::HardBreak],
+        Event::Start(Tag::Emphasis) => vec![Inline::Emph(parse_inlines(evs, i, TagEnd::Emphasis))],
+        Event::Start(Tag::Strong) => vec![Inline::Strong(parse_inlines(evs, i, TagEnd::Strong))],
         Event::Start(Tag::Strikethrough) => {
-            Inline::Strike(parse_inlines(evs, i, TagEnd::Strikethrough))
+            vec![Inline::Strike(parse_inlines(evs, i, TagEnd::Strikethrough))]
         }
-        Event::Start(Tag::Link { dest_url, .. }) => Inline::Link {
+        Event::Start(Tag::Link { dest_url, .. }) => vec![Inline::Link {
             url: dest_url.to_string(),
             children: parse_inlines(evs, i, TagEnd::Link),
-        },
+        }],
         Event::Start(Tag::Image { dest_url, .. }) => {
             let alt = plain_text(&parse_inlines(evs, i, TagEnd::Image));
-            Inline::Image {
+            vec![Inline::Image {
                 url: dest_url.to_string(),
                 alt,
-            }
+            }]
         }
         Event::Start(tag) => {
             let inner = parse_inlines(evs, i, tag.to_end());
-            return Some(Inline::Text(plain_text(&inner)));
+            vec![Inline::Text(plain_text(&inner))]
         }
-        _ => return None,
-    })
+        _ => Vec::new(),
+    }
 }
 
 /// Texto plano de una lista de elementos en línea.

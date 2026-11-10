@@ -944,25 +944,7 @@ impl Window {
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_link(move |from, url| {
             let Some(i) = weak.upgrade() else { return };
-            let w = Window(i);
-            if url.starts_with("http://")
-                || url.starts_with("https://")
-                || url.starts_with("mailto:")
-            {
-                gtk::UriLauncher::new(url).launch(
-                    Some(&w.0.window),
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
-                return;
-            }
-            let Some(vault) = w.0.vault.borrow().clone() else {
-                return;
-            };
-            match vault.resolve_link(from, url) {
-                orbital_vault::Resolution::Found(p) => w.show_path(p.as_str()),
-                _ => w.toast(&format!("Todavía no existe «{url}»")),
-            }
+            Window(i).open_link(Some(from), url);
         });
         // La vista elegida se recuerda (FR-013).
         let persist = self.0.persist.get();
@@ -1053,7 +1035,12 @@ impl Window {
             .web
             .borrow_mut()
             .get_or_insert_with(|| {
-                let v = html_view::new_view();
+                let weak_link = Rc::downgrade(i);
+                let v = html_view::new_view(Some(Rc::new(move |url| {
+                    if let Some(inner) = weak_link.upgrade() {
+                        Window(inner).open_link(None, url);
+                    }
+                })));
                 v.update_property(&[gtk::accessible::Property::Label("Página de la nota")]);
                 i.html_page.append(&v);
                 v
@@ -2131,6 +2118,63 @@ impl Window {
     }
 
     /// Muestra una nota por su ruta relativa (para el modo de captura).
+    /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
+    pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
+            gtk::UriLauncher::new(url).launch(
+                Some(&self.0.window),
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
+            return;
+        }
+
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+
+        // Si viene de WebKit como file://, convertirlo a relativo a la bóveda
+        let clean_url = if let Some(file_path) = url.strip_prefix("file://") {
+            let decoded = orbital_vault::percent_decode(file_path);
+            let p = std::path::Path::new(&decoded);
+            if let Ok(rel) = p.strip_prefix(vault.root()) {
+                rel.to_string_lossy().to_string()
+            } else {
+                decoded
+            }
+        } else {
+            url.to_string()
+        };
+
+        let parsed = orbital_vault::parse_link_target(&clean_url);
+        let target_str = if clean_url.starts_with("[[") {
+            format!("[[{}]]", parsed.path)
+        } else {
+            parsed.path.clone()
+        };
+
+        let default_rel = RelPath::new("wiki/index.md").ok();
+        let from_ref = from.or(default_rel.as_ref());
+        let res = from_ref.map_or(orbital_vault::Resolution::Missing, |f| {
+            vault.resolve_link(f, &target_str)
+        });
+
+        match res {
+            orbital_vault::Resolution::Found(p) => {
+                self.show_path(p.as_str());
+                if let Some(anchor) = parsed.anchor {
+                    let w_clone = self.clone();
+                    glib::idle_add_local_once(move || {
+                        w_clone.0.code_editor.scroll_to_heading(&anchor);
+                    });
+                }
+            }
+            _ => {
+                self.toast(&format!("Todavía no existe «{}»", parsed.path));
+            }
+        }
+    }
+
     pub fn show_path(&self, rel: &str) {
         // Elegir la fila la abre (ver `selection-changed`); si no está en la lista (por ejemplo,
         // archivada), se muestra igual.

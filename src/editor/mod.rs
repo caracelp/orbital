@@ -292,6 +292,17 @@ impl Editor {
                 f(&path, url);
             }
         });
+        let weak = Rc::downgrade(&this.0);
+        this.0.visual.set_on_link(move |url| {
+            if let Some(inner) = weak.upgrade()
+                && let (Some(f), Some(path)) = (
+                    inner.on_link.borrow().as_ref(),
+                    Editor(inner.clone()).current_path(),
+                )
+            {
+                f(&path, url);
+            }
+        });
         // En Dividida, la vista formateada sigue al código.
         let weak = Rc::downgrade(&this.0);
         this.0
@@ -422,6 +433,32 @@ impl Editor {
     /// Clic en un enlace de la vista formateada.
     pub fn set_on_link(&self, f: impl Fn(&RelPath, &str) + 'static) {
         *self.0.on_link.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Desplaza la vista (Lectura, Dividida o Código) hacia el encabezado indicado.
+    pub fn scroll_to_heading(&self, heading: &str) {
+        let wanted = heading.trim();
+        if wanted.is_empty() {
+            return;
+        }
+        if self.0.reader.scroll_to_heading(wanted) {
+            return;
+        }
+        let buf = &self.0.buffer;
+        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        let wanted_lower = wanted.to_lowercase();
+        for (idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let title = trimmed.trim_start_matches('#').trim().to_lowercase();
+                if title == wanted_lower {
+                    if let Some(mut it) = buf.iter_at_line(idx as i32) {
+                        self.0.view.scroll_to_iter(&mut it, 0.0, true, 0.0, 0.0);
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     /// Cambio de vista elegido por el usuario (para recordarlo).

@@ -33,7 +33,7 @@ pub use error::VaultError;
 pub use link_graph::LinkGraph;
 pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
-    parse_link_target, rewrite_links,
+    parse_link_target, percent_decode, rewrite_links,
 };
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;

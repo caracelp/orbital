@@ -9,8 +9,12 @@
 //!   `enable-javascript-markup` apagado: los `<script>` de la nota se descartan al cargar.
 //! - Un enlace se abre en el navegador del sistema solo si el usuario hace clic.
 
+use std::rc::Rc;
+
 use gtk::{gdk, gio};
 use webkit6::prelude::*;
+
+pub type LinkHandler = Rc<dyn Fn(&str)>;
 
 /// Política de contenido que se inserta al principio del `<head>`.
 const CSP: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
@@ -37,19 +41,25 @@ pub fn with_csp(html: &str) -> String {
 }
 
 /// Crea la vista web de lectura, ya configurada.
-pub fn new_view() -> webkit6::WebView {
-    build(None)
+pub fn new_view(on_link: Option<LinkHandler>) -> webkit6::WebView {
+    build(None, on_link)
 }
 
 /// Crea la vista web de edición (vista Visual): solo corre el script de Orbital, que se agrega
 /// en `content` en un *world* aislado (research R6 de la 002).
-pub fn new_editable_view(content: &webkit6::UserContentManager) -> webkit6::WebView {
-    let view = build(Some(content));
+pub fn new_editable_view(
+    content: &webkit6::UserContentManager,
+    on_link: Option<LinkHandler>,
+) -> webkit6::WebView {
+    let view = build(Some(content), on_link);
     view.set_editable(true);
     view
 }
 
-fn build(content: Option<&webkit6::UserContentManager>) -> webkit6::WebView {
+fn build(
+    content: Option<&webkit6::UserContentManager>,
+    on_link: Option<LinkHandler>,
+) -> webkit6::WebView {
     let settings = webkit6::Settings::new();
     settings.set_enable_javascript(content.is_some());
     settings.set_enable_javascript_markup(false);
@@ -70,7 +80,7 @@ fn build(content: Option<&webkit6::UserContentManager>) -> webkit6::WebView {
     let view = builder.build();
     // Fondo igual al de la app mientras carga.
     view.set_background_color(&gdk::RGBA::new(0.067, 0.067, 0.075, 1.0));
-    view.connect_decide_policy(|_, decision, kind| {
+    view.connect_decide_policy(move |_, decision, kind| {
         if kind != webkit6::PolicyDecisionType::NavigationAction {
             return false;
         }
@@ -81,13 +91,19 @@ fn build(content: Option<&webkit6::UserContentManager>) -> webkit6::WebView {
             return false;
         };
         if action.navigation_type() == webkit6::NavigationType::LinkClicked {
-            // Nunca se navega dentro de la vista: el enlace se abre afuera, porque el usuario lo pidió.
             if let Some(uri) = action.request().and_then(|r| r.uri()) {
-                gtk::UriLauncher::new(&uri).launch(
-                    None::<&gtk::Window>,
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
+                if uri.starts_with("http://")
+                    || uri.starts_with("https://")
+                    || uri.starts_with("mailto:")
+                {
+                    gtk::UriLauncher::new(&uri).launch(
+                        None::<&gtk::Window>,
+                        None::<&gio::Cancellable>,
+                        |_| {},
+                    );
+                } else if let Some(cb) = on_link.as_ref() {
+                    cb(&uri);
+                }
             }
             decision.ignore();
             return true;

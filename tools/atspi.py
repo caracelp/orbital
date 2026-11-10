@@ -90,6 +90,21 @@ def main():
             except Exception:
                 pass
         return 0
+    if cmd == "tecla":
+        name = sys.argv[2]
+        mapping = {
+            "tab": (0xFF09, Atspi.KeySynthType.SYM),
+            "enter": (0xFF0D, Atspi.KeySynthType.SYM),
+            "return": (0xFF0D, Atspi.KeySynthType.SYM),
+            "space": (0x0020, Atspi.KeySynthType.SYM),
+            "escape": (0xFF1B, Atspi.KeySynthType.SYM),
+        }
+        val, synth = mapping.get(name.lower(), (0, None))
+        if synth:
+            Atspi.generate_keyboard_event(val, None, synth)
+        else:
+            Atspi.generate_keyboard_event(0, name, Atspi.KeySynthType.STRING)
+        return 0
     if cmd == "elegir":
         lista = find("list", "Contenido de la bóveda")
         if lista is None:
@@ -153,6 +168,13 @@ def main():
     elif cmd == "texto":
         t = node.get_text_iface()
         print(Atspi.Text.get_text(t, 0, Atspi.Text.get_character_count(t)) if t else node.get_name())
+    elif cmd == "foco":
+        comp = node.get_component_iface()
+        if comp is None:
+            print(f"[{node.get_role_name()}] {node.get_name()!r} no es un componente")
+            return 1
+        comp.grab_focus()
+        print(f"Di foco a [{node.get_role_name()}] {node.get_name()!r}")
     return 0
 
 
