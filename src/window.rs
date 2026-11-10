@@ -12,7 +12,7 @@ use std::sync::Arc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::props::{PropValue, Warning};
-use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, RelPath, Vault};
+use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, NoteMeta, RelPath, Vault};
 use webkit6::prelude::*;
 
 use crate::html_view;
@@ -41,6 +41,7 @@ struct Inner {
     /// Archivo que se está mostrando (nota o no).
     current_entry: RefCell<Option<Arc<Entry>>>,
     html_props: gtk::ListBox,
+    new_button: gtk::MenuButton,
     html_page: gtk::Box,
     /// Vista web compartida; `None` hasta abrir la primera nota HTML.
     web: RefCell<Option<webkit6::WebView>>,
@@ -133,6 +134,12 @@ impl Window {
             "Opciones de la nota",
             &[
                 ("Renombrar o mover…", "win.rename", "F2"),
+                ("Archivar", "win.archive", "Ctrl+Mayús+A"),
+                (
+                    "Pegar imagen como adjunto",
+                    "win.paste-image",
+                    "Ctrl+Mayús+V",
+                ),
                 ("Mover a la papelera", "win.trash", "Supr"),
             ],
         );
@@ -181,6 +188,8 @@ impl Window {
         let sidebar_header = adw::HeaderBar::new();
         sidebar_header.set_title_widget(Some(&sidebar_title));
         sidebar_header.pack_start(&open_menu_button());
+        let new_button = menu_button("list-add-symbolic", "Nueva nota", &[]);
+        sidebar_header.pack_end(&new_button);
         let sidebar_view = adw::ToolbarView::new();
         sidebar_view.add_top_bar(&sidebar_header);
         sidebar_view.add_top_bar(&banner);
@@ -243,6 +252,7 @@ impl Window {
             current_note: RefCell::new(None),
             current_entry: RefCell::new(None),
             html_props,
+            new_button,
             html_page,
             web: RefCell::new(None),
             vault: RefCell::new(None),
@@ -250,6 +260,8 @@ impl Window {
             persist: Cell::new(true),
         }));
         this.setup_actions(app);
+        let content = this.0.content_stack.clone();
+        this.setup_drop(&content);
         this.setup_list();
         this
     }
@@ -316,6 +328,35 @@ impl Window {
             })
             .build();
         self.0.window.add_action_entries([rename, trash]);
+        let simple = |name: &str, f: fn(&Window)| {
+            let this = self.clone();
+            gio::ActionEntry::builder(name)
+                .activate(move |_: &adw::ApplicationWindow, _, _| f(&this))
+                .build()
+        };
+        let from_template = gio::ActionEntry::builder("new-from-template")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, param| {
+                    if let Some(p) = param.and_then(|v| v.get::<String>()) {
+                        this.ask_new_note(NewKind::Template(p));
+                    }
+                }
+            })
+            .build();
+        self.0.window.add_action_entries([
+            simple("new-note", |w| w.ask_new_note(NewKind::Md)),
+            simple("new-html", |w| w.ask_new_note(NewKind::Html)),
+            simple("journal", Window::open_journal),
+            simple("archive", Window::archive_current),
+            simple("paste-image", Window::paste_image),
+            from_template,
+        ]);
+        app.set_accels_for_action("win.new-note", &["<Control>n"]);
+        app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
+        app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
+        app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
         app.set_accels_for_action("win.rename", &["F2"]);
         app.set_accels_for_action("win.trash", &["Delete"]);
         app.set_accels_for_action("win.open", &["<Control>o"]);
@@ -330,6 +371,16 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Abrir como bóveda de Orbital",
             "<Control><Shift>o",
+        ));
+        section.add(adw::ShortcutsItem::new("Nota nueva", "<Control>n"));
+        section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
+        section.add(adw::ShortcutsItem::new(
+            "Archivar la nota",
+            "<Control><Shift>a",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Pegar imagen como adjunto",
+            "<Control><Shift>v",
         ));
         section.add(adw::ShortcutsItem::new("Renombrar o mover la nota", "F2"));
         section.add(adw::ShortcutsItem::new(
@@ -485,15 +536,12 @@ impl Window {
         let result = gio::spawn_blocking(move || {
             let (config, _) = orbital_vault::VaultConfig::load(&for_apply);
             let ctx = write_ctx::now(Some(&config));
-            orbital_vault::apply_open_as(&for_apply, &plan, &ctx).map(|v| {
-                let tree = build_tree(v.entries());
-                (v, tree)
-            })
+            orbital_vault::apply_open_as(&for_apply, &plan, &ctx).map(prepare)
         })
         .await;
         match result {
-            Ok(Ok((vault, tree))) => {
-                self.show_vault(vault, tree);
+            Ok(Ok((vault, tree, meta))) => {
+                self.show_vault(vault, tree, meta);
                 self.remember(path);
             }
             Ok(Err(e)) => self.toast(&format!("No se pudo crear la estructura: {e}")),
@@ -504,16 +552,11 @@ impl Window {
     /// Abre `path` con «Abrir»: no escribe nada en la bóveda.
     pub async fn open_path(&self, path: PathBuf) {
         let for_thread = path.clone();
-        let result = gio::spawn_blocking(move || {
-            orbital_vault::open(&for_thread).map(|v| {
-                let tree = build_tree(v.entries());
-                (v, tree)
-            })
-        })
-        .await;
+        let result =
+            gio::spawn_blocking(move || orbital_vault::open(&for_thread).map(prepare)).await;
         match result {
-            Ok(Ok((vault, tree))) => {
-                self.show_vault(vault, tree);
+            Ok(Ok((vault, tree, meta))) => {
+                self.show_vault(vault, tree, meta);
                 self.remember(path);
             }
             Ok(Err(e)) => self.toast(&format!("No se pudo abrir la bóveda: {e}")),
@@ -521,8 +564,9 @@ impl Window {
         }
     }
 
-    fn show_vault(&self, vault: Vault, tree: Tree) {
+    fn show_vault(&self, vault: Vault, tree: Tree, meta: NoteMeta) {
         let i = &self.0;
+        self.fill_new_menu(&meta.templates);
         let name = vault
             .root()
             .file_name()
@@ -771,19 +815,263 @@ impl Window {
         else {
             return;
         };
-        let result = gio::spawn_blocking(move || {
-            orbital_vault::open(&root).map(|v| {
-                let tree = build_tree(v.entries());
-                (v, tree)
-            })
-        })
-        .await;
-        if let Ok(Ok((vault, tree))) = result {
-            self.show_vault(vault, tree);
+        let result = gio::spawn_blocking(move || orbital_vault::open(&root).map(prepare)).await;
+        if let Ok(Ok((vault, tree, meta))) = result {
+            self.show_vault(vault, tree, meta);
             if let Some(p) = show {
                 self.show_path(p.as_str());
             }
         }
+    }
+
+    /// Arma el menú «Nueva nota» con las plantillas de la bóveda.
+    fn fill_new_menu(&self, templates: &[RelPath]) {
+        let Some(popover) = self.0.new_button.popover() else {
+            return;
+        };
+        let mut items = vec![
+            MenuItem::new("Nota", "win.new-note", "Ctrl+N"),
+            MenuItem::new("Nota HTML", "win.new-html", ""),
+            MenuItem::new("Diario de hoy", "win.journal", "Ctrl+Alt+D"),
+        ];
+        for t in templates {
+            let name = t.file_name();
+            let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+            let mut item = MenuItem::new(
+                &format!("Desde la plantilla «{stem}»"),
+                "win.new-from-template",
+                "",
+            );
+            item.target = Some(t.to_string());
+            items.push(item);
+        }
+        fill_menu(&popover, &items);
+    }
+
+    /// Carpeta donde se crean las notas nuevas: la de la nota abierta, o `wiki/`.
+    fn target_dir(&self) -> Option<RelPath> {
+        let vault = self.0.vault.borrow().clone()?;
+        let from_current = self.0.current_entry.borrow().as_ref().and_then(|e| {
+            let s = e.path.as_str();
+            s.rsplit_once('/')
+                .filter(|(d, _)| d.starts_with("wiki"))
+                .and_then(|(d, _)| RelPath::new(d).ok())
+        });
+        from_current.or_else(|| {
+            vault
+                .root()
+                .join("wiki")
+                .is_dir()
+                .then(|| RelPath::new("wiki").ok())
+                .flatten()
+        })
+    }
+
+    /// Pide el nombre de una nota nueva y la crea.
+    fn ask_new_note(&self, kind: NewKind) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder().activates_default(true).build();
+            field.update_property(&[gtk::accessible::Property::Label("Nombre de la nota")]);
+            let dialog = adw::AlertDialog::new(Some("Nota nueva"), Some("¿Cómo se llama?"));
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("create", "Crear");
+            dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("create"));
+            dialog.set_close_response("cancel");
+            let f = field.clone();
+            glib::idle_add_local_once(move || {
+                f.grab_focus();
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "create" {
+                return;
+            }
+            let name = field.text().trim().to_owned();
+            if name.is_empty() || name.contains('/') {
+                return this.toast("El nombre no puede estar vacío ni tener «/»");
+            }
+            let dir = this.target_dir();
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(vault.config()));
+                let dir = match dir {
+                    Some(d) => d,
+                    None => return Err(orbital_vault::VaultError::InvalidPath(name)),
+                };
+                match kind {
+                    NewKind::Md => vault
+                        .create_note(&dir, &name, Format::Md, &ctx)
+                        .map(|p| (p, Vec::new())),
+                    NewKind::Html => vault
+                        .create_note(&dir, &name, Format::Html, &ctx)
+                        .map(|p| (p, Vec::new())),
+                    NewKind::Template(t) => {
+                        let t = RelPath::new(&t)?;
+                        vault.create_from_template(&dir, &name, &t, &ctx)
+                    }
+                }
+            })
+            .await;
+            match result {
+                Ok(Ok((path, unknown))) => {
+                    this.reload(Some(path.clone())).await;
+                    if unknown.is_empty() {
+                        this.toast(&format!("Se creó «{path}»"));
+                    } else {
+                        this.toast(&format!(
+                            "Se creó «{path}»; la plantilla usa variables desconocidas: {}",
+                            unknown.join(", ")
+                        ));
+                    }
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo crear la nota"),
+            }
+        });
+    }
+
+    /// «Diario de hoy»: lo abre, creándolo si no existe.
+    fn open_journal(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(vault.config()));
+                vault.open_journal(&ctx)
+            })
+            .await;
+            match result {
+                Ok(Ok(path)) => this.reload(Some(path)).await,
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo abrir el diario"),
+            }
+        });
+    }
+
+    /// «Archivar» la nota abierta (o desarchivar, al deshacer).
+    fn archive_current(&self) {
+        let Some(entry) = self.0.current_entry.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move { this.set_archived(entry.path.clone(), true).await });
+    }
+
+    async fn set_archived(&self, path: RelPath, archived: bool) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let p = path.clone();
+        let result = gio::spawn_blocking(move || {
+            let ctx = write_ctx::now(Some(vault.config()));
+            vault.archive(&p, archived, &ctx)
+        })
+        .await;
+        match result {
+            Ok(Ok(_)) if archived => {
+                self.reload(None).await;
+                let this = self.clone();
+                self.toast_undo("Nota archivada", move || {
+                    let (this, path) = (this.clone(), path.clone());
+                    glib::spawn_future_local(async move { this.set_archived(path, false).await });
+                });
+            }
+            Ok(Ok(_)) => self.reload(Some(path)).await,
+            Ok(Err(e)) => self.toast(&e.to_string()),
+            Err(_) => self.toast("No se pudo archivar"),
+        }
+    }
+
+    /// Guarda archivos como adjuntos de la nota abierta y la vuelve a mostrar.
+    async fn attach_files(&self, files: Vec<(String, Vec<u8>)>) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let Some(note) = self
+            .0
+            .current_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.path.clone())
+        else {
+            return self.toast("Abrí una nota antes de agregarle adjuntos");
+        };
+        let n = note.clone();
+        let result = gio::spawn_blocking(move || {
+            let ctx = write_ctx::now(Some(vault.config()));
+            files
+                .iter()
+                .map(|(name, bytes)| vault.attach(&n, name, bytes, &ctx))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await;
+        match result {
+            Ok(Ok(saved)) => {
+                self.reload(Some(note)).await;
+                let names: Vec<&str> = saved.iter().map(RelPath::file_name).collect();
+                self.toast(&format!("Adjunto guardado: {}", names.join(", ")));
+            }
+            Ok(Err(e)) => self.toast(&e.to_string()),
+            Err(_) => self.toast("No se pudo guardar el adjunto"),
+        }
+    }
+
+    /// «Pegar imagen como adjunto»: la imagen del portapapeles se guarda como PNG.
+    fn paste_image(&self) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let clipboard = this.0.window.clipboard();
+            let texture = match clipboard.read_texture_future().await {
+                Ok(Some(t)) => t,
+                _ => return this.toast("El portapapeles no tiene una imagen"),
+            };
+            let bytes = texture.save_to_png_bytes().to_vec();
+            let ctx = write_ctx::now(None);
+            let name = format!(
+                "pegado-{}-{:02}{:02}{:02}.png",
+                ctx.date, ctx.time.hour, ctx.time.minute, ctx.time.second
+            );
+            this.attach_files(vec![(name, bytes)]).await;
+        });
+    }
+
+    /// Soltar archivos sobre la nota los guarda como adjuntos.
+    fn setup_drop(&self, target: &impl IsA<gtk::Widget>) {
+        let drop = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
+        let this = self.clone();
+        drop.connect_drop(move |_, value, _, _| {
+            let Ok(list) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
+            let this = this.clone();
+            glib::spawn_future_local(async move {
+                let read = gio::spawn_blocking(move || {
+                    paths
+                        .iter()
+                        .filter_map(|p| {
+                            let name = p.file_name()?.to_string_lossy().into_owned();
+                            std::fs::read(p).ok().map(|b| (name, b))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+                if !read.is_empty() {
+                    this.attach_files(read).await;
+                }
+            });
+            true
+        });
+        target.add_controller(drop);
     }
 
     /// Avisa con un botón «Deshacer» que ejecuta `undo`.
@@ -1015,8 +1303,53 @@ impl Window {
 
     /// Muestra una nota por su ruta relativa (para el modo de captura).
     pub fn show_path(&self, rel: &str) {
-        if let Some(e) = self.entry(rel) {
+        // Elegir la fila la abre (ver `selection-changed`); si no está en la lista (por ejemplo,
+        // archivada), se muestra igual.
+        if !self.reveal(rel)
+            && let Some(e) = self.entry(rel)
+        {
             self.show_entry(e);
+        }
+    }
+
+    /// Expande las carpetas hasta `rel` y elige su fila. Devuelve si la encontró.
+    fn reveal(&self, rel: &str) -> bool {
+        let Some(selection) = self
+            .0
+            .list_view
+            .model()
+            .and_downcast::<gtk::SingleSelection>()
+        else {
+            return false;
+        };
+        let find = |path: &str| -> Option<(u32, gtk::TreeListRow)> {
+            (0..selection.n_items()).find_map(|i| {
+                let row = selection.item(i).and_downcast::<gtk::TreeListRow>()?;
+                let item = row.item().and_downcast::<gtk::StringObject>()?;
+                (item.string() == path).then_some((i, row))
+            })
+        };
+        // Cada carpeta antepasada, de afuera hacia adentro.
+        let mut prefix = String::new();
+        let parts: Vec<&str> = rel.split('/').collect();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            if let Some((_, row)) = find(&prefix) {
+                row.set_expanded(true);
+            }
+        }
+        match find(rel) {
+            Some((pos, _)) => {
+                selection.set_selected(pos);
+                self.0
+                    .list_view
+                    .scroll_to(pos, gtk::ListScrollFlags::NONE, None);
+                true
+            }
+            None => false,
         }
     }
 
@@ -1119,37 +1452,13 @@ fn open_menu_button() -> gtk::MenuButton {
 /// leerlos); con botones comunes, cada opción se anuncia con su texto. El atajo se muestra a la
 /// derecha y se agrega a la descripción accesible.
 fn menu_button(icon: &str, tooltip: &str, items: &[(&str, &str, &str)]) -> gtk::MenuButton {
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    column.add_css_class("menu");
-    let popover = gtk::Popover::builder()
-        .child(&column)
-        .has_arrow(true)
-        .build();
+    let popover = gtk::Popover::builder().has_arrow(true).build();
     popover.add_css_class("menu");
-    for &(label, action, accel) in items {
-        let text = gtk::Label::builder()
-            .label(label)
-            .xalign(0.0)
-            .hexpand(true)
-            .build();
-        let shortcut = gtk::Label::new(Some(accel));
-        shortcut.add_css_class("dim-label");
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
-        row.append(&text);
-        row.append(&shortcut);
-        let button = gtk::Button::builder()
-            .child(&row)
-            .action_name(action)
-            .css_classes(["flat"])
-            .build();
-        button.update_property(&[
-            gtk::accessible::Property::Label(label),
-            gtk::accessible::Property::KeyShortcuts(accel),
-        ]);
-        let p = popover.clone();
-        button.connect_clicked(move |_| p.popdown());
-        column.append(&button);
-    }
+    let items: Vec<MenuItem> = items
+        .iter()
+        .map(|&(l, a, k)| MenuItem::new(l, a, k))
+        .collect();
+    fill_menu(&popover, &items);
     let button = gtk::MenuButton::builder()
         .icon_name(icon)
         .tooltip_text(tooltip)
@@ -1158,6 +1467,61 @@ fn menu_button(icon: &str, tooltip: &str, items: &[(&str, &str, &str)]) -> gtk::
     // Sin esto, el nombre accesible se arma con el texto de las opciones del menú.
     button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
     button
+}
+
+/// Una opción de menú: texto, acción, atajo y, si hace falta, el parámetro de la acción.
+struct MenuItem {
+    label: String,
+    action: String,
+    accel: String,
+    target: Option<String>,
+}
+
+impl MenuItem {
+    fn new(label: &str, action: &str, accel: &str) -> Self {
+        Self {
+            label: label.to_owned(),
+            action: action.to_owned(),
+            accel: accel.to_owned(),
+            target: None,
+        }
+    }
+}
+
+/// (Re)arma el contenido de un menú.
+fn fill_menu(popover: &gtk::Popover, items: &[MenuItem]) {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    column.add_css_class("menu");
+    for item in items {
+        let text = gtk::Label::builder()
+            .label(&item.label)
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        row.append(&text);
+        if !item.accel.is_empty() {
+            let shortcut = gtk::Label::new(Some(&item.accel));
+            shortcut.add_css_class("dim-label");
+            row.append(&shortcut);
+        }
+        let button = gtk::Button::builder()
+            .child(&row)
+            .action_name(&item.action)
+            .css_classes(["flat"])
+            .build();
+        if let Some(t) = &item.target {
+            button.set_action_target_value(Some(&t.to_variant()));
+        }
+        button.update_property(&[gtk::accessible::Property::Label(&item.label)]);
+        if !item.accel.is_empty() {
+            button.update_property(&[gtk::accessible::Property::KeyShortcuts(&item.accel)]);
+        }
+        let p = popover.clone();
+        button.connect_clicked(move |_| p.popdown());
+        column.append(&button);
+    }
+    popover.set_child(Some(&column));
 }
 
 fn start_page() -> adw::StatusPage {
@@ -1267,4 +1631,26 @@ async fn find_in_trash(original: &Path) -> Option<gio::File> {
         }
     }
     best.map(|(_, f)| f)
+}
+
+/// Corre en segundo plano: árbol de la lista (sin las notas archivadas) y plantillas.
+fn prepare(v: Vault) -> (Vault, Tree, NoteMeta) {
+    let meta = v.note_meta();
+    let archived: std::collections::HashSet<&RelPath> = meta.archived.iter().collect();
+    let visible: Vec<Entry> = v
+        .entries()
+        .iter()
+        .filter(|e| !archived.contains(&e.path))
+        .cloned()
+        .collect();
+    let tree = build_tree(&visible);
+    (v, tree, meta)
+}
+
+/// Qué clase de nota se crea.
+enum NewKind {
+    Md,
+    Html,
+    /// Ruta de la plantilla.
+    Template(String),
 }

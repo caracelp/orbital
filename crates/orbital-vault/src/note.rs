@@ -306,16 +306,36 @@ impl Vault {
         format: Format,
         ctx: &WriteCtx,
     ) -> Result<RelPath, VaultError> {
-        let file = format!("{name}.{}", format.extension());
-        let path = dir.join(&file)?;
-        if self.zone(&path) == Zone::Wiki && matches!(file.as_str(), "index.md" | "log.md") {
-            return Err(VaultError::ReservedName(file));
+        let path = dir.join(&format!("{name}.{}", format.extension()))?;
+        self.create_typed(&path, name, format, format.default_type(), ctx)?;
+        Ok(path)
+    }
+
+    /// Valida que se pueda crear una nota en `path`.
+    fn check_new(&self, path: &RelPath) -> Result<(), VaultError> {
+        if self.zone(path) == Zone::Wiki && matches!(path.file_name(), "index.md" | "log.md") {
+            return Err(VaultError::ReservedName(path.file_name().to_owned()));
         }
-        self.check_path(&path)?;
+        if path.first_component() == "raw" {
+            return Err(VaultError::ReadOnly(path.clone()));
+        }
+        self.check_path(path)
+    }
+
+    /// Crea una nota con `type`, `title`, `created` y `generated` (data-model).
+    fn create_typed(
+        &self,
+        path: &RelPath,
+        title: &str,
+        format: Format,
+        kind: &str,
+        ctx: &WriteCtx,
+    ) -> Result<(), VaultError> {
+        self.check_new(path)?;
         let stamp = PropValue::DateTime(ctx.timestamp());
         let entries = [
-            ("type", PropValue::Text(format.default_type().to_owned())),
-            ("title", PropValue::Text(name.to_owned())),
+            ("type", PropValue::Text(kind.to_owned())),
+            ("title", PropValue::Text(title.to_owned())),
             ("created", stamp.clone()),
             (
                 "generated",
@@ -327,18 +347,221 @@ impl Vault {
         ];
         let block = emit::document(&entries, LineEnding::Lf);
         let content = match format {
-            Format::Md => format!("---\n{block}---\n# {name}\n"),
+            Format::Md => format!("---\n{block}---\n# {title}\n"),
             Format::Html => {
-                let title = escape_html(name);
+                let t = escape_html(title);
                 format!(
-                    "<!doctype html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>{title}</title>\n  <script type=\"application/yaml\">\n{block}  </script>\n</head>\n<body>\n<h1>{title}</h1>\n</body>\n</html>\n"
+                    "<!doctype html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>{t}</title>\n  <script type=\"application/yaml\">\n{block}  </script>\n</head>\n<body>\n<h1>{t}</h1>\n</body>\n</html>\n"
                 )
             }
         };
+        safe_write(self.root(), path, content.as_bytes(), None, ctx)?;
+        self.after_create(path, ctx)?;
+        Ok(())
+    }
+
+    /// Crea una nota desde una plantilla (FR-024): reemplaza las variables y cambia
+    /// `type: plantilla` por `atomo` o `sintesis`. Devuelve la ruta y las variables desconocidas.
+    pub fn create_from_template(
+        &self,
+        dir: &RelPath,
+        name: &str,
+        template: &RelPath,
+        ctx: &WriteCtx,
+    ) -> Result<(RelPath, Vec<String>), VaultError> {
+        let tpl = self.read_note(template)?;
+        let path = dir.join(&format!("{name}.{}", tpl.format.extension()))?;
+        self.check_new(&path)?;
+        let vars = crate::template::Vars {
+            fecha: ctx.date.to_string(),
+            hora: format!("{:02}:{:02}", ctx.time.hour, ctx.time.minute),
+            titulo: name.to_owned(),
+            carpeta: dir.to_string(),
+        };
+        let (rendered, unknown) = crate::template::render(&tpl.source, &vars);
+        let note = parse(path.clone(), self.zone(&path), rendered, false)?;
+        let keep_type = note
+            .prop("type")
+            .and_then(PropValue::as_text)
+            .is_some_and(|t| t != "plantilla");
+        let content = if keep_type {
+            note.source
+        } else {
+            edit(
+                &note,
+                "type",
+                Some(&PropValue::Text(tpl.format.default_type().to_owned())),
+            )?
+        };
         safe_write(self.root(), &path, content.as_bytes(), None, ctx)?;
         self.after_create(&path, ctx)?;
+        Ok((path, unknown))
+    }
+
+    /// Abre la nota diaria de hoy, creándola si no existe (FR-025). El nombre sale de
+    /// `journal_name` (`AAAA`, `MM` y `DD` se reemplazan) y puede tener subcarpetas.
+    pub fn open_journal(&self, ctx: &WriteCtx) -> Result<RelPath, VaultError> {
+        let name = self
+            .config()
+            .journal_name
+            .replace("AAAA", &format!("{:04}", ctx.date.year))
+            .replace("MM", &format!("{:02}", ctx.date.month))
+            .replace("DD", &format!("{:02}", ctx.date.day));
+        let base = if self.root().join("wiki").is_dir() {
+            format!("wiki/{name}.md")
+        } else {
+            format!("{name}.md")
+        };
+        let path = RelPath::new(&base)?;
+        if path.to_path(self.root()).exists() {
+            return Ok(path);
+        }
+        self.create_typed(&path, &ctx.date.to_string(), Format::Md, "diario", ctx)?;
         Ok(path)
     }
+
+    /// Guarda un adjunto junto a la nota (FR-026) con un nombre que no pise nada, y lo enlaza al
+    /// final de la nota (`![](…)` en `.md`, `<img>` antes de `</body>` en `.html`).
+    pub fn attach(
+        &self,
+        note_path: &RelPath,
+        name: &str,
+        bytes: &[u8],
+        ctx: &WriteCtx,
+    ) -> Result<RelPath, VaultError> {
+        let note = self.read_note(note_path)?;
+        if note.read_only {
+            return Err(VaultError::ReadOnly(note_path.clone()));
+        }
+        let clean = clean_file_name(name);
+        let dir = note_path.as_str().rsplit_once('/').map(|(d, _)| d);
+        let (stem, ext) = match clean.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s.to_owned(), format!(".{e}")),
+            _ => (clean.clone(), String::new()),
+        };
+        let mut n = 0u32;
+        let path = loop {
+            let file = if n == 0 {
+                clean.clone()
+            } else {
+                format!("{stem}-{n}{ext}")
+            };
+            let candidate = match dir {
+                Some(d) => RelPath::new(&format!("{d}/{file}"))?,
+                None => RelPath::new(&file)?,
+            };
+            if !candidate.to_path(self.root()).exists() {
+                break candidate;
+            }
+            n += 1;
+        };
+        safe_write(self.root(), &path, bytes, None, ctx)?;
+        let file = path.file_name();
+        let href = encode_href(file);
+        let src = &note.source;
+        let eol = note.line_ending.as_str();
+        let new = match note.format {
+            Format::Md => {
+                let mut out = src.clone();
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push_str(eol);
+                }
+                if !out.is_empty() {
+                    out.push_str(eol);
+                }
+                out.push_str(&format!("![{}]({href}){eol}", file.replace(']', "\\]")));
+                out
+            }
+            Format::Html => {
+                let tag = format!("<img src=\"{href}\" alt=\"{}\">{eol}", escape_html(file));
+                match src.to_ascii_lowercase().rfind("</body") {
+                    Some(at) => format!("{}{tag}{}", &src[..at], &src[at..]),
+                    None => format!("{src}{tag}"),
+                }
+            }
+        };
+        let mut receipt = self.save_note(&note, &new, ctx)?;
+        receipt.written.push((path.clone(), hash(bytes)));
+        Ok(path)
+    }
+
+    /// Lee las propiedades de las notas de `wiki/` (en segundo plano): plantillas y archivadas.
+    pub fn note_meta(&self) -> NoteMeta {
+        let mut meta = NoteMeta::default();
+        for e in self.entries() {
+            if e.zone != Zone::Wiki
+                || !matches!(
+                    e.kind,
+                    crate::EntryKind::AtomNote | crate::EntryKind::SynthesisNote
+                )
+            {
+                continue;
+            }
+            let Ok(Some(block)) = self.read_props(&e.path) else {
+                continue;
+            };
+            let entries = &block.entries;
+            if props::find(entries, "type").and_then(|p| p.value.as_text()) == Some("plantilla") {
+                meta.templates.push(e.path.clone());
+            }
+            if props::find(entries, "archived").is_some_and(|p| p.value == PropValue::Bool(true)) {
+                meta.archived.push(e.path.clone());
+            }
+        }
+        meta
+    }
+
+    /// Plantillas de la bóveda (`type: plantilla` en `wiki/`).
+    pub fn templates(&self) -> Vec<RelPath> {
+        self.note_meta().templates
+    }
+
+    /// Si la nota tiene `archived: true`.
+    pub fn is_archived(&self, path: &RelPath) -> Result<bool, VaultError> {
+        Ok(self.read_props(path)?.is_some_and(|b| {
+            props::find(&b.entries, "archived").is_some_and(|p| p.value == PropValue::Bool(true))
+        }))
+    }
+}
+
+/// Plantillas y notas archivadas de una bóveda.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteMeta {
+    pub templates: Vec<RelPath>,
+    pub archived: Vec<RelPath>,
+}
+
+/// Nombre de archivo seguro: solo el último componente, sin puntos iniciales ni controles.
+fn clean_file_name(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let cleaned: String = last
+        .trim()
+        .trim_start_matches('.')
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    if cleaned.is_empty() {
+        "adjunto".to_owned()
+    } else {
+        cleaned
+    }
+}
+
+/// Codifica un nombre de archivo para usarlo en `src`/`href`: los caracteres especiales de URL
+/// van como `%XX`; las letras no ASCII quedan tal cual.
+fn encode_href(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || "-_.~".contains(c) || !c.is_ascii() {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    out
 }
 
 /// Calcula el contenido nuevo de una nota al cambiar (`Some`) o quitar (`None`) una propiedad.
