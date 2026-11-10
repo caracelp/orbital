@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod aux_files;
 pub mod config;
 pub mod entry;
 pub mod error;
@@ -19,9 +20,11 @@ pub mod template;
 pub mod vault;
 pub mod write;
 
+pub use aux_files::AuxFile;
 pub use config::{LinkStyle, VaultConfig};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
+pub use links::Resolution;
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
 pub use vault::{

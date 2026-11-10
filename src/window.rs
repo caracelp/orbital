@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use orbital_vault::props::{PropValue, Warning};
+use orbital_vault::props::{PropEntry, PropValue, Warning};
 use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, NoteMeta, RelPath, Vault};
 use webkit6::prelude::*;
 
@@ -42,6 +42,7 @@ struct Inner {
     current_entry: RefCell<Option<Arc<Entry>>>,
     html_props: gtk::ListBox,
     new_button: gtk::MenuButton,
+    external_page: adw::StatusPage,
     html_page: gtk::Box,
     /// Vista web compartida; `None` hasta abrir la primera nota HTML.
     web: RefCell<Option<webkit6::WebView>>,
@@ -125,6 +126,18 @@ impl Window {
                 .build(),
         );
         content_stack.add_named(&html_page, Some("html"));
+        // Archivos que no son texto (PDF, imágenes…): se abren con otra aplicación.
+        let open_external = gtk::Button::builder()
+            .label("Abrir con otra aplicación")
+            .action_name("win.open-external")
+            .css_classes(["pill"])
+            .halign(gtk::Align::Center)
+            .build();
+        let external_page = adw::StatusPage::builder()
+            .icon_name("document-open-symbolic")
+            .child(&open_external)
+            .build();
+        content_stack.add_named(&external_page, Some("externo"));
 
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
@@ -253,6 +266,7 @@ impl Window {
             current_entry: RefCell::new(None),
             html_props,
             new_button,
+            external_page,
             html_page,
             web: RefCell::new(None),
             vault: RefCell::new(None),
@@ -262,6 +276,7 @@ impl Window {
         this.setup_actions(app);
         let content = this.0.content_stack.clone();
         this.setup_drop(&content);
+        this.setup_raw_drop();
         this.setup_list();
         this
     }
@@ -346,6 +361,13 @@ impl Window {
             })
             .build();
         self.0.window.add_action_entries([
+            simple("open-external", |w| {
+                let entry = w.0.current_entry.borrow().clone();
+                let root = w.0.vault.borrow().as_ref().map(|v| v.root().to_path_buf());
+                if let (Some(e), Some(root)) = (entry, root) {
+                    w.launch_file(&e.path.to_path(&root));
+                }
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -644,7 +666,8 @@ impl Window {
                     Ok(Err(e)) => Err(e.to_string()),
                     Err(_) => Err("No se pudo leer la nota".to_owned()),
                 }
-            } else if entry.kind.is_text() {
+            } else {
+                // Cualquier otro archivo: si es texto UTF-8 se muestra; si no, se ofrece abrirlo afuera.
                 let abs = entry.path.to_path(vault.root());
                 gio::spawn_blocking(move || read_text(&abs))
                     .await
@@ -653,8 +676,6 @@ impl Window {
                         this.0.editor.buffer().set_text(&t);
                         None
                     })
-            } else {
-                Err("Este archivo no es una nota de texto".into())
             };
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
@@ -665,12 +686,38 @@ impl Window {
             }
             i.content_title.set_subtitle(&subtitle);
             this.clear_note_view();
+            let raw = entry.zone == orbital_vault::Zone::Raw;
             match loaded {
                 Ok(Some(note)) => this.show_note(note),
                 Ok(None) => i.content_stack.set_visible_child_name("nota"),
-                Err(msg) => {
-                    i.editor.buffer().set_text(&msg);
-                    i.content_stack.set_visible_child_name("nota");
+                Err(_) => {
+                    i.external_page.set_title(entry.path.file_name());
+                    i.external_page.set_description(Some(if raw {
+                        "Fuente original, solo lectura. Orbital no la modifica."
+                    } else {
+                        "Este archivo no es una nota de texto."
+                    }));
+                    i.content_stack.set_visible_child_name("externo");
+                }
+            }
+            if raw {
+                i.note_banner.set_title("Fuente original, solo lectura");
+                i.note_banner.set_visible(true);
+            }
+            // En las fuentes de raw/ no se puede renombrar, archivar, adjuntar ni borrar.
+            let is_note = Format::from_name(entry.path.file_name()).is_some();
+            for (name, enabled) in [
+                ("rename", !raw),
+                ("trash", !raw),
+                ("archive", !raw && is_note),
+                ("paste-image", !raw && is_note),
+            ] {
+                if let Some(action) = i
+                    .window
+                    .lookup_action(name)
+                    .and_downcast::<gio::SimpleAction>()
+                {
+                    action.set_enabled(enabled);
                 }
             }
             i.split.set_show_content(true);
@@ -707,7 +754,7 @@ impl Window {
                 Format::Html => &i.html_props,
             };
             if let Some(block) = &note.props {
-                fill_props(list, &block.entries);
+                self.fill_props(list, &note.path, &block.entries);
             }
             let warnings = note.warnings();
             if warnings.contains(&Warning::MissingType) && !note.read_only {
@@ -754,6 +801,132 @@ impl Window {
             .parent()
             .map(|d| gio::File::for_path(d).uri().to_string() + "/");
         view.load_html(&html_view::with_csp(&note.source), dir.as_deref());
+    }
+
+    /// Llena una lista con las propiedades de una nota. Las citas de `sources` tienen un botón
+    /// que abre la fuente (FR-006, historia 6).
+    fn fill_props(&self, list: &gtk::ListBox, note: &RelPath, entries: &[PropEntry]) {
+        for e in entries {
+            if e.key == "sources"
+                && let PropValue::List(items) = &e.value
+            {
+                for item in items {
+                    let PropValue::Map(fields) = item else {
+                        continue;
+                    };
+                    let get = |k: &str| {
+                        fields
+                            .iter()
+                            .find(|(key, _)| key == k)
+                            .and_then(|(_, v)| v.as_text())
+                    };
+                    let Some(resource) = get("resource") else {
+                        continue;
+                    };
+                    let title = get("title").or(get("id")).unwrap_or("fuente");
+                    let row = adw::ActionRow::builder()
+                        .title(format!("sources · {}", glib::markup_escape_text(title)))
+                        .subtitle(glib::markup_escape_text(resource).as_str())
+                        .subtitle_selectable(true)
+                        .build();
+                    let open = gtk::Button::builder()
+                        .icon_name("document-open-symbolic")
+                        .tooltip_text("Abrir la fuente")
+                        .valign(gtk::Align::Center)
+                        .css_classes(["flat"])
+                        .build();
+                    open.update_property(&[gtk::accessible::Property::Label(&format!(
+                        "Abrir la fuente {title}"
+                    ))]);
+                    let (this, from, res) = (self.clone(), note.clone(), resource.to_owned());
+                    open.connect_clicked(move |_| this.open_source(&from, &res));
+                    row.add_suffix(&open);
+                    row.set_activatable_widget(Some(&open));
+                    list.append(&row);
+                }
+                continue;
+            }
+            let row = adw::ActionRow::builder()
+                .title(&e.key)
+                .subtitle(glib::markup_escape_text(&display(&e.value)).as_str())
+                .subtitle_selectable(true)
+                .build();
+            row.add_css_class("property");
+            list.append(&row);
+        }
+        list.set_visible(!entries.is_empty());
+    }
+
+    /// Abre una fuente citada con la aplicación del sistema, si existe en la bóveda o es una URL.
+    fn open_source(&self, from: &RelPath, resource: &str) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        if resource.starts_with("http://") || resource.starts_with("https://") {
+            gtk::UriLauncher::new(resource).launch(
+                Some(&self.0.window),
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
+            return;
+        }
+        match vault.resolve_link(from, resource) {
+            orbital_vault::Resolution::Found(p) => self.launch_file(&p.to_path(vault.root())),
+            _ => self.toast(&format!("No encontré la fuente «{resource}»")),
+        }
+    }
+
+    /// Abre un archivo con la aplicación predeterminada del sistema.
+    fn launch_file(&self, path: &Path) {
+        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+        let this = self.clone();
+        launcher.launch(Some(&self.0.window), None::<&gio::Cancellable>, move |r| {
+            if let Err(e) = r
+                && !e.matches(gtk::DialogError::Dismissed)
+            {
+                this.toast(&format!("No se pudo abrir: {e}"));
+            }
+        });
+    }
+
+    /// Copia archivos soltados sobre la lista a `raw/` (la única forma de agregar fuentes).
+    fn setup_raw_drop(&self) {
+        let drop = gtk::DropTarget::new(
+            gtk::gdk::FileList::static_type(),
+            gtk::gdk::DragAction::COPY,
+        );
+        let this = self.clone();
+        drop.connect_drop(move |_, value, _, _| {
+            let Ok(list) = value.get::<gtk::gdk::FileList>() else {
+                return false;
+            };
+            let Some(vault) = this.0.vault.borrow().clone() else {
+                return false;
+            };
+            let paths: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
+            let this = this.clone();
+            glib::spawn_future_local(async move {
+                let result = gio::spawn_blocking(move || {
+                    let ctx = write_ctx::now(Some(vault.config()));
+                    paths
+                        .iter()
+                        .map(|p| vault.copy_into_raw(p, &ctx))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .await;
+                match result {
+                    Ok(Ok(copied)) => {
+                        let first = copied.first().cloned();
+                        this.reload(first).await;
+                        this.toast(&format!("{} fuente(s) copiada(s) a raw/", copied.len()));
+                    }
+                    Ok(Err(e)) => this.toast(&format!("No se pudo copiar a raw/: {e}")),
+                    Err(_) => this.toast("No se pudo copiar a raw/"),
+                }
+            });
+            true
+        });
+        self.0.list_view.add_controller(drop);
     }
 
     /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió.
@@ -1580,20 +1753,6 @@ fn display(v: &PropValue) -> String {
             .collect::<Vec<_>>()
             .join(" · "),
     }
-}
-
-/// Llena una lista con las propiedades de una nota.
-fn fill_props(list: &gtk::ListBox, entries: &[orbital_vault::props::PropEntry]) {
-    for e in entries {
-        let row = adw::ActionRow::builder()
-            .title(&e.key)
-            .subtitle(glib::markup_escape_text(&display(&e.value)).as_str())
-            .subtitle_selectable(true)
-            .build();
-        row.add_css_class("property");
-        list.append(&row);
-    }
-    list.set_visible(!entries.is_empty());
 }
 
 /// El archivo más reciente de la papelera cuya ruta original es `original`.

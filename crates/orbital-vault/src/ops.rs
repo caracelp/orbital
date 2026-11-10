@@ -354,6 +354,44 @@ impl Vault {
         Ok(())
     }
 
+    /// Copia un archivo de afuera a `raw/` sin modificarlo (la única forma de escribir en `raw/`,
+    /// FR-006). Si el nombre existe, agrega `-1`, `-2`…; nunca pisa una fuente.
+    pub fn copy_into_raw(
+        &self,
+        src: &std::path::Path,
+        _ctx: &WriteCtx,
+    ) -> Result<RelPath, VaultError> {
+        let raw = self.root().join("raw");
+        if !raw.is_dir() {
+            return Err(VaultError::InvalidPath("raw".into()));
+        }
+        let name = src
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.trim_start_matches('.').to_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "fuente".to_owned());
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s.to_owned(), format!(".{e}")),
+            _ => (name.clone(), String::new()),
+        };
+        let bytes = fs::read(src)?;
+        let mut n = 0u32;
+        loop {
+            let file = if n == 0 {
+                name.clone()
+            } else {
+                format!("{stem}-{n}{ext}")
+            };
+            let dest = raw.join(&file);
+            if fs::symlink_metadata(&dest).is_err() {
+                crate::write::atomic_write(&dest, &bytes)?;
+                return RelPath::new(&format!("raw/{file}"));
+            }
+            n += 1;
+        }
+    }
+
     /// Registra un borrado ya hecho: quita la entrada del índice y lo anota en el registro.
     pub fn after_delete(
         &self,
