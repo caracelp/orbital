@@ -15,6 +15,7 @@ use orbital_vault::props::{PropEntry, PropValue, Warning};
 use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, NoteMeta, RelPath, Vault};
 use webkit6::prelude::*;
 
+use crate::editor::Editor;
 use crate::html_view;
 use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
@@ -35,6 +36,13 @@ struct Inner {
     list_view: gtk::ListView,
     editor: gtk::TextView,
     content_stack: gtk::Stack,
+    code_editor: Editor,
+    /// Subtítulo de la nota sin el estado del guardado.
+    subtitle_base: RefCell<String>,
+    /// La ventana ya guardó lo pendiente y puede cerrarse.
+    closing: Cell<bool>,
+    /// Escrituras propias recientes (ruta → hash), que el monitor no debe tomar como externas.
+    own_writes: RefCell<HashMap<RelPath, u64>>,
     props_list: gtk::ListBox,
     note_banner: adw::Banner,
     type_banner: adw::Banner,
@@ -112,6 +120,9 @@ impl Window {
             .build();
         content_stack.add_named(&empty, Some("vacio"));
         content_stack.add_named(&editor_scroll, Some("nota"));
+        // Editor de notas (002): vista Código con guardado automático.
+        let code_editor = Editor::new();
+        content_stack.add_named(code_editor.widget(), Some("codigo"));
         // Página de notas HTML: propiedades arriba y la vista web (que se crea al usarla) abajo.
         let html_props = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -270,6 +281,10 @@ impl Window {
             list_view,
             editor,
             content_stack,
+            code_editor,
+            subtitle_base: RefCell::new(String::new()),
+            closing: Cell::new(false),
+            own_writes: RefCell::new(HashMap::new()),
             props_list,
             note_banner,
             type_banner,
@@ -291,6 +306,7 @@ impl Window {
         let content = this.0.content_stack.clone();
         this.setup_drop(&content);
         this.setup_raw_drop();
+        this.setup_editor();
         this.setup_list();
         this
     }
@@ -672,7 +688,30 @@ impl Window {
                 this.show_entry(e);
             }
         });
+        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
+        let expanded: std::collections::HashSet<String> = i
+            .list_view
+            .model()
+            .map(|old| {
+                (0..old.n_items())
+                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
+                    .filter(|r| r.is_expanded())
+                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
+                    .map(|o| o.string().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
         i.list_view.set_model(Some(&selection));
+        let mut n = 0;
+        while n < selection.n_items() {
+            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
+                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
+                && expanded.contains(o.string().as_str())
+            {
+                row.set_expanded(true);
+            }
+            n += 1;
+        }
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
@@ -716,6 +755,12 @@ impl Window {
         };
         let this = self.clone();
         glib::spawn_future_local(async move {
+            // Antes de cambiar de nota, se guarda lo pendiente de la anterior (FR-002).
+            let editor = this.0.code_editor.clone();
+            if editor.current_path().is_some_and(|p| p != entry.path) {
+                editor.flush().await;
+                editor.close();
+            }
             let is_note = Format::from_name(entry.path.file_name()).is_some();
             let loaded = if is_note {
                 let (v, p) = (vault.clone(), entry.path.clone());
@@ -743,6 +788,7 @@ impl Window {
                 subtitle.push_str(" · solo lectura");
             }
             i.content_title.set_subtitle(&subtitle);
+            *i.subtitle_base.borrow_mut() = subtitle;
             this.clear_note_view();
             let raw = entry.zone == orbital_vault::Zone::Raw;
             match loaded {
@@ -804,8 +850,13 @@ impl Window {
                 err.line, err.message
             ));
             i.note_banner.set_visible(true);
-            i.editor.buffer().set_text(&note.source);
-            i.content_stack.set_visible_child_name("nota");
+            if note.format == Format::Md && !note.read_only {
+                // Las propiedades inválidas se corrigen en la vista Código (FR-018).
+                self.open_in_code(&note);
+            } else {
+                i.editor.buffer().set_text(&note.source);
+                i.content_stack.set_visible_child_name("nota");
+            }
         } else {
             let list = match note.format {
                 Format::Md => &i.props_list,
@@ -823,6 +874,7 @@ impl Window {
                 i.note_banner.set_visible(true);
             }
             match note.format {
+                Format::Md if !note.read_only => self.open_in_code(&note),
                 Format::Md => {
                     i.editor.buffer().set_text(note.body());
                     i.content_stack.set_visible_child_name("nota");
@@ -834,6 +886,61 @@ impl Window {
             }
         }
         *i.current_note.borrow_mut() = Some(note);
+    }
+
+    /// Abre una nota `.md` en la vista Código. Si ya está abierta (por ejemplo, al recargar la
+    /// lista), no se recarga el texto: se conservan el cursor, la selección y el deshacer.
+    fn open_in_code(&self, note: &Note) {
+        let i = &self.0;
+        if i.code_editor.current_path().as_ref() != Some(&note.path)
+            && let Some(vault) = i.vault.borrow().clone()
+        {
+            i.code_editor.load(vault, note);
+        }
+        // En Código el frontmatter está en el texto: la lista de propiedades no se repite.
+        i.props_list.set_visible(false);
+        i.content_stack.set_visible_child_name("codigo");
+    }
+
+    /// Conecta el editor con la ventana: estado del guardado, errores y cierre.
+    fn setup_editor(&self) {
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_status(move |status| {
+            let Some(i) = weak.upgrade() else { return };
+            let base = i.subtitle_base.borrow().clone();
+            let label = status.label();
+            i.content_title.set_subtitle(&if label.is_empty() {
+                base
+            } else {
+                format!("{base} · {label}")
+            });
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_saved(move |path, hash| {
+            if let Some(i) = weak.upgrade() {
+                i.own_writes.borrow_mut().insert(path.clone(), hash);
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_error(move |msg| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).toast(msg);
+            }
+        });
+        // Al cerrar la ventana, primero se guarda lo pendiente.
+        let this = self.clone();
+        self.0.window.connect_close_request(move |w| {
+            if this.0.closing.get() || !this.0.code_editor.has_pending() {
+                return glib::Propagation::Proceed;
+            }
+            let (this, w) = (this.clone(), w.clone());
+            glib::spawn_future_local(async move {
+                this.0.code_editor.flush().await;
+                this.0.closing.set(true);
+                w.close();
+            });
+            glib::Propagation::Stop
+        });
     }
 
     /// Muestra una nota HTML como página, creando la vista web la primera vez.
@@ -1195,6 +1302,7 @@ impl Window {
     }
 
     async fn set_archived(&self, path: RelPath, archived: bool) {
+        self.0.code_editor.flush().await;
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1221,6 +1329,7 @@ impl Window {
 
     /// Guarda archivos como adjuntos de la nota abierta y la vuelve a mostrar.
     async fn attach_files(&self, files: Vec<(String, Vec<u8>)>) {
+        self.0.code_editor.flush().await;
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1315,18 +1424,73 @@ impl Window {
         };
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let changes = gio::spawn_blocking(move || vault.on_external_change(&paths))
-                .await
-                .unwrap_or_default();
-            if changes.is_empty() {
-                return;
-            }
+            let v = vault.clone();
+            let own: Vec<(RelPath, u64)> = this
+                .0
+                .own_writes
+                .borrow()
+                .iter()
+                .map(|(p, h)| (p.clone(), *h))
+                .collect();
+            let (mut changes, echoes) = gio::spawn_blocking(move || {
+                let changes = v.on_external_change(&paths);
+                // Un cambio cuyo contenido es el que escribió el editor es un eco propio.
+                let echoes: Vec<RelPath> = own
+                    .into_iter()
+                    .filter(|(p, h)| {
+                        std::fs::read(p.to_path(v.root()))
+                            .is_ok_and(|b| orbital_vault::write::hash(&b) == *h)
+                    })
+                    .map(|(p, _)| p)
+                    .collect();
+                (changes, echoes)
+            })
+            .await
+            .unwrap_or_default();
+            changes.retain(
+                |c| !matches!(c, orbital_vault::ExternalChange::Modified(p) if echoes.contains(p)),
+            );
             let current = this
                 .0
                 .current_entry
                 .borrow()
                 .as_ref()
                 .map(|e| e.path.clone());
+            // La nota abierta en el editor: el eco de un guardado propio se ignora, y con cambios
+            // sin guardar no se pisa nada (FR-019).
+            let editor = this.0.code_editor.clone();
+            if let Some(open) = editor.current_path() {
+                let touched = changes
+                    .iter()
+                    .any(|c| matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open));
+                if touched {
+                    let abs = open.to_path(vault.root());
+                    let disk = gio::spawn_blocking(move || std::fs::read(abs).ok())
+                        .await
+                        .ok()
+                        .flatten();
+                    let disk_hash = disk.map(|b| orbital_vault::write::hash(&b)).unwrap_or(0);
+                    match editor.external_change(disk_hash) {
+                        orbital_vault::session::ExternalAction::Ignore => changes.retain(|c| {
+                            !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                        }),
+                        orbital_vault::session::ExternalAction::Reload => editor.close(),
+                        orbital_vault::session::ExternalAction::AskUser => this.toast(
+                            "La nota cambió en otro programa mientras la editabas. Tus cambios siguen acá y no se guardan solos.",
+                        ),
+                    }
+                }
+                let gone = changes
+                    .iter()
+                    .any(|c| matches!(c, orbital_vault::ExternalChange::Removed(p) if *p == open));
+                if gone && editor.has_pending() {
+                    this.toast("La nota abierta se borró desde otro programa. Tus cambios siguen en el editor.");
+                    return;
+                }
+            }
+            if changes.is_empty() {
+                return;
+            }
             let removed = current.as_ref().is_some_and(|c| {
                 changes
                     .iter()
@@ -1509,6 +1673,7 @@ impl Window {
 
     /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
     async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
+        self.0.code_editor.flush().await;
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1520,6 +1685,8 @@ impl Window {
         .await;
         match result {
             Ok(Ok(_)) => {
+                // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
+                self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
                 if undoable {
                     let this = self.clone();
@@ -1564,6 +1731,7 @@ impl Window {
     }
 
     async fn do_trash(&self, path: RelPath) {
+        self.0.code_editor.flush().await;
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1601,6 +1769,7 @@ impl Window {
             v.after_delete(&for_log, &ctx)
         })
         .await;
+        self.0.code_editor.close();
         self.reload(None).await;
         let msg = match &in_vault {
             None => format!("«{}» se movió a la papelera", path.file_name()),
@@ -1727,6 +1896,11 @@ impl Window {
             }
             None => false,
         }
+    }
+
+    /// Desarrollo: latencia al escribir en la nota abierta (ver `Editor::measure_typing`).
+    pub async fn measure_typing(&self, chars: usize) -> Vec<f64> {
+        self.0.code_editor.measure_typing(chars).await
     }
 
     /// Ejecuta `f` cuando termina de dibujarse el próximo cuadro de la ventana.
