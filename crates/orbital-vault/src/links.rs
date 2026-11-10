@@ -1,6 +1,6 @@
 //! Resolución, extracción y reescritura de destinos de enlaces (FR-001 a FR-006, contrato §6).
 
-use crate::entry::{EntryKind, RelPath, Zone};
+use crate::entry::RelPath;
 use crate::vault::Vault;
 
 /// Tipo sintáctico del enlace.
@@ -179,20 +179,15 @@ impl Vault {
         let has_ext =
             file.contains('.') && matches!(file.rsplit('.').next(), Some("md" | "html" | "htm"));
         let wanted = file.to_lowercase();
+        let key = if has_ext {
+            stem(&wanted)
+        } else {
+            wanted.as_str()
+        };
         let mut hits: Vec<RelPath> = self
-            .entries()
-            .iter()
+            .notes_named(key)
             .filter(|e| {
-                e.zone == Zone::Wiki
-                    && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
-            })
-            .filter(|e| {
-                let fname = e.path.file_name().to_lowercase();
-                let name_ok = if has_ext {
-                    fname == wanted
-                } else {
-                    stem(&fname) == wanted
-                };
+                let name_ok = !has_ext || e.path.file_name().to_lowercase() == wanted;
                 let folder_ok = folder.as_ref().is_none_or(|f| {
                     let dir = e
                         .path

@@ -69,8 +69,11 @@ impl LinkGraph {
 
     /// Actualiza los enlaces salientes de un archivo en el grafo y recalcula sus retroenlaces.
     pub fn update_file(&mut self, vault: &Vault, path: &RelPath, text: &str, is_html: bool) {
-        // 1. Quitar referencias salientes anteriores originadas en `path`
-        self.clean_outgoing_from(path);
+        // 1. Quitar referencias salientes anteriores originadas en `path` (solo si ya estaba:
+        //    limpiar recorre todo el grafo, y al construirlo desde cero sería cuadrático).
+        if self.outgoing.contains_key(path) {
+            self.clean_outgoing_from(path);
+        }
 
         // 2. Extraer los enlaces nuevos
         let occurrences = extract_links(text, is_html);

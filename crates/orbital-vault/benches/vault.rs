@@ -63,6 +63,17 @@ fn open_5000(bencher: divan::Bencher) {
     });
 }
 
+/// Grafo de enlaces de 5000 notas (SC-003 de la 003: < 500 ms en segundo plano).
+#[divan::bench(sample_count = 5)]
+fn link_graph_5000(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    bencher.bench(|| {
+        orbital_vault::LinkGraph::build(divan::black_box(&vault))
+            .unwrap()
+            .unresolved_count()
+    });
+}
+
 /// Notas de la bóveda de 5000.
 fn note_paths() -> &'static Vec<orbital_vault::RelPath> {
     static PATHS: OnceLock<Vec<orbital_vault::RelPath>> = OnceLock::new();
