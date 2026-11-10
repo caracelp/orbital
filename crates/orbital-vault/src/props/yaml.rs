@@ -23,7 +23,7 @@ pub fn parse_block(text: &str) -> Result<Vec<PropEntry>, PropError> {
     while let Some(item) = parser.next_event() {
         let (event, span) = item.map_err(|e| PropError {
             line: e.marker().line().max(1),
-            message: e.info().to_owned(),
+            message: translate(e.info()),
         })?;
         let line = span.start.line().saturating_sub(1);
         match event {
@@ -92,6 +92,72 @@ pub fn parse_block(text: &str) -> Result<Vec<PropEntry>, PropError> {
         });
     }
     Ok(out)
+}
+
+/// Traduce los mensajes de `saphyr-parser` que aparecen con YAML escrito a mano.
+/// Si el mensaje no es conocido, se muestra genérico con el original entre paréntesis.
+pub fn translate(msg: &str) -> String {
+    const TABLE: [(&str, &str); 16] = [
+        (
+            "illegal placement of ':' indicator",
+            "hay un «:» donde no corresponde; si el valor tiene «:», ponelo entre comillas",
+        ),
+        (
+            "mapping values are not allowed in this context",
+            "hay un «clave: valor» donde no corresponde; revisá la sangría o poné el valor entre comillas",
+        ),
+        (
+            "flow sequence, expected ',' or ']'",
+            "falta cerrar una lista con «]» o separar sus elementos con «,»",
+        ),
+        (
+            "flow mapping, did not find expected ',' or '}'",
+            "falta cerrar un mapeo con «}» o separar sus elementos con «,»",
+        ),
+        (
+            "block mapping, did not find expected key",
+            "falta una clave; revisá la sangría de esta línea",
+        ),
+        (
+            "block collection, did not find expected '-'",
+            "falta un «-» en una lista; revisá la sangría",
+        ),
+        ("did not find expected node content", "falta un valor"),
+        ("invalid indentation", "la sangría no es válida"),
+        (
+            "tabs disallowed",
+            "YAML no admite tabulaciones para la sangría; usá espacios",
+        ),
+        (
+            "found a tab",
+            "YAML no admite tabulaciones aquí; usá espacios",
+        ),
+        (
+            "quoted scalar, found unexpected end of stream",
+            "falta cerrar unas comillas",
+        ),
+        (
+            "found unknown escape character",
+            "hay un escape «\\» desconocido dentro de comillas dobles",
+        ),
+        (
+            "found unknown anchor",
+            "se usa un alias «*» que no fue definido",
+        ),
+        ("found duplicated anchor", "hay un ancla «&» repetida"),
+        (
+            "unexpected end of plain scalar",
+            "el texto termina de forma inesperada; probá ponerlo entre comillas",
+        ),
+        (
+            "block sequence entries are not allowed",
+            "hay un elemento de lista «-» donde no corresponde",
+        ),
+    ];
+    TABLE.iter().find(|(en, _)| msg.contains(en)).map_or_else(
+        || format!("error de sintaxis YAML ({msg})"),
+        |(_, es)| (*es).to_owned(),
+    )
 }
 
 /// Inicios de línea en bytes. La línea `i` va de `table[i]` hasta `table[i + 1]` (o el final).
@@ -327,6 +393,18 @@ pub fn is_link(v: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_in_spanish() {
+        let e = parse_block("type: atomo\ntags: [a, b\ntitle: roto\n").unwrap_err();
+        assert!(
+            !e.message.is_ascii() || e.message.starts_with("error de sintaxis"),
+            "{}",
+            e.message
+        );
+        assert!(translate("illegal placement of ':' indicator").starts_with("hay un «:»"));
+        assert_eq!(translate("algo raro"), "error de sintaxis YAML (algo raro)");
+    }
 
     #[test]
     fn numbers() {

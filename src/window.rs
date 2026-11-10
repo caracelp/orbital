@@ -13,7 +13,9 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::props::{PropValue, Warning};
 use orbital_vault::{Entry, EntryKind, Format, Note, Vault};
+use webkit6::prelude::*;
 
+use crate::html_view;
 use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
 use crate::write_ctx;
@@ -34,7 +36,12 @@ struct Inner {
     content_stack: gtk::Stack,
     props_list: gtk::ListBox,
     note_banner: adw::Banner,
+    type_banner: adw::Banner,
     current_note: RefCell<Option<Note>>,
+    html_props: gtk::ListBox,
+    html_page: gtk::Box,
+    /// Vista web compartida; `None` hasta abrir la primera nota HTML.
+    web: RefCell<Option<webkit6::WebView>>,
     vault: RefCell<Option<Arc<Vault>>>,
     tree: RefCell<Rc<Tree>>,
     /// Si es `false` (modo de captura), no se guarda el estado de la app.
@@ -96,6 +103,25 @@ impl Window {
             .build();
         content_stack.add_named(&empty, Some("vacio"));
         content_stack.add_named(&editor_scroll, Some("nota"));
+        // Página de notas HTML: propiedades arriba y la vista web (que se crea al usarla) abajo.
+        let html_props = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .margin_top(12)
+            .margin_bottom(12)
+            .margin_start(12)
+            .margin_end(12)
+            .visible(false)
+            .build();
+        html_props.add_css_class("boxed-list");
+        html_props.update_property(&[gtk::accessible::Property::Label("Propiedades de la nota")]);
+        let html_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        html_page.append(
+            &adw::Clamp::builder()
+                .maximum_size(720)
+                .child(&html_props)
+                .build(),
+        );
+        content_stack.add_named(&html_page, Some("html"));
 
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
@@ -103,7 +129,16 @@ impl Window {
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
-        let note_banner = adw::Banner::builder().revealed(false).build();
+        // Dos avisos fijos: AT-SPI (y Orca) no ven un botón que se agrega después de crear el aviso.
+        let type_banner = adw::Banner::builder()
+            .title(Warning::MissingType.message())
+            .button_label("Completar")
+            .action_name("win.complete-type")
+            .revealed(true)
+            .visible(false)
+            .build();
+        let note_banner = adw::Banner::builder().revealed(true).visible(false).build();
+        content_view.add_top_bar(&type_banner);
         content_view.add_top_bar(&note_banner);
         content_view.set_content(Some(&content_stack));
         let content_page = adw::NavigationPage::builder()
@@ -127,7 +162,8 @@ impl Window {
             .title("Estructura incompleta")
             .button_label("Completar…")
             .action_name("win.complete-structure")
-            .revealed(false)
+            .revealed(true)
+            .visible(false)
             .build();
 
         let sidebar_title = adw::WindowTitle::new("Orbital", "");
@@ -192,7 +228,11 @@ impl Window {
             content_stack,
             props_list,
             note_banner,
+            type_banner,
             current_note: RefCell::new(None),
+            html_props,
+            html_page,
+            web: RefCell::new(None),
             vault: RefCell::new(None),
             tree: RefCell::new(Rc::new(Tree::new())),
             persist: Cell::new(true),
@@ -340,10 +380,12 @@ impl Window {
             let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
                 return;
             };
-            match this.entry(path.string().as_str()) {
-                Some(e) if e.kind == EntryKind::Folder => row.set_expanded(!row.is_expanded()),
-                Some(e) => this.show_entry(e),
-                None => {}
+            // Las notas se abren al elegirlas (ver `show_vault`); activar solo expande carpetas.
+            if this
+                .entry(path.string().as_str())
+                .is_some_and(|e| e.kind == EntryKind::Folder)
+            {
+                row.set_expanded(!row.is_expanded());
             }
         });
     }
@@ -460,7 +502,7 @@ impl Window {
         i.window.set_title(Some(&format!("{name} — Orbital")));
 
         let incomplete = !vault.layout().is_complete();
-        i.banner.set_revealed(incomplete);
+        i.banner.set_visible(incomplete);
         for w in vault.warnings() {
             self.toast(w);
         }
@@ -479,6 +521,22 @@ impl Window {
             .model(&tree_model)
             .autoselect(false)
             .build();
+        // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
+        let this = self.clone();
+        selection.connect_selection_changed(move |sel, _, _| {
+            let Some(row) = sel.selected_item().and_downcast::<gtk::TreeListRow>() else {
+                return;
+            };
+            let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
+                return;
+            };
+            if let Some(e) = this
+                .entry(path.string().as_str())
+                .filter(|e| e.kind != EntryKind::Folder)
+            {
+                this.show_entry(e);
+            }
+        });
         i.list_view.set_model(Some(&selection));
 
         i.editor.buffer().set_text("");
@@ -532,10 +590,12 @@ impl Window {
             this.clear_note_view();
             match loaded {
                 Ok(Some(note)) => this.show_note(note),
-                Ok(None) => {}
-                Err(msg) => i.editor.buffer().set_text(&msg),
+                Ok(None) => i.content_stack.set_visible_child_name("nota"),
+                Err(msg) => {
+                    i.editor.buffer().set_text(&msg);
+                    i.content_stack.set_visible_child_name("nota");
+                }
             }
-            i.content_stack.set_visible_child_name("nota");
             i.split.set_show_content(true);
         });
     }
@@ -544,9 +604,10 @@ impl Window {
         let i = &self.0;
         i.props_list.remove_all();
         i.props_list.set_visible(false);
-        i.note_banner.set_revealed(false);
-        i.note_banner.set_button_label(None);
-        i.note_banner.set_action_name(None);
+        i.html_props.remove_all();
+        i.html_props.set_visible(false);
+        i.note_banner.set_visible(false);
+        i.type_banner.set_visible(false);
         *i.current_note.borrow_mut() = None;
     }
 
@@ -560,34 +621,62 @@ impl Window {
                 "Las propiedades tienen un error en la línea {}: {}",
                 err.line, err.message
             ));
-            i.note_banner.set_revealed(true);
+            i.note_banner.set_visible(true);
             i.editor.buffer().set_text(&note.source);
+            i.content_stack.set_visible_child_name("nota");
         } else {
+            let list = match note.format {
+                Format::Md => &i.props_list,
+                Format::Html => &i.html_props,
+            };
             if let Some(block) = &note.props {
-                for e in &block.entries {
-                    let row = adw::ActionRow::builder()
-                        .title(&e.key)
-                        .subtitle(glib::markup_escape_text(&display(&e.value)).as_str())
-                        .subtitle_selectable(true)
-                        .build();
-                    row.add_css_class("property");
-                    i.props_list.append(&row);
-                }
-                i.props_list.set_visible(!block.entries.is_empty());
+                fill_props(list, &block.entries);
             }
             let warnings = note.warnings();
             if warnings.contains(&Warning::MissingType) && !note.read_only {
-                i.note_banner.set_title(&Warning::MissingType.message());
-                i.note_banner.set_button_label(Some("Completar"));
-                i.note_banner.set_action_name(Some("win.complete-type"));
-                i.note_banner.set_revealed(true);
-            } else if let Some(w) = warnings.first() {
-                i.note_banner.set_title(&w.message());
-                i.note_banner.set_revealed(true);
+                i.type_banner.set_visible(true);
             }
-            i.editor.buffer().set_text(note.body());
+            if let Some(w) = warnings.iter().find(|w| **w != Warning::MissingType) {
+                i.note_banner.set_title(&w.message());
+                i.note_banner.set_visible(true);
+            }
+            match note.format {
+                Format::Md => {
+                    i.editor.buffer().set_text(note.body());
+                    i.content_stack.set_visible_child_name("nota");
+                }
+                Format::Html => {
+                    self.load_html(&note);
+                    i.content_stack.set_visible_child_name("html");
+                }
+            }
         }
         *i.current_note.borrow_mut() = Some(note);
+    }
+
+    /// Muestra una nota HTML como página, creando la vista web la primera vez.
+    fn load_html(&self, note: &Note) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let view = i
+            .web
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let v = html_view::new_view();
+                v.update_property(&[gtk::accessible::Property::Label("Página de la nota")]);
+                i.html_page.append(&v);
+                v
+            })
+            .clone();
+        // Las rutas relativas (imágenes, CSS) se resuelven desde la carpeta de la nota.
+        let dir = note
+            .path
+            .to_path(vault.root())
+            .parent()
+            .map(|d| gio::File::for_path(d).uri().to_string() + "/");
+        view.load_html(&html_view::with_csp(&note.source), dir.as_deref());
     }
 
     /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió.
@@ -790,4 +879,18 @@ fn display(v: &PropValue) -> String {
             .collect::<Vec<_>>()
             .join(" · "),
     }
+}
+
+/// Llena una lista con las propiedades de una nota.
+fn fill_props(list: &gtk::ListBox, entries: &[orbital_vault::props::PropEntry]) {
+    for e in entries {
+        let row = adw::ActionRow::builder()
+            .title(&e.key)
+            .subtitle(glib::markup_escape_text(&display(&e.value)).as_str())
+            .subtitle_selectable(true)
+            .build();
+        row.add_css_class("property");
+        list.append(&row);
+    }
+    list.set_visible(!entries.is_empty());
 }

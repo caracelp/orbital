@@ -1,3 +1,4 @@
+mod html_view;
 mod open_dialog;
 mod state;
 mod style;
@@ -35,8 +36,19 @@ fn parse_capture() -> Option<Capture> {
     })
 }
 
+/// `orbital <carpeta>`: abre esa carpeta con «Abrir» en vez de la última bóveda.
+fn parse_folder() -> Option<PathBuf> {
+    let first = std::env::args().nth(1)?;
+    (!first.starts_with('-')).then(|| PathBuf::from(first))
+}
+
 fn main() -> glib::ExitCode {
     let capture = parse_capture();
+    let folder = if capture.is_none() {
+        parse_folder()
+    } else {
+        None
+    };
     let mut builder = adw::Application::builder().application_id(APP_ID);
     if capture.is_some() {
         // Instancia propia, para no reusar una ventana de Orbital ya abierta.
@@ -45,12 +57,15 @@ fn main() -> glib::ExitCode {
     let app = builder.build();
     app.connect_startup(|_| style::apply());
     let capture = std::rc::Rc::new(std::cell::RefCell::new(capture));
-    app.connect_activate(move |app| activate(app, capture.borrow_mut().take()));
+    let folder = std::cell::RefCell::new(folder);
+    app.connect_activate(move |app| {
+        activate(app, capture.borrow_mut().take(), folder.borrow_mut().take())
+    });
     // Los argumentos propios no se pasan a GApplication.
     app.run_with_args(&[std::env::args().next().unwrap_or_default()])
 }
 
-fn activate(app: &adw::Application, capture: Option<Capture>) {
+fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<PathBuf>) {
     let window = Window::new(app);
     window.present();
     if let Some(cap) = capture {
@@ -63,13 +78,18 @@ fn activate(app: &adw::Application, capture: Option<Capture>) {
             if let Some(note) = &cap.note {
                 window.show_path(note);
             }
-            glib::timeout_future(Duration::from_millis(800)).await;
+            // WebKit dibuja en otro proceso: se le da tiempo para que la página aparezca.
+            glib::timeout_future(Duration::from_millis(2500)).await;
             match window.capture(&cap.out) {
                 Ok(()) => println!("Captura guardada en {}", cap.out.display()),
                 Err(e) => eprintln!("No se pudo capturar la ventana: {e}"),
             }
             app.quit();
         });
+        return;
+    }
+    if let Some(path) = folder {
+        glib::spawn_future_local(async move { window.open_path(path).await });
         return;
     }
     // Reabre la última bóveda, si todavía existe; si no, queda la pantalla inicial.
