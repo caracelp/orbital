@@ -6,6 +6,7 @@ Uso: python3 -I tools/atspi.py <comando> [args]
   activar <rol> <nombre>     ejecuta la acción principal del primer elemento con ese rol y nombre
   esperar <rol> <nombre>     espera (hasta 10 s) a que aparezca un elemento
   texto <rol> <nombre>       imprime el texto de un elemento
+  escribir <rol> <nombre> <texto>  reemplaza el texto de un campo editable
   elegir <nombre>            elige la fila de la lista de la bóveda cuyo nombre contiene <nombre>
 
 <nombre> es un fragmento del nombre accesible; <rol> es el nombre de rol de AT-SPI
@@ -119,6 +120,13 @@ def main():
             return 1
         action.do_action(0)
         print(f"Activé [{node.get_role_name()}] {node.get_name()!r} ({Atspi.Action.get_action_name(action, 0)})")
+    elif cmd == "escribir":
+        editable = node.get_editable_text_iface()
+        if editable is None:
+            print(f"[{node.get_role_name()}] {node.get_name()!r} no es editable")
+            return 1
+        editable.set_text_contents(sys.argv[4])
+        print(f"Escribí {sys.argv[4]!r} en {node.get_name()!r}")
     elif cmd == "texto":
         t = node.get_text_iface()
         print(t.get_text(0, t.get_character_count()) if t else node.get_name())

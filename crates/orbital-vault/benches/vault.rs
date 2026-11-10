@@ -154,3 +154,31 @@ fn set_prop_100k(bencher: divan::Bencher) {
         })
         .bench_local_values(|(note, value)| v.set_prop(&note, "title", &value, &ctx).unwrap());
 }
+
+/// Actualizar una entrada de un `index.md` de 5000 entradas (objetivo: < 20 ms).
+#[divan::bench]
+fn index_upsert_5000(bencher: divan::Bencher) {
+    let text = std::fs::read_to_string(vault_5000().join("wiki").join("index.md")).unwrap();
+    let entry = orbital_vault::okf_files::IndexEntry {
+        title: "Nota 2500 cambiada".into(),
+        link: "/nota-02500.md".into(),
+        description: "Otra descripción.".into(),
+        section: "atomo".into(),
+    };
+    bencher.bench(|| orbital_vault::okf_files::index_upsert(divan::black_box(&text), &entry).len());
+}
+
+/// Agregar una entrada al registro.
+#[divan::bench]
+fn log_add(bencher: divan::Bencher) {
+    let text = std::fs::read_to_string(vault_5000().join("wiki").join("log.md")).unwrap();
+    bencher.bench(|| {
+        orbital_vault::okf_files::log_add(
+            divan::black_box(&text),
+            "2026-11-10",
+            orbital_vault::okf_files::Verb::Creation,
+            "[X](/x.md)",
+        )
+        .len()
+    });
+}

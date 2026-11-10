@@ -261,7 +261,9 @@ impl Vault {
         ctx: &WriteCtx,
     ) -> Result<WriteReceipt, VaultError> {
         let new = edit(note, key, Some(value))?;
-        self.save_note(note, &new, ctx)
+        let mut r = self.save_note(note, &new, ctx)?;
+        self.after_prop_change(note, key, ctx, &mut r)?;
+        Ok(r)
     }
 
     /// Quita una propiedad. Si no existe, no hace nada.
@@ -272,7 +274,27 @@ impl Vault {
         ctx: &WriteCtx,
     ) -> Result<WriteReceipt, VaultError> {
         let new = edit(note, key, None)?;
-        self.save_note(note, &new, ctx)
+        let mut r = self.save_note(note, &new, ctx)?;
+        self.after_prop_change(note, key, ctx, &mut r)?;
+        Ok(r)
+    }
+
+    /// Si cambió algo que se ve en el índice, pone al día su entrada (sin tocar el registro).
+    fn after_prop_change(
+        &self,
+        note: &Note,
+        key: &str,
+        ctx: &WriteCtx,
+        receipt: &mut WriteReceipt,
+    ) -> Result<(), VaultError> {
+        if !receipt.written.is_empty()
+            && matches!(key, "title" | "description" | "type" | "archived")
+        {
+            receipt
+                .written
+                .extend(self.sync_index(&note.path, ctx)?.written);
+        }
+        Ok(())
     }
 
     /// Crea una nota nueva con las propiedades predeterminadas (data-model): `type`, `title`,
@@ -314,6 +336,7 @@ impl Vault {
             }
         };
         safe_write(self.root(), &path, content.as_bytes(), None, ctx)?;
+        self.after_create(&path, ctx)?;
         Ok(path)
     }
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::props::{PropValue, Warning};
-use orbital_vault::{Entry, EntryKind, Format, Note, Vault};
+use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, RelPath, Vault};
 use webkit6::prelude::*;
 
 use crate::html_view;
@@ -38,6 +38,8 @@ struct Inner {
     note_banner: adw::Banner,
     type_banner: adw::Banner,
     current_note: RefCell<Option<Note>>,
+    /// Archivo que se está mostrando (nota o no).
+    current_entry: RefCell<Option<Arc<Entry>>>,
     html_props: gtk::ListBox,
     html_page: gtk::Box,
     /// Vista web compartida; `None` hasta abrir la primera nota HTML.
@@ -126,6 +128,15 @@ impl Window {
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
         content_header.set_title_widget(Some(&content_title));
+        let note_menu = gio::Menu::new();
+        note_menu.append(Some("Renombrar o mover…"), Some("win.rename"));
+        note_menu.append(Some("Mover a la papelera"), Some("win.trash"));
+        let note_menu_button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text("Opciones de la nota")
+            .menu_model(&note_menu)
+            .build();
+        content_header.pack_end(&note_menu_button);
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
@@ -230,6 +241,7 @@ impl Window {
             note_banner,
             type_banner,
             current_note: RefCell::new(None),
+            current_entry: RefCell::new(None),
             html_props,
             html_page,
             web: RefCell::new(None),
@@ -291,6 +303,21 @@ impl Window {
         self.0
             .window
             .add_action_entries([open, open_as, complete, complete_type, shortcuts]);
+        let rename = gio::ActionEntry::builder("rename")
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, _| this.ask_rename()
+            })
+            .build();
+        let trash = gio::ActionEntry::builder("trash")
+            .activate({
+                let this = self.clone();
+                move |_: &adw::ApplicationWindow, _, _| this.ask_trash()
+            })
+            .build();
+        self.0.window.add_action_entries([rename, trash]);
+        app.set_accels_for_action("win.rename", &["F2"]);
+        app.set_accels_for_action("win.trash", &["Delete"]);
         app.set_accels_for_action("win.open", &["<Control>o"]);
         app.set_accels_for_action("win.open-as", &["<Control><Shift>o"]);
         app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
@@ -303,6 +330,11 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Abrir como bóveda de Orbital",
             "<Control><Shift>o",
+        ));
+        section.add(adw::ShortcutsItem::new("Renombrar o mover la nota", "F2"));
+        section.add(adw::ShortcutsItem::new(
+            "Mover la nota a la papelera",
+            "Delete",
         ));
         section.add(adw::ShortcutsItem::new(
             "Atajos de teclado",
@@ -581,6 +613,7 @@ impl Window {
                 Err("Este archivo no es una nota de texto".into())
             };
             let i = &this.0;
+            *i.current_entry.borrow_mut() = Some(entry.clone());
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();
             if entry.read_only {
@@ -725,6 +758,257 @@ impl Window {
     /// Modo de captura: no guarda el estado de la app.
     pub fn set_persist(&self, persist: bool) {
         self.0.persist.set(persist);
+    }
+
+    /// Vuelve a leer la bóveda (después de renombrar o borrar) y muestra `show`, si se indica.
+    async fn reload(&self, show: Option<RelPath>) {
+        let Some(root) = self
+            .0
+            .vault
+            .borrow()
+            .as_ref()
+            .map(|v| v.root().to_path_buf())
+        else {
+            return;
+        };
+        let result = gio::spawn_blocking(move || {
+            orbital_vault::open(&root).map(|v| {
+                let tree = build_tree(v.entries());
+                (v, tree)
+            })
+        })
+        .await;
+        if let Ok(Ok((vault, tree))) = result {
+            self.show_vault(vault, tree);
+            if let Some(p) = show {
+                self.show_path(p.as_str());
+            }
+        }
+    }
+
+    /// Avisa con un botón «Deshacer» que ejecuta `undo`.
+    fn toast_undo(&self, msg: &str, undo: impl Fn() + 'static) {
+        let toast = adw::Toast::builder()
+            .title(msg)
+            .button_label("Deshacer")
+            .timeout(8)
+            .build();
+        toast.connect_button_clicked(move |_| undo());
+        self.0.toasts.add_toast(toast);
+    }
+
+    /// «Renombrar o mover»: pide la ruta nueva (relativa a la bóveda).
+    fn ask_rename(&self) {
+        let Some(entry) = self.0.current_entry.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder()
+                .text(entry.path.as_str())
+                .activates_default(true)
+                .build();
+            field.update_property(&[gtk::accessible::Property::Label("Ruta nueva")]);
+            let dialog = adw::AlertDialog::new(
+                Some("Renombrar o mover"),
+                Some("Ruta dentro de la bóveda. Cambiá el nombre o la carpeta."),
+            );
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("rename", "Renombrar");
+            dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("rename"));
+            dialog.set_close_response("cancel");
+            // Selecciona el nombre sin la extensión, que es lo que casi siempre se cambia.
+            let path = entry.path.as_str().to_owned();
+            let start = path.rfind('/').map_or(0, |p| p + 1);
+            let end = path.rfind('.').filter(|e| *e > start).unwrap_or(path.len());
+            let f = field.clone();
+            glib::idle_add_local_once(move || {
+                f.grab_focus();
+                f.select_region(start as i32, end as i32);
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "rename" {
+                return;
+            }
+            let Ok(to) = RelPath::new(field.text().trim()) else {
+                return this.toast("La ruta nueva no es válida");
+            };
+            if to == entry.path {
+                return;
+            }
+            this.do_rename(entry.path.clone(), to, true).await;
+        });
+    }
+
+    /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
+    async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let (f, t) = (from.clone(), to.clone());
+        let result = gio::spawn_blocking(move || {
+            let ctx = write_ctx::now(Some(vault.config()));
+            vault.rename(&f, &t, &ctx)
+        })
+        .await;
+        match result {
+            Ok(Ok(_)) => {
+                self.reload(Some(to.clone())).await;
+                if undoable {
+                    let this = self.clone();
+                    self.toast_undo(
+                        &format!("«{}» ahora es «{to}»", from.file_name()),
+                        move || {
+                            let (this, from, to) = (this.clone(), from.clone(), to.clone());
+                            glib::spawn_future_local(async move {
+                                this.do_rename(to, from, false).await;
+                            });
+                        },
+                    );
+                }
+            }
+            Ok(Err(e)) => self.toast(&e.to_string()),
+            Err(_) => self.toast("No se pudo renombrar"),
+        }
+    }
+
+    /// «Mover a la papelera», con confirmación.
+    fn ask_trash(&self) {
+        let Some(entry) = self.0.current_entry.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let dialog = adw::AlertDialog::new(
+                Some(&format!(
+                    "¿Mover «{}» a la papelera?",
+                    entry.path.file_name()
+                )),
+                Some("Vas a poder recuperarla con «Deshacer» o desde la papelera de GNOME."),
+            );
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("trash", "Mover a la papelera");
+            dialog.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+            dialog.set_close_response("cancel");
+            if dialog.choose_future(Some(&this.0.window)).await == "trash" {
+                this.do_trash(entry.path.clone()).await;
+            }
+        });
+    }
+
+    async fn do_trash(&self, path: RelPath) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let abs = path.to_path(vault.root());
+        let (v, p) = (vault.clone(), path.clone());
+        let plan = match gio::spawn_blocking(move || v.delete(&p)).await {
+            Ok(Ok(plan)) => plan,
+            Ok(Err(e)) => return self.toast(&e.to_string()),
+            Err(_) => return self.toast("No se pudo borrar"),
+        };
+        // Papelera del sistema; si ese disco no tiene (tmpfs, FAT…), la papelera de la bóveda.
+        let in_vault: Option<PathBuf> = match gio::File::for_path(&abs)
+            .trash_future(glib::Priority::DEFAULT)
+            .await
+        {
+            Ok(()) => None,
+            Err(_) => {
+                let (v, p) = (vault.clone(), path.clone());
+                let moved = gio::spawn_blocking(move || {
+                    let ctx = write_ctx::now(Some(v.config()));
+                    v.move_to_vault_trash(&p, &ctx)
+                })
+                .await;
+                match moved {
+                    Ok(Ok(dest)) => Some(dest),
+                    Ok(Err(e)) => return self.toast(&format!("No se pudo borrar: {e}")),
+                    Err(_) => return self.toast("No se pudo borrar"),
+                }
+            }
+        };
+        let v = vault.clone();
+        let for_log = plan.clone();
+        let _ = gio::spawn_blocking(move || {
+            let ctx = write_ctx::now(Some(v.config()));
+            v.after_delete(&for_log, &ctx)
+        })
+        .await;
+        self.reload(None).await;
+        let msg = match &in_vault {
+            None => format!("«{}» se movió a la papelera", path.file_name()),
+            Some(_) => format!(
+                "«{}» se movió a la papelera de la bóveda (.orbital/papelera)",
+                path.file_name()
+            ),
+        };
+        let this = self.clone();
+        self.toast_undo(&msg, move || {
+            let (this, plan, abs, in_vault) =
+                (this.clone(), plan.clone(), abs.clone(), in_vault.clone());
+            glib::spawn_future_local(async move {
+                match in_vault {
+                    None => this.restore(plan, abs).await,
+                    Some(trashed) => this.restore_vault_trash(plan, trashed).await,
+                }
+            });
+        });
+    }
+
+    /// Deshacer un borrado que fue a la papelera de la bóveda.
+    async fn restore_vault_trash(&self, plan: DeletePlan, trashed: PathBuf) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let path = plan.path.clone();
+        let result = gio::spawn_blocking(move || {
+            vault.restore_from(&trashed, &plan.path)?;
+            let ctx = write_ctx::now(Some(vault.config()));
+            vault.after_restore(&plan, &ctx)
+        })
+        .await;
+        match result {
+            Ok(Ok(_)) => self.reload(Some(path)).await,
+            Ok(Err(e)) => self.toast(&format!("No se pudo recuperar: {e}")),
+            Err(_) => self.toast("No se pudo recuperar"),
+        }
+    }
+
+    /// Deshacer un borrado: busca el archivo en la papelera por su ruta original y lo devuelve.
+    async fn restore(&self, plan: DeletePlan, abs: PathBuf) {
+        let path = plan.path.clone();
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        match find_in_trash(&abs).await {
+            Some(trashed) => {
+                let dest = gio::File::for_path(&abs);
+                // Mover desde la papelera es local y rápido, pero igual va fuera del hilo principal.
+                let moved = gio::spawn_blocking(move || {
+                    trashed.move_(
+                        &dest,
+                        gio::FileCopyFlags::NONE,
+                        None::<&gio::Cancellable>,
+                        None,
+                    )
+                })
+                .await;
+                match moved {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return self.toast(&format!("No se pudo recuperar: {e}")),
+                    Err(_) => return self.toast("No se pudo recuperar"),
+                }
+                let v = vault.clone();
+                let _ = gio::spawn_blocking(move || {
+                    let ctx = write_ctx::now(Some(v.config()));
+                    v.after_restore(&plan, &ctx)
+                })
+                .await;
+                self.reload(Some(path)).await;
+            }
+            None => self.toast("No encontré el archivo en la papelera"),
+        }
     }
 
     /// Muestra una nota por su ruta relativa (para el modo de captura).
@@ -893,4 +1177,41 @@ fn fill_props(list: &gtk::ListBox, entries: &[orbital_vault::props::PropEntry]) 
         list.append(&row);
     }
     list.set_visible(!entries.is_empty());
+}
+
+/// El archivo más reciente de la papelera cuya ruta original es `original`.
+async fn find_in_trash(original: &Path) -> Option<gio::File> {
+    let trash = gio::File::for_uri("trash:///");
+    let enumerator = trash
+        .enumerate_children_future(
+            "standard::name,trash::orig-path,trash::deletion-date",
+            gio::FileQueryInfoFlags::NONE,
+            glib::Priority::DEFAULT,
+        )
+        .await
+        .ok()?;
+    let mut best: Option<(String, gio::File)> = None;
+    loop {
+        let infos = enumerator
+            .next_files_future(64, glib::Priority::DEFAULT)
+            .await
+            .ok()?;
+        if infos.is_empty() {
+            break;
+        }
+        for info in infos {
+            let orig = info.attribute_byte_string("trash::orig-path");
+            if orig.as_deref().map(Path::new) != Some(original) {
+                continue;
+            }
+            let date = info
+                .attribute_string("trash::deletion-date")
+                .map(|d| d.to_string())
+                .unwrap_or_default();
+            if best.as_ref().is_none_or(|(d, _)| date > *d) {
+                best = Some((date, trash.child(info.name())));
+            }
+        }
+    }
+    best.map(|(_, f)| f)
 }

@@ -43,6 +43,12 @@ impl RelPath {
         Self::new(&s)
     }
 
+    /// Ruta fija conocida de antemano (por ejemplo `wiki/index.md`). Solo para constantes válidas.
+    pub(crate) fn from_static(s: &'static str) -> Self {
+        debug_assert!(Self::new(s).is_ok(), "ruta fija inválida: {s}");
+        Self(s.to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
