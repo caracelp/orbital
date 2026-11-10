@@ -17,31 +17,89 @@ pub struct CompletionCandidate {
     pub title: Option<String>,
     pub aliases: Vec<String>,
     pub path: RelPath,
+    /// Lo que se escribe dentro de `[[…]]`: el nombre, o `carpeta/nombre` si otra nota tiene el
+    /// mismo nombre (si no, el enlace quedaría ambiguo).
+    pub target: String,
+    /// Nombre, título y alias en minúsculas, calculados una vez (no en cada tecla).
+    keys: Keys,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Keys {
+    stem: String,
+    title: Option<String>,
+    aliases: Vec<String>,
 }
 
 impl CompletionCandidate {
+    pub fn new(path: RelPath, title: Option<String>, aliases: Vec<String>) -> Self {
+        let name = path.file_name();
+        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s).to_owned();
+        let keys = Keys {
+            stem: stem.to_lowercase(),
+            title: title.as_deref().map(str::to_lowercase),
+            aliases: aliases.iter().map(|a| a.to_lowercase()).collect(),
+        };
+        Self {
+            target: stem.clone(),
+            stem,
+            title,
+            aliases,
+            path,
+            keys,
+        }
+    }
+
     /// Retorna el alias que coincide con la consulta, si lo hay.
     pub fn matching_alias(&self, query: &str) -> Option<&str> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
             return None;
         }
-        self.aliases
+        self.keys
+            .aliases
             .iter()
-            .find(|a| a.to_lowercase().contains(&q))
-            .map(String::as_str)
+            .position(|a| a.contains(&q))
+            .map(|n| self.aliases[n].as_str())
     }
 
     /// Retorna el texto del destino wikilink a insertar según la consulta.
-    /// Si coincide con un alias, devuelve `stem|alias`; si tiene alias y no se buscó stem exacto,
-    /// devuelve `stem|primer_alias`; en caso contrario `stem`.
+    /// Si coincide con un alias, devuelve `destino|alias`; si tiene alias y no se buscó nada,
+    /// devuelve `destino|primer_alias`; en caso contrario `destino`.
     pub fn link_target(&self, query: &str) -> String {
         if let Some(alias) = self.matching_alias(query) {
-            format!("{}|{}", self.stem, alias)
+            format!("{}|{}", self.target, alias)
         } else if query.trim().is_empty() && !self.aliases.is_empty() {
-            format!("{}|{}", self.stem, self.aliases[0])
+            format!("{}|{}", self.target, self.aliases[0])
         } else {
-            self.stem.clone()
+            self.target.clone()
+        }
+    }
+}
+
+/// Los candidatos cuyo nombre se repite (sin distinguir mayúsculas) se escriben con su carpeta
+/// dentro de `wiki/` (`[[fisica/energia]]`), como resuelve la bóveda.
+pub fn qualify_duplicates(list: &mut [CompletionCandidate]) {
+    let mut count: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for c in list.iter() {
+        *count.entry(c.keys.stem.as_str()).or_default() += 1;
+    }
+    let dup: std::collections::HashSet<String> = count
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(k, _)| k.to_owned())
+        .collect();
+    for c in list.iter_mut() {
+        if dup.contains(&c.keys.stem) {
+            let in_wiki = c
+                .path
+                .as_str()
+                .strip_prefix("wiki/")
+                .unwrap_or(c.path.as_str());
+            c.target = match in_wiki.rsplit_once('/') {
+                Some((dir, _)) => format!("{dir}/{}", c.stem),
+                None => c.stem.clone(),
+            };
         }
     }
 }
@@ -60,47 +118,47 @@ struct Inner {
 #[derive(Clone)]
 pub struct LinkCompletionPopover(Rc<Inner>);
 
-/// Filtra candidatos según la consulta (coincidencia insensible a mayúsculas en nombre, título o alias).
+/// Filtra candidatos según la consulta (coincidencia insensible a mayúsculas en nombre, título o
+/// alias): primero el nombre exacto, después los que empiezan con la consulta y por último los que
+/// la contienen. Recorre por índices y copia solo los `limit` que se muestran (FR-009).
 pub fn filter_candidates(
     candidates: &[CompletionCandidate],
     query: &str,
     limit: usize,
 ) -> Vec<CompletionCandidate> {
     let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return candidates.iter().take(limit).cloned().collect();
+    }
     let mut exact = Vec::new();
     let mut starts = Vec::new();
     let mut contains = Vec::new();
-
-    for c in candidates.iter() {
-        if q.is_empty() {
-            exact.push(c.clone());
-            if exact.len() >= limit {
-                break;
+    for (n, c) in candidates.iter().enumerate() {
+        let k = &c.keys;
+        let title = k.title.as_deref();
+        if k.stem == q {
+            if exact.len() < limit {
+                exact.push(n);
             }
-            continue;
-        }
-        let stem_lower = c.stem.to_lowercase();
-        let title_lower = c.title.as_deref().map(str::to_lowercase);
-        let alias_match = c.aliases.iter().any(|a| a.to_lowercase().contains(&q));
-
-        if stem_lower == q {
-            exact.push(c.clone());
-        } else if stem_lower.starts_with(&q)
-            || title_lower.as_ref().is_some_and(|t| t.starts_with(&q))
+        } else if k.stem.starts_with(&q) || title.is_some_and(|t| t.starts_with(&q)) {
+            if starts.len() < limit {
+                starts.push(n);
+            }
+        } else if contains.len() < limit
+            && (k.stem.contains(&q)
+                || title.is_some_and(|t| t.contains(&q))
+                || k.aliases.iter().any(|a| a.contains(&q)))
         {
-            starts.push(c.clone());
-        } else if stem_lower.contains(&q)
-            || title_lower.as_ref().is_some_and(|t| t.contains(&q))
-            || alias_match
-        {
-            contains.push(c.clone());
+            contains.push(n);
         }
     }
-    let mut results = exact;
-    results.extend(starts);
-    results.extend(contains);
-    results.truncate(limit);
-    results
+    exact
+        .into_iter()
+        .chain(starts)
+        .chain(contains)
+        .take(limit)
+        .map(|n| candidates[n].clone())
+        .collect()
 }
 
 impl LinkCompletionPopover {
@@ -341,26 +399,21 @@ mod tests {
 
     #[test]
     fn filter_candidates_matches_name_title_and_alias() {
-        let candidates = vec![
-            CompletionCandidate {
-                stem: "nota-01".into(),
-                title: Some("Biología Marina".into()),
-                aliases: vec!["Bio".into(), "Océanos".into()],
-                path: RelPath::new("wiki/nota-01.md").unwrap(),
-            },
-            CompletionCandidate {
-                stem: "nota-02".into(),
-                title: Some("Física Cuántica".into()),
-                aliases: vec!["Cuántica".into()],
-                path: RelPath::new("wiki/nota-02.md").unwrap(),
-            },
-            CompletionCandidate {
-                stem: "apuntes".into(),
-                title: None,
-                aliases: Vec::new(),
-                path: RelPath::new("wiki/apuntes.md").unwrap(),
-            },
+        let rel = |p: &str| RelPath::new(p).unwrap();
+        let mut candidates = vec![
+            CompletionCandidate::new(
+                rel("wiki/nota-01.md"),
+                Some("Biología Marina".into()),
+                vec!["Bio".into(), "Océanos".into()],
+            ),
+            CompletionCandidate::new(
+                rel("wiki/nota-02.md"),
+                Some("Física Cuántica".into()),
+                vec!["Cuántica".into()],
+            ),
+            CompletionCandidate::new(rel("wiki/apuntes.md"), None, Vec::new()),
         ];
+        qualify_duplicates(&mut candidates);
 
         // Coincidencia por nombre de archivo / stem
         let res = filter_candidates(&candidates, "apuntes", 8);
@@ -384,5 +437,52 @@ mod tests {
         // link_target con alias y sin alias
         assert_eq!(candidates[0].link_target("bio"), "nota-01|Bio");
         assert_eq!(candidates[2].link_target("apuntes"), "apuntes");
+    }
+
+    #[test]
+    fn duplicate_names_get_their_folder() {
+        let rel = |p: &str| RelPath::new(p).unwrap();
+        let mut list = vec![
+            CompletionCandidate::new(rel("wiki/fisica/energia.md"), None, Vec::new()),
+            CompletionCandidate::new(rel("wiki/quimica/Energia.html"), None, Vec::new()),
+            CompletionCandidate::new(rel("wiki/otra.md"), None, vec!["Alias".into()]),
+        ];
+        qualify_duplicates(&mut list);
+        assert_eq!(list[0].link_target("ener"), "fisica/energia");
+        assert_eq!(list[1].link_target("ener"), "quimica/Energia");
+        assert_eq!(list[2].link_target("alias"), "otra|Alias");
+    }
+
+    /// FR-009: filtrar 5000 notas en menos de 10 ms. Medir con
+    /// `cargo test --release --bin orbital filter_latency -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn filter_latency() {
+        let list: Vec<CompletionCandidate> = (0..5000)
+            .map(|n| {
+                CompletionCandidate::new(
+                    RelPath::new(&format!("wiki/carpeta-{}/nota-{n:05}.md", n % 50)).unwrap(),
+                    Some(format!(
+                        "Título de la nota número {n} sobre física y química"
+                    )),
+                    vec![format!("alias-{n}"), "Energía".into()],
+                )
+            })
+            .collect();
+        let mut worst = std::time::Duration::ZERO;
+        let mut times = Vec::new();
+        for q in [
+            "n", "no", "not", "nota-0", "nota-04", "física", "zzz", "energía", "alias-49",
+        ] {
+            let t = std::time::Instant::now();
+            let r = filter_candidates(&list, q, 8);
+            let e = t.elapsed();
+            assert!(r.len() <= 8);
+            worst = worst.max(e);
+            times.push((q, e));
+        }
+        println!("filtrado de 5000 notas: {times:?}");
+        println!("peor: {worst:?}");
+        assert!(worst < std::time::Duration::from_millis(10));
     }
 }

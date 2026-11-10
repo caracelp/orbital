@@ -150,6 +150,9 @@ struct Inner {
     completion: completion::LinkCompletionPopover,
     completion_dismissed_at: Cell<Option<i32>>,
     completion_active_start: Cell<Option<i32>>,
+    /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
+    /// dirección no se reutiliza, así que comparar punteros es seguro.
+    completion_vault: RefCell<std::sync::Weak<Vault>>,
 }
 
 /// El editor de la nota abierta.
@@ -254,6 +257,7 @@ impl Editor {
             completion,
             completion_dismissed_at: Cell::new(None),
             completion_active_start: Cell::new(None),
+            completion_vault: RefCell::new(std::sync::Weak::new()),
         }));
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -924,73 +928,69 @@ impl Editor {
         }
     }
 
-    /// Actualiza los candidatos de autocompletado en memoria y en segundo plano (US3, FR-009).
+    /// Arma los candidatos de autocompletado de la bóveda (US3): primero los nombres, enseguida;
+    /// después títulos y alias, leídos en otro hilo. Solo cuando cambia la bóveda, no al abrir
+    /// cada nota (con 5000 notas serían 5000 lecturas por nota abierta).
     pub fn refresh_completion_candidates(&self, vault: &Arc<Vault>) {
         let i = &self.0;
-        let mut baseline = Vec::new();
-        for e in vault.entries() {
-            if e.zone == Zone::Wiki
-                && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
-            {
-                let name = e.path.file_name();
-                let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-                baseline.push(completion::CompletionCandidate {
-                    stem: stem.to_string(),
-                    title: None,
-                    aliases: Vec::new(),
-                    path: e.path.clone(),
-                });
-            }
+        if std::ptr::eq(i.completion_vault.borrow().as_ptr(), Arc::as_ptr(vault)) {
+            return;
         }
+        *i.completion_vault.borrow_mut() = Arc::downgrade(vault);
+        let key = Arc::as_ptr(vault);
+        let notes = |v: &Vault| -> Vec<RelPath> {
+            v.entries()
+                .iter()
+                .filter(|e| {
+                    e.zone == Zone::Wiki
+                        && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        };
+        let mut baseline: Vec<_> = notes(vault)
+            .into_iter()
+            .map(|p| completion::CompletionCandidate::new(p, None, Vec::new()))
+            .collect();
+        completion::qualify_duplicates(&mut baseline);
         i.completion.set_candidates(baseline.clone());
         i.visual.set_candidates(baseline);
 
-        let vault_clone = vault.clone();
-        let completion = i.completion.clone();
-        let visual = i.visual.clone();
+        let vault = vault.clone();
+        let this = self.clone();
         glib::spawn_future_local(async move {
             let full = gio::spawn_blocking(move || {
-                let mut list = Vec::new();
-                for e in vault_clone.entries() {
-                    if e.zone == Zone::Wiki
-                        && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
-                    {
-                        let name = e.path.file_name();
-                        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-                        let (title, aliases) =
-                            if let Ok(Some(props)) = vault_clone.read_props(&e.path) {
-                                let title = orbital_vault::props::find(&props.entries, "title")
-                                    .and_then(|v| v.value.as_text())
-                                    .map(|s| s.to_string());
-                                let aliases = orbital_vault::props::find(&props.entries, "aliases")
-                                    .map(|v| match &v.value {
-                                        orbital_vault::props::PropValue::List(l) => l
-                                            .iter()
-                                            .filter_map(|x| x.as_text().map(|s| s.to_string()))
-                                            .collect(),
-                                        orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
-                                        _ => Vec::new(),
-                                    })
-                                    .unwrap_or_default();
-                                (title, aliases)
-                            } else {
-                                (None, Vec::new())
-                            };
-                        list.push(completion::CompletionCandidate {
-                            stem: stem.to_string(),
-                            title,
-                            aliases,
-                            path: e.path.clone(),
-                        });
-                    }
-                }
+                let mut list: Vec<_> = notes(&vault)
+                    .into_iter()
+                    .map(|path| {
+                        let props = vault.read_props(&path).ok().flatten();
+                        let entries = props.as_ref().map_or(&[][..], |p| &p.entries[..]);
+                        let title = orbital_vault::props::find(entries, "title")
+                            .and_then(|v| v.value.as_text())
+                            .map(str::to_owned);
+                        let aliases = orbital_vault::props::find(entries, "aliases")
+                            .map(|v| match &v.value {
+                                orbital_vault::props::PropValue::List(l) => l
+                                    .iter()
+                                    .filter_map(|x| x.as_text().map(str::to_owned))
+                                    .collect(),
+                                orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
+                                _ => Vec::new(),
+                            })
+                            .unwrap_or_default();
+                        completion::CompletionCandidate::new(path, title, aliases)
+                    })
+                    .collect();
+                completion::qualify_duplicates(&mut list);
                 list
             })
             .await
             .unwrap_or_default();
-
-            completion.set_candidates(full.clone());
-            visual.set_candidates(full);
+            // Si mientras tanto se abrió otra bóveda, estos candidatos ya no sirven.
+            if std::ptr::eq(this.0.completion_vault.borrow().as_ptr(), key) {
+                this.0.completion.set_candidates(full.clone());
+                this.0.visual.set_candidates(full);
+            }
         });
     }
 
