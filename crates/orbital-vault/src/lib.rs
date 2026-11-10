@@ -12,6 +12,7 @@ pub mod diff;
 pub mod entry;
 pub mod error;
 pub mod html_edit;
+pub mod link_graph;
 pub mod links;
 pub mod note;
 pub mod okf_files;
@@ -29,7 +30,11 @@ pub use config::{LinkStyle, VaultConfig};
 pub use diff::{DiffKind, DiffLine, diff_lines};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
-pub use links::Resolution;
+pub use link_graph::LinkGraph;
+pub use links::{
+    BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
+    parse_link_target, rewrite_links,
+};
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
 pub use vault::{
