@@ -9,3 +9,7 @@ Hecha en Rust con GTK4 y libadwaita.
 ```sh
 cargo run
 ```
+
+## Licencia
+
+GPL-3.0-or-later. Ver [LICENSE](LICENSE).
