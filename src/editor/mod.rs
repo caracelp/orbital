@@ -624,6 +624,20 @@ impl Editor {
         i.generation.set(i.generation.get() + 1);
         *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
+        let vault_weak = Arc::downgrade(&vault);
+        let from_note = note.path.clone();
+        i.reader.set_is_missing(move |url| {
+            if url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("mailto:")
+            {
+                return false;
+            }
+            let Some(v) = vault_weak.upgrade() else {
+                return false;
+            };
+            v.resolve_link(&from_note, url) == orbital_vault::Resolution::Missing
+        });
         *i.vault.borrow_mut() = Some(vault);
         let mut meta = note.clone();
         meta.source = String::new();

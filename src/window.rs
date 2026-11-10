@@ -420,6 +420,7 @@ impl Window {
             simple("journal", Window::open_journal),
             simple("archive", Window::archive_current),
             simple("paste-image", Window::paste_image),
+            simple("open-missing", Window::test_open_missing),
             from_template,
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
@@ -2117,6 +2118,16 @@ impl Window {
         }
     }
 
+    fn test_open_missing(&self) {
+        let from = self
+            .0
+            .current_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.path.clone());
+        self.open_link(from.as_ref(), "[[nota-nueva-pendiente]]");
+    }
+
     /// Muestra una nota por su ruta relativa (para el modo de captura).
     /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
     pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
@@ -2169,10 +2180,102 @@ impl Window {
                     });
                 }
             }
-            _ => {
-                self.toast(&format!("Todavía no existe «{}»", parsed.path));
+            orbital_vault::Resolution::Ambiguous(hits) => {
+                if let Some(first) = hits.first() {
+                    self.show_path(first.as_str());
+                    self.toast(&format!("Enlace ambiguo: abriendo «{}»", first));
+                }
+            }
+            orbital_vault::Resolution::Missing => {
+                let note_name = parsed.path.trim().to_string();
+                if note_name.is_empty() {
+                    return;
+                }
+                let clean_name = note_name
+                    .strip_suffix(".md")
+                    .or_else(|| note_name.strip_suffix(".html"))
+                    .unwrap_or(&note_name)
+                    .to_string();
+
+                let (dir_rel, file_name) = match clean_name.rsplit_once('/') {
+                    Some((d, f)) => (format!("wiki/{d}"), f.to_string()),
+                    None => ("wiki".to_string(), clean_name),
+                };
+
+                let Ok(dir) = RelPath::new(&dir_rel) else {
+                    self.toast(&format!("Ruta inválida «{}»", dir_rel));
+                    return;
+                };
+
+                let ask = vault.config().ask_create_missing_notes;
+                if !ask {
+                    self.create_missing_note(dir, file_name);
+                    return;
+                }
+
+                let check = gtk::CheckButton::builder()
+                    .label("No volver a preguntar")
+                    .margin_top(12)
+                    .build();
+
+                let heading = format!("¿Crear la nota «{file_name}» en wiki/?");
+                let dialog = adw::AlertDialog::builder()
+                    .heading(&heading)
+                    .body("El enlace apunta a una nota que todavía no existe en la bóveda.")
+                    .extra_child(&check)
+                    .default_response("create")
+                    .close_response("cancel")
+                    .build();
+                dialog.add_response("cancel", "Cancelar");
+                dialog.add_response("create", "Crear");
+                dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+
+                let this = self.clone();
+                let v = vault.clone();
+                dialog.choose(
+                    Some(&self.0.window),
+                    None::<&gio::Cancellable>,
+                    move |response| {
+                        if response == "create" {
+                            if check.is_active() {
+                                let mut cfg = v.config().clone();
+                                cfg.ask_create_missing_notes = false;
+                                let root = v.root().to_path_buf();
+                                gio::spawn_blocking(move || {
+                                    let _ = cfg.save(&root);
+                                });
+                            }
+                            this.create_missing_note(dir, file_name);
+                        }
+                    },
+                );
             }
         }
+    }
+
+    fn create_missing_note(&self, dir: RelPath, name: String) {
+        let this = self.clone();
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        glib::spawn_future_local(async move {
+            let n = name.clone();
+            let v = vault.clone();
+            let d = dir.clone();
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(v.config()));
+                v.create_note(&d, &n, orbital_vault::Format::Md, &ctx)
+            })
+            .await;
+            match result {
+                Ok(Ok(path)) => {
+                    this.reload(Some(path.clone())).await;
+                    this.toast(&format!("Se creó «{path}»"));
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo crear la nota"),
+            }
+        });
     }
 
     pub fn show_path(&self, rel: &str) {

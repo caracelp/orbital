@@ -33,6 +33,8 @@ pub struct VaultConfig {
     pub journal_name: String,
     /// Actor `human:<id>`; `None` = el usuario del sistema.
     pub actor: Option<String>,
+    /// Si debe preguntar antes de crear notas pendientes al hacer clic en un enlace inexistente.
+    pub ask_create_missing_notes: bool,
 }
 
 impl Default for VaultConfig {
@@ -42,6 +44,7 @@ impl Default for VaultConfig {
             link_style: LinkStyle::Wikilink,
             journal_name: "AAAA-MM-DD".to_owned(),
             actor: None,
+            ask_create_missing_notes: true,
         }
     }
 }
@@ -86,6 +89,13 @@ impl VaultConfig {
         c.actor = find(entries, "actor")
             .and_then(|e| e.value.as_text())
             .map(str::to_owned);
+        if let Some(val) = find(entries, "ask_create_missing_notes").map(|e| &e.value) {
+            match val {
+                PropValue::Bool(b) => c.ask_create_missing_notes = *b,
+                PropValue::Text(s) => c.ask_create_missing_notes = s != "false",
+                _ => {}
+            }
+        }
         c
     }
 
@@ -109,6 +119,10 @@ impl VaultConfig {
                 PropValue::Text(self.link_style.as_str().to_owned()),
             ),
             ("journal_name", PropValue::Text(self.journal_name.clone())),
+            (
+                "ask_create_missing_notes",
+                PropValue::Bool(self.ask_create_missing_notes),
+            ),
         ];
         if let Some(a) = &self.actor {
             entries.push(("actor", PropValue::Text(a.clone())));

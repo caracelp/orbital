@@ -73,3 +73,85 @@ Texto de la sección de destino.
         assert_eq!(reader.0.focused_link.get(), None);
     });
 }
+
+#[test]
+#[ignore = "requiere una sesión gráfica; ejecutar tools/verificar-us2.sh"]
+fn us2_reader_missing_link_styling() {
+    glib::set_prgname(Some("orbital"));
+    glib::set_application_name("Orbital");
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+
+    context.block_on(async {
+        let reader = Reader::new();
+        reader.set_is_missing(|url| url.contains("pendiente"));
+
+        let markdown = "Enlace a [[nota-existente]] y a [[nota-pendiente]].";
+        let prepared = Prepared::new(markdown);
+        reader.render(prepared, || None, None);
+
+        let mut iters = 0;
+        while reader.0.blocks.borrow().is_empty() && iters < 50 {
+            context.iteration(true);
+            iters += 1;
+        }
+
+        let items = reader.all_link_items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].url, "[[nota-existente]]");
+        assert_eq!(items[1].url, "[[nota-pendiente]]");
+
+        // Verificar que el segundo enlace tiene la etiqueta "link-missing"
+        let buf = reader.buffer();
+        let it = buf.iter_at_mark(&items[1].start);
+        let tag_names: Vec<String> = it
+            .tags()
+            .into_iter()
+            .filter_map(|t| t.name())
+            .map(|s| s.to_string())
+            .collect();
+        assert!(tag_names.contains(&"link-missing".to_string()));
+    });
+}
+
+#[test]
+fn us2_missing_note_creation_and_config() {
+    let root = std::env::temp_dir().join(format!("orbital-us2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("wiki")).expect("crear directorio temporal");
+
+    let vault = orbital_vault::open(&root).unwrap();
+    assert!(vault.config().ask_create_missing_notes);
+
+    // 1. Crear nota atómicamente en wiki/
+    let dir = orbital_vault::RelPath::new("wiki").unwrap();
+    let ctx = crate::write_ctx::now(Some(vault.config()));
+    let created_path = vault
+        .create_note(&dir, "mi-nota-nueva", orbital_vault::Format::Md, &ctx)
+        .expect("crear nota pendiente");
+    assert_eq!(created_path.as_str(), "wiki/mi-nota-nueva.md");
+
+    // 2. Verificar contenido y frontmatter
+    let note = vault.read_note(&created_path).expect("leer nota creada");
+    assert_eq!(note.format, orbital_vault::Format::Md);
+    assert!(note.source.contains("type: atomo"));
+    assert!(note.source.contains("title: mi-nota-nueva"));
+
+    // 3. Verificar persistencia de «No volver a preguntar» en config.yaml
+    let mut cfg = vault.config().clone();
+    cfg.ask_create_missing_notes = false;
+    cfg.save(&root).expect("guardar configuración");
+
+    let (loaded_cfg, _) = orbital_vault::VaultConfig::load(&root);
+    assert!(!loaded_cfg.ask_create_missing_notes);
+
+    // 4. Volver a activar la confirmación previa (Preferencias)
+    let mut cfg_restored = loaded_cfg;
+    cfg_restored.ask_create_missing_notes = true;
+    cfg_restored.save(&root).expect("restaurar preferencia");
+
+    let (final_cfg, _) = orbital_vault::VaultConfig::load(&root);
+    assert!(final_cfg.ask_create_missing_notes);
+
+    let _ = std::fs::remove_dir_all(&root);
+}

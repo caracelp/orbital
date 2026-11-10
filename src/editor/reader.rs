@@ -34,6 +34,7 @@ const ATTACH_BATCH: usize = 8;
 
 type ToggleFn = Box<dyn Fn(usize)>;
 type LinkFn = Box<dyn Fn(&str)>;
+type IsMissingFn = Rc<dyn Fn(&str) -> bool>;
 
 #[derive(Clone)]
 struct LinkItem {
@@ -82,6 +83,7 @@ struct Inner {
     attach_scheduled: Cell<bool>,
     on_toggle: RefCell<Option<ToggleFn>>,
     on_link: RefCell<Option<LinkFn>>,
+    is_missing: RefCell<Option<IsMissingFn>>,
 }
 
 #[derive(Clone)]
@@ -158,6 +160,7 @@ impl Reader {
             attach_scheduled: Cell::new(false),
             on_toggle: RefCell::new(None),
             on_link: RefCell::new(None),
+            is_missing: RefCell::new(None),
         }));
         this.create_tags();
         this.center();
@@ -249,6 +252,11 @@ impl Reader {
         *self.0.on_link.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Consulta si un enlace apunta a una nota pendiente o inexistente.
+    pub fn set_is_missing(&self, f: impl Fn(&str) -> bool + 'static) {
+        *self.0.is_missing.borrow_mut() = Some(Rc::new(f));
+    }
+
     /// Olvida lo mostrado: el próximo volcado arma todo de nuevo (al cambiar de nota).
     pub fn reset(&self) {
         let i = &self.0;
@@ -309,7 +317,12 @@ impl Reader {
             .build());
         add(gtk::TextTag::builder()
             .name("link")
-            .foreground("#ff8cc6")
+            .foreground(crate::style::LINK_FG.hex())
+            .underline(pango::Underline::Single)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("link-missing")
+            .foreground(crate::style::LINK_MISSING_FG.hex())
             .underline(pango::Underline::Single)
             .build());
         add(gtk::TextTag::builder()
@@ -1135,10 +1148,12 @@ impl Reader {
                     self.inlines(s, end, c, &more);
                 }
                 Inline::Link { url, children } => {
+                    let is_missing = self.0.is_missing.borrow().as_ref().is_some_and(|f| f(url));
+                    let tag_name = if is_missing { "link-missing" } else { "link" };
                     let start_mark = buf.create_mark(None, end, true);
                     let tag = self.link_tag(s, url);
                     let mut more = tags.to_vec();
-                    more.extend(table.lookup("link"));
+                    more.extend(table.lookup(tag_name));
                     more.push(tag);
                     self.inlines(s, end, children, &more);
                     let end_mark = buf.create_mark(None, end, false);
