@@ -84,7 +84,9 @@ impl Note {
         let mut w = if error {
             Vec::new()
         } else {
-            props::validate(entries, self.zone == Zone::Wiki)
+            // `index.md` y `log.md` son archivos reservados de OKF: no llevan propiedades (§8 y §9).
+            let reserved = matches!(self.path.file_name(), "index.md" | "log.md");
+            props::validate(entries, self.zone == Zone::Wiki && !reserved)
         };
         if self.extra_blocks > 0 {
             w.push(Warning::ExtraBlocks(self.extra_blocks));

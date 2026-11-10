@@ -199,3 +199,17 @@ fn warnings_for_okf_and_known_keys() {
     let loose = v.read_note(&rel("suelta.md")).unwrap();
     assert!(!loose.warnings().contains(&Warning::MissingType));
 }
+
+#[test]
+fn reserved_files_never_ask_for_type() {
+    let t = TempDir::new("reservados");
+    copy_tree(&fixture("completa"), t.path());
+    let v = orbital_vault::open(t.path()).unwrap();
+    for p in ["wiki/index.md", "wiki/log.md"] {
+        let note = v.read_note(&rel(p)).unwrap();
+        assert!(
+            !note.warnings().contains(&Warning::MissingType),
+            "{p} no debe pedir type: OKF §8/§9 no le permite propiedades"
+        );
+    }
+}
