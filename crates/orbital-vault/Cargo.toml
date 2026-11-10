@@ -13,6 +13,7 @@ similar = "3.2.1"
 xxhash-rust = { version = "0.8.19", default-features = false, features = ["xxh3"] }
 
 [dev-dependencies]
+pulldown-cmark = { version = "0.13.6", default-features = false }
 divan = "0.1.21"
 
 [[bench]]

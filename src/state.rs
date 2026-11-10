@@ -18,6 +18,8 @@ const MAX_RECENT: usize = 10;
 pub struct AppState {
     pub last_vault: Option<PathBuf>,
     pub recent: Vec<PathBuf>,
+    /// Última vista usada en notas `.md` (FR-013 de la 002).
+    pub md_view: Option<String>,
 }
 
 fn state_file() -> PathBuf {
@@ -48,7 +50,14 @@ impl AppState {
                 .collect(),
             _ => Vec::new(),
         };
-        Self { last_vault, recent }
+        let md_view = find(&entries, "md_view")
+            .and_then(|e| e.value.as_text())
+            .map(str::to_owned);
+        Self {
+            last_vault,
+            recent,
+            md_view,
+        }
     }
 
     /// Registra que se abrió `vault`.
@@ -77,6 +86,9 @@ impl AppState {
             "recent",
             PropValue::List(self.recent.iter().map(|p| text(p)).collect()),
         ));
+        if let Some(v) = &self.md_view {
+            entries.push(("md_view", PropValue::Text(v.clone())));
+        }
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }
 }

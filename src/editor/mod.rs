@@ -55,11 +55,52 @@ impl Status {
 type StatusFn = Box<dyn Fn(&Status)>;
 type ErrorFn = Box<dyn Fn(&str)>;
 type SavedFn = Box<dyn Fn(&RelPath, u64)>;
+type HeaderFn = Box<dyn Fn(&RelPath, &[orbital_vault::props::PropEntry]) -> Option<gtk::Widget>>;
+type LinkFn = Box<dyn Fn(&RelPath, &str)>;
+type ViewFn = Box<dyn Fn(View)>;
+
+/// Vistas de una nota `.md` (FR-008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Codigo,
+    Lectura,
+    Dividida,
+}
+
+impl View {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Codigo => "codigo",
+            Self::Lectura => "lectura",
+            Self::Dividida => "dividida",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "codigo" => Some(Self::Codigo),
+            "lectura" => Some(Self::Lectura),
+            "dividida" => Some(Self::Dividida),
+            _ => None,
+        }
+    }
+}
+
+/// Actualización de la vista formateada después de la última tecla (research R3).
+const RENDER_DELAY: Duration = Duration::from_millis(150);
 
 struct Inner {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
-    widget: gtk::ScrolledWindow,
+    code_scroller: gtk::ScrolledWindow,
+    reader: reader::Reader,
+    root: gtk::Paned,
+    switcher: adw::ToggleGroup,
+    mode: Cell<View>,
+    render_generation: Cell<u64>,
+    base_dir: RefCell<Option<std::path::PathBuf>>,
+    on_header: RefCell<Option<HeaderFn>>,
+    on_link: RefCell<Option<LinkFn>>,
+    on_view: RefCell<Option<ViewFn>>,
     session: RefCell<Option<EditSession>>,
     vault: RefCell<Option<Arc<Vault>>>,
     /// Ignorar `changed` mientras se carga un texto.
@@ -89,15 +130,76 @@ impl Editor {
         // El editor va directo en la ventana con desplazamiento: así GTK solo calcula la parte
         // visible del texto. Dentro de un adw::Clamp calculaba todo el documento en cada tecla
         // (30 ms por tecla con 100 KB). El ancho de la columna se limita con márgenes.
-        let widget = gtk::ScrolledWindow::builder()
+        let code_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&view)
             .build();
-        code::center_column(&widget, &view, 860);
+        code::center_column(&code_scroller, &view, 860);
+        let reader = reader::Reader::new();
+        let root = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&code_scroller)
+            .end_child(reader.widget())
+            .resize_start_child(true)
+            .resize_end_child(true)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .wide_handle(true)
+            .build();
+        // Dividida reparte el ancho según una proporción (la mitad, o la que deje el usuario al
+        // arrastrar), y la vuelve a aplicar cuando cambia el ancho disponible.
+        let ratio = Rc::new(Cell::new(0.5_f64));
+        let applying = Rc::new(Cell::new(false));
+        {
+            let (ratio, applying) = (ratio.clone(), applying.clone());
+            root.connect_max_position_notify(move |p| {
+                let max = p.max_position();
+                if max > 0 && p.start_child().is_some_and(|c| c.is_visible()) {
+                    applying.set(true);
+                    p.set_position((max as f64 * ratio.get()) as i32);
+                    applying.set(false);
+                }
+            });
+        }
+        root.connect_position_notify(move |p| {
+            let max = p.max_position();
+            let both = p.start_child().is_some_and(|c| c.is_visible())
+                && p.end_child().is_some_and(|c| c.is_visible());
+            if !applying.get() && both && max > 0 {
+                ratio.set((p.position() as f64 / max as f64).clamp(0.2, 0.8));
+            }
+        });
+        let switcher = adw::ToggleGroup::new();
+        for (name, label, tip) in [
+            ("codigo", "Código", "Código (Ctrl+1)"),
+            ("lectura", "Lectura", "Lectura (Ctrl+2)"),
+            ("dividida", "Dividida", "Dividida (Ctrl+3)"),
+        ] {
+            switcher.add(
+                adw::Toggle::builder()
+                    .name(name)
+                    .label(label)
+                    .tooltip(tip)
+                    .build(),
+            );
+        }
+        switcher.add_css_class("round");
+        switcher
+            .upcast_ref::<gtk::Widget>()
+            .update_property(&[gtk::accessible::Property::Label("Vista de la nota")]);
         let this = Self(Rc::new(Inner {
             view,
             buffer,
-            widget,
+            code_scroller,
+            reader,
+            root,
+            switcher,
+            mode: Cell::new(View::Codigo),
+            render_generation: Cell::new(0),
+            base_dir: RefCell::new(None),
+            on_header: RefCell::new(None),
+            on_link: RefCell::new(None),
+            on_view: RefCell::new(None),
             session: RefCell::new(None),
             vault: RefCell::new(None),
             loading: Cell::new(false),
@@ -114,11 +216,172 @@ impl Editor {
                 Editor(inner).on_changed();
             }
         });
+        let weak = Rc::downgrade(&this.0);
+        this.0.switcher.connect_active_name_notify(move |g| {
+            if let (Some(inner), Some(v)) = (
+                weak.upgrade(),
+                g.active_name().and_then(|n| View::from_name(&n)),
+            ) {
+                Editor(inner).set_view(v);
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.reader.set_on_toggle(move |offset| {
+            if let Some(inner) = weak.upgrade() {
+                Editor(inner).toggle_task(offset);
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.reader.set_on_link(move |url| {
+            if let Some(inner) = weak.upgrade()
+                && let (Some(f), Some(path)) = (
+                    inner.on_link.borrow().as_ref(),
+                    Editor(inner.clone()).current_path(),
+                )
+            {
+                f(&path, url);
+            }
+        });
+        // En Dividida, la vista formateada sigue al código.
+        let weak = Rc::downgrade(&this.0);
+        this.0
+            .code_scroller
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                if let Some(inner) = weak.upgrade()
+                    && inner.mode.get() == View::Dividida
+                {
+                    let rect = inner.view.visible_rect();
+                    if let Some(it) = inner.view.iter_at_location(rect.x(), rect.y()) {
+                        inner.reader.scroll_to_line(it.line() as usize);
+                    }
+                }
+            });
+        this.apply_mode(View::Codigo);
         this
     }
 
-    pub fn widget(&self) -> &gtk::ScrolledWindow {
-        &self.0.widget
+    /// El widget del editor: código y vista formateada en un panel.
+    pub fn widget(&self) -> &gtk::Paned {
+        &self.0.root
+    }
+
+    /// Selector de vista para la cabecera.
+    pub fn switcher(&self) -> &adw::ToggleGroup {
+        &self.0.switcher
+    }
+
+    /// Cambia de vista (FR-008). Al pasar a Lectura o Dividida, la vista formateada se actualiza.
+    pub fn set_view(&self, v: View) {
+        if self.0.mode.get() == v {
+            return;
+        }
+        self.apply_mode(v);
+        if v != View::Codigo {
+            self.render_now();
+        }
+        if let Some(f) = self.0.on_view.borrow().as_ref() {
+            f(v);
+        }
+    }
+
+    /// Vista inicial (la última usada, FR-013), sin avisar el cambio.
+    pub fn set_initial_view(&self, v: View) {
+        self.apply_mode(v);
+    }
+
+    fn apply_mode(&self, v: View) {
+        let i = &self.0;
+        i.mode.set(v);
+        i.code_scroller.set_visible(v != View::Lectura);
+        i.reader.widget().set_visible(v != View::Codigo);
+        if i.switcher.active_name().as_deref() != Some(v.name()) {
+            i.switcher.set_active_name(Some(v.name()));
+        }
+        if v == View::Dividida {
+            let max = i.root.max_position();
+            if max > 0 {
+                i.root.set_position(max / 2);
+            }
+        }
+    }
+
+    /// Construye el encabezado de la vista formateada (las propiedades).
+    pub fn set_on_header(
+        &self,
+        f: impl Fn(&RelPath, &[orbital_vault::props::PropEntry]) -> Option<gtk::Widget> + 'static,
+    ) {
+        *self.0.on_header.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Clic en un enlace de la vista formateada.
+    pub fn set_on_link(&self, f: impl Fn(&RelPath, &str) + 'static) {
+        *self.0.on_link.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Cambio de vista elegido por el usuario (para recordarlo).
+    pub fn set_on_view(&self, f: impl Fn(View) + 'static) {
+        *self.0.on_view.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
+    pub fn render_now(&self) {
+        let i = &self.0;
+        if i.mode.get() == View::Codigo || i.session.borrow().is_none() {
+            return;
+        }
+        let generation = i.render_generation.get() + 1;
+        i.render_generation.set(generation);
+        let text = i
+            .buffer
+            .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
+            .to_string();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let parsed = gio::spawn_blocking(move || {
+                let prepared = reader::Prepared::new(&text);
+                let props = orbital_vault::props::markdown::locate(&text)
+                    .and_then(|r| orbital_vault::props::yaml::parse_block(&text[r]).ok())
+                    .unwrap_or_default();
+                (prepared, props)
+            })
+            .await;
+            let i = &this.0;
+            if i.render_generation.get() != generation {
+                return;
+            }
+            let Ok((prepared, props)) = parsed else {
+                return;
+            };
+            let header = || match (i.on_header.borrow().as_ref(), this.current_path()) {
+                (Some(f), Some(path)) => f(&path, &props),
+                _ => None,
+            };
+            let base = i.base_dir.borrow().clone();
+            i.reader.render(prepared, header, base);
+        });
+    }
+
+    /// Marca o desmarca una casilla: cambia un solo carácter del texto (FR-011).
+    fn toggle_task(&self, offset: usize) {
+        let b = &self.0.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let Some(prefix) = text.get(..offset) else {
+            return;
+        };
+        let chars = prefix.chars().count() as i32;
+        let mut start = b.iter_at_offset(chars);
+        let mut end = b.iter_at_offset(chars + 1);
+        let new = match start.char() {
+            ' ' => "x",
+            'x' | 'X' => " ",
+            _ => return,
+        };
+        b.begin_user_action();
+        b.delete(&mut start, &mut end);
+        let mut at = b.iter_at_offset(chars);
+        b.insert(&mut at, new);
+        b.end_user_action();
     }
 
     /// Avisos de estado del guardado.
@@ -168,6 +431,7 @@ impl Editor {
     pub fn load(&self, vault: Arc<Vault>, note: &Note) {
         let (session, text) = EditSession::open(note);
         let i = &self.0;
+        i.reader.reset();
         code::set_language(
             &i.buffer,
             match note.format {
@@ -183,14 +447,17 @@ impl Editor {
         i.loading.set(false);
         i.view.set_editable(!note.read_only);
         i.generation.set(i.generation.get() + 1);
+        *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
         *i.vault.borrow_mut() = Some(vault);
         self.emit(&Status::Saved(None));
+        self.render_now();
     }
 
     /// Cierra la nota sin guardar (después de un `flush`, o para recargarla).
     pub fn close(&self) {
         self.0.generation.set(self.0.generation.get() + 1);
+        self.0.reader.reset();
         *self.0.session.borrow_mut() = None;
     }
 
@@ -214,6 +481,16 @@ impl Editor {
         }
         self.emit(&Status::Pending);
         self.schedule(AUTOSAVE);
+        if i.mode.get() != View::Codigo {
+            let generation = i.render_generation.get() + 1;
+            i.render_generation.set(generation);
+            let this = self.clone();
+            glib::timeout_add_local_once(RENDER_DELAY, move || {
+                if this.0.render_generation.get() == generation {
+                    this.render_now();
+                }
+            });
+        }
     }
 
     /// Guarda dentro de `delay`, salvo que llegue otra tecla antes.

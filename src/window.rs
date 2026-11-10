@@ -120,8 +120,9 @@ impl Window {
             .build();
         content_stack.add_named(&empty, Some("vacio"));
         content_stack.add_named(&editor_scroll, Some("nota"));
-        // Editor de notas (002): vista Código con guardado automático.
+        // Editor de notas (002): Código, Lectura y Dividida, con guardado automático.
         let code_editor = Editor::new();
+        code_editor.switcher().set_visible(false);
         content_stack.add_named(code_editor.widget(), Some("codigo"));
         // Página de notas HTML: propiedades arriba y la vista web (que se crea al usarla) abajo.
         let html_props = gtk::ListBox::builder()
@@ -173,6 +174,8 @@ impl Window {
             ],
         );
         content_header.pack_end(&note_menu_button);
+        // El selector de vista del editor (Código, Lectura, Dividida) va a la izquierda.
+        content_header.pack_start(code_editor.switcher());
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
@@ -399,6 +402,15 @@ impl Window {
                 }
             }),
             simple("preferences", Window::show_preferences),
+            simple("view-code", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Codigo)
+            }),
+            simple("view-read", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Lectura)
+            }),
+            simple("view-split", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Dividida)
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -408,6 +420,9 @@ impl Window {
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
         app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+        app.set_accels_for_action("win.view-code", &["<Control>1"]);
+        app.set_accels_for_action("win.view-read", &["<Control>2"]);
+        app.set_accels_for_action("win.view-split", &["<Control>3"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -431,6 +446,9 @@ impl Window {
             "<Control>comma",
         ));
         section.add(adw::ShortcutsItem::new("Nota nueva", "<Control>n"));
+        section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
+        section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
+        section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -830,6 +848,7 @@ impl Window {
 
     fn clear_note_view(&self) {
         let i = &self.0;
+        i.code_editor.switcher().set_visible(false);
         i.props_list.remove_all();
         i.props_list.set_visible(false);
         i.html_props.remove_all();
@@ -897,13 +916,83 @@ impl Window {
         {
             i.code_editor.load(vault, note);
         }
-        // En Código el frontmatter está en el texto: la lista de propiedades no se repite.
+        // Las propiedades se ven en el texto (Código) o arriba de la vista formateada.
         i.props_list.set_visible(false);
+        i.code_editor.switcher().set_visible(true);
         i.content_stack.set_visible_child_name("codigo");
     }
 
     /// Conecta el editor con la ventana: estado del guardado, errores y cierre.
     fn setup_editor(&self) {
+        // Las propiedades arriba de la vista formateada (con los botones de fuentes).
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_header(move |path, entries| {
+            let i = weak.upgrade()?;
+            if entries.is_empty() {
+                return None;
+            }
+            let list = gtk::ListBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .margin_bottom(18)
+                .build();
+            list.add_css_class("boxed-list");
+            list.update_property(&[gtk::accessible::Property::Label("Propiedades de la nota")]);
+            Window(i).fill_props(&list, path, entries);
+            list.set_size_request(560, -1);
+            Some(list.upcast())
+        });
+        // Enlaces: web afuera (con un clic, principio V); notas de la bóveda, adentro.
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_link(move |from, url| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("mailto:")
+            {
+                gtk::UriLauncher::new(url).launch(
+                    Some(&w.0.window),
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                return;
+            }
+            let Some(vault) = w.0.vault.borrow().clone() else {
+                return;
+            };
+            match vault.resolve_link(from, url) {
+                orbital_vault::Resolution::Found(p) => w.show_path(p.as_str()),
+                _ => w.toast(&format!("Todavía no existe «{url}»")),
+            }
+        });
+        // La vista elegida se recuerda (FR-013).
+        let persist = self.0.persist.get();
+        self.0.code_editor.set_on_view(move |v| {
+            if !persist {
+                return;
+            }
+            let name = v.name().to_owned();
+            glib::spawn_future_local(async move {
+                let _ = gio::spawn_blocking(move || {
+                    let mut state = AppState::load();
+                    state.md_view = Some(name);
+                    state.save()
+                })
+                .await;
+            });
+        });
+        let editor = self.0.code_editor.clone();
+        glib::spawn_future_local(async move {
+            let saved = gio::spawn_blocking(|| AppState::load().md_view)
+                .await
+                .ok()
+                .flatten();
+            let view = saved
+                .as_deref()
+                .and_then(crate::editor::View::from_name)
+                .unwrap_or(crate::editor::View::Lectura);
+            editor.set_initial_view(view);
+        });
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_status(move |status| {
             let Some(i) = weak.upgrade() else { return };
