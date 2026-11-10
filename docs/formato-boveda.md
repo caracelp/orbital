@@ -75,6 +75,38 @@ tags: [fisica]
 - Si hay más de una etiqueta de este tipo, solo cuenta la primera. Orbital avisa.
 - El JavaScript de la nota y su aislamiento se definen en la especificación de las notas HTML.
 
+### 4.1. Estilos de Orbital (`<style data-orbital>`)
+
+Para que el HTML se mantenga limpio y legible tanto en la vista Código como en editores externos o
+navegadores, Orbital nunca inserta atributos `style="..."` en línea al aplicar formatos desde la vista
+Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas reglas se agrupan en una
+única etiqueta `<style data-orbital>` dentro del `<head>`:
+
+```html
+<head>
+  ...
+  <style data-orbital>
+.o-color-rosa { color: #ff8cc6; }
+.o-columnas-2 { column-count: 2; column-gap: 2em; }
+  </style>
+</head>
+```
+
+- **Clases estándar reconocidas**:
+  - **Color de texto**: `o-color-rosa`, `o-color-rojo`, `o-color-naranja`, `o-color-amarillo`, `o-color-verde`,
+    `o-color-azul`, `o-color-violeta`, `o-color-gris`.
+  - **Color de fondo**: `o-fondo-rosa`, `o-fondo-rojo`, `o-fondo-naranja`, `o-fondo-amarillo`, `o-fondo-verde`,
+    `o-fondo-azul`, `o-fondo-violeta`, `o-fondo-gris`.
+  - **Alineación**: `o-alinear-izquierda`, `o-alinear-centro`, `o-alinear-derecha`, `o-alinear-justificado`.
+  - **Columnas**: `o-columnas-2`, `o-columnas-3`.
+  - **Estilos de bloque**: `o-estilo-destacado` (borde rosa y realce), `o-estilo-nota` (bloque azul con fondo suave),
+    `o-estilo-advertencia` (bloque amarillo con fondo suave).
+- **Regla de edición**: Al guardar desde la vista Visual, el bloque `<style data-orbital>` es la **única**
+  parte de `<head>` que Orbital puede agregar o actualizar (solo incluyendo las reglas de las clases
+  efectivamente utilizadas en el documento). Todo el resto de `<head>` (metadatos, estilos propios de la
+  nota, scripts) y el bloque de propiedades se conservan byte a byte (FR-015).
+
+
 ## 5. Propiedades
 
 - Obligatoria en `wiki/`: `type` (no bloqueante; Orbital avisa si falta).

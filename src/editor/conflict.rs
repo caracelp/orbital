@@ -251,26 +251,26 @@ pub fn show_compare_window(
     // Etiquetas de estilo para diferencias (paleta rosa/verde con contraste verificado)
     let tag_removed = gtk::TextTag::builder()
         .name("diff-removed")
-        .paragraph_background("#361a24")
-        .foreground("#ffb3d9")
+        .paragraph_background(crate::style::DIFF_REMOVED_BG.hex())
+        .foreground(crate::style::DIFF_REMOVED_FG.hex())
         .build();
     let tag_removed_marker = gtk::TextTag::builder()
         .name("diff-removed-marker")
         .weight(700)
-        .foreground("#ff8cc6")
+        .foreground(crate::style::DIFF_REMOVED_MARKER.hex())
         .build();
     buffer_left.tag_table().add(&tag_removed);
     buffer_left.tag_table().add(&tag_removed_marker);
 
     let tag_added = gtk::TextTag::builder()
         .name("diff-added")
-        .paragraph_background("#16291f")
-        .foreground("#a6f5c0")
+        .paragraph_background(crate::style::DIFF_ADDED_BG.hex())
+        .foreground(crate::style::DIFF_ADDED_FG.hex())
         .build();
     let tag_added_marker = gtk::TextTag::builder()
         .name("diff-added-marker")
         .weight(700)
-        .foreground("#8ff0a4")
+        .foreground(crate::style::DIFF_ADDED_MARKER.hex())
         .build();
     buffer_right.tag_table().add(&tag_added);
     buffer_right.tag_table().add(&tag_added_marker);

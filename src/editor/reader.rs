@@ -330,12 +330,18 @@ impl Reader {
             .pixels_below_lines(10)
             .build());
         for (name, bg) in [
-            ("callout-nota", "#1b2433"),
-            ("callout-consejo", "#16291f"),
-            ("callout-importante", "#2a1a33"),
-            ("callout-advertencia", "#33290f"),
-            ("callout-peligro", "#361a1d"),
-            ("callout-otro", "#1e1e22"),
+            ("callout-nota", crate::style::CALLOUT_NOTA_BG.hex()),
+            ("callout-consejo", crate::style::CALLOUT_CONSEJO_BG.hex()),
+            (
+                "callout-importante",
+                crate::style::CALLOUT_IMPORTANTE_BG.hex(),
+            ),
+            (
+                "callout-advertencia",
+                crate::style::CALLOUT_ADVERTENCIA_BG.hex(),
+            ),
+            ("callout-peligro", crate::style::CALLOUT_PELIGRO_BG.hex()),
+            ("callout-otro", crate::style::CARD_BG.hex()),
         ] {
             add(gtk::TextTag::builder()
                 .name(name)
