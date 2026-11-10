@@ -58,6 +58,8 @@ pub struct EditSession {
     failures: u32,
     bom: bool,
     crlf: bool,
+    /// Huella de las propiedades que se ven en `index.md`, según lo último guardado.
+    index_key: u64,
 }
 
 /// Escritura preparada, lista para correr en otro hilo.
@@ -66,13 +68,21 @@ pub struct SaveJob {
     path: RelPath,
     disk_text: String,
     expected: u64,
+    index_key: u64,
 }
 
 /// Lo que devuelve un [`SaveJob`].
 #[derive(Debug)]
 pub enum SaveResult {
-    Written { hash: u64 },
-    Conflict { disk_hash: u64 },
+    /// `also`: otros archivos escritos (la entrada de `index.md`, si cambió el título o el tipo).
+    Written {
+        hash: u64,
+        index_key: u64,
+        also: Vec<(RelPath, u64)>,
+    },
+    Conflict {
+        disk_hash: u64,
+    },
     Failed(VaultError),
 }
 
@@ -86,9 +96,24 @@ impl SaveJob {
             Some(self.expected),
             ctx,
         ) {
-            Ok(_) => SaveResult::Written {
-                hash: hash(self.disk_text.as_bytes()),
-            },
+            Ok(_) => {
+                // Si cambió lo que muestra el índice, se pone al día como con `set_prop` (001).
+                let key = Note::parse_for(vault, &self.path, &self.disk_text)
+                    .map_or(self.index_key, |n| n.index_key());
+                let also = if key != self.index_key {
+                    vault
+                        .sync_index(&self.path, ctx)
+                        .map(|r| r.written)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                SaveResult::Written {
+                    hash: hash(self.disk_text.as_bytes()),
+                    index_key: key,
+                    also,
+                }
+            }
             Err(VaultError::Conflict { .. }) => SaveResult::Conflict {
                 disk_hash: fs::read(self.path.to_path(vault.root()))
                     .map(|b| hash(&b))
@@ -115,6 +140,7 @@ impl EditSession {
                 failures: 0,
                 bom,
                 crlf,
+                index_key: note.index_key(),
             },
             text,
         )
@@ -184,6 +210,7 @@ impl EditSession {
             path: self.path.clone(),
             disk_text,
             expected: self.base_hash,
+            index_key: self.index_key,
         })
     }
 
@@ -195,8 +222,11 @@ impl EditSession {
         edited_meanwhile: bool,
     ) -> Result<SaveOutcome, VaultError> {
         match result {
-            SaveResult::Written { hash } => {
+            SaveResult::Written {
+                hash, index_key, ..
+            } => {
                 self.base_hash = hash;
+                self.index_key = index_key;
                 self.last_saved = Some(at);
                 self.failures = 0;
                 self.state = if edited_meanwhile {

@@ -208,3 +208,77 @@ fn failure_then_retry() {
     ));
     assert_eq!(s.failures(), 0);
 }
+
+/// T018: las propiedades se editan sobre el texto del editor (no sobre el disco) y solo cambian sus
+/// líneas; quitar una propiedad también.
+#[test]
+fn props_on_editor_text() {
+    let (_t, v) = setup();
+    let p = rel("wiki/fisica/entropia.md");
+    let note = v.read_note(&p).unwrap();
+    let (_s, text) = EditSession::open(&note);
+    // Algo escrito y sin guardar: no se pierde al editar una propiedad.
+    let typed = format!("{text}\nSin guardar.\n");
+    let editing = note.reparse(typed.clone()).unwrap();
+
+    let new = editing
+        .with_prop(
+            "title",
+            &orbital_vault::props::PropValue::Text("Entropía térmica".into()),
+        )
+        .unwrap();
+    let changed: Vec<_> = typed
+        .lines()
+        .zip(new.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(
+        changed,
+        vec![("title: Entropía", "title: Entropía térmica")]
+    );
+    assert_eq!(typed.lines().count(), new.lines().count());
+    assert!(new.ends_with("\nSin guardar.\n"));
+
+    let without = note.reparse(new).unwrap().without_prop("tags").unwrap();
+    assert!(!without.contains("tags:"));
+    assert_eq!(without.lines().count(), typed.lines().count() - 1);
+    // El disco no se tocó.
+    assert_eq!(v.read_note(&p).unwrap().source, note.source);
+}
+
+/// Si el guardado automático cambia el título, `index.md` se pone al día (como `set_prop`).
+#[test]
+fn autosave_updates_index_when_title_changes() {
+    let (t, v) = setup();
+    let p = rel("wiki/fisica/entropia.md");
+    let note = v.read_note(&p).unwrap();
+    let (mut s, text) = EditSession::open(&note);
+    let index = || fs::read_to_string(t.path().join("wiki/index.md")).unwrap();
+
+    // Un cambio en el cuerpo no toca el índice.
+    let before = index();
+    s.edited();
+    let body = format!("{text}\nOtro párrafo.\n");
+    s.save(&v, &body, &ctx()).unwrap();
+    assert_eq!(index(), before);
+
+    let renamed = body.replace("title: Entropía", "title: Entropía térmica");
+    s.edited();
+    let job = s.prepare_save(&renamed).unwrap();
+    let result = job.run(&v, &ctx());
+    let orbital_vault::session::SaveResult::Written { also, .. } = &result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(also.len(), 1);
+    assert_eq!(also[0].0, rel("wiki/index.md"));
+    assert!(index().contains("[Entropía térmica](/fisica/entropia.md)"));
+    s.apply(result, ctx().time, false).unwrap();
+
+    // Guardar otra vez sin cambiar el título no vuelve a escribir el índice.
+    s.edited();
+    let job = s.prepare_save(&format!("{renamed}más\n")).unwrap();
+    let orbital_vault::session::SaveResult::Written { also, .. } = job.run(&v, &ctx()) else {
+        panic!()
+    };
+    assert!(also.is_empty());
+}

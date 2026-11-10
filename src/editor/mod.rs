@@ -55,7 +55,15 @@ impl Status {
 type StatusFn = Box<dyn Fn(&Status)>;
 type ErrorFn = Box<dyn Fn(&str)>;
 type SavedFn = Box<dyn Fn(&RelPath, u64)>;
-type HeaderFn = Box<dyn Fn(&RelPath, &[orbital_vault::props::PropEntry]) -> Option<gtk::Widget>>;
+type HeaderFn = Box<dyn Fn(&RelPath, &Header) -> Option<gtk::Widget>>;
+
+/// Lo que se muestra arriba de la vista formateada: las propiedades de la nota.
+pub struct Header {
+    pub entries: Vec<orbital_vault::props::PropEntry>,
+    /// Error de sintaxis del bloque (la lista no se edita).
+    pub error: Option<orbital_vault::props::PropError>,
+    pub read_only: bool,
+}
 type LinkFn = Box<dyn Fn(&RelPath, &str)>;
 type ViewFn = Box<dyn Fn(View)>;
 
@@ -112,6 +120,11 @@ struct Inner {
     on_status: RefCell<Option<StatusFn>>,
     on_error: RefCell<Option<ErrorFn>>,
     on_saved: RefCell<Option<SavedFn>>,
+    /// La nota abierta sin su texto (ruta, zona, formato): para editar propiedades sobre el texto
+    /// del editor con `Note::reparse`.
+    meta: RefCell<Option<Note>>,
+    /// Cuenta los cambios del texto; sirve para saber si «Deshacer» sigue siendo lo último.
+    edits: Cell<u64>,
 }
 
 /// El editor de la nota abierta.
@@ -209,6 +222,8 @@ impl Editor {
             on_status: RefCell::new(None),
             on_error: RefCell::new(None),
             on_saved: RefCell::new(None),
+            meta: RefCell::new(None),
+            edits: Cell::new(0),
         }));
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_changed(move |_| {
@@ -307,10 +322,7 @@ impl Editor {
     }
 
     /// Construye el encabezado de la vista formateada (las propiedades).
-    pub fn set_on_header(
-        &self,
-        f: impl Fn(&RelPath, &[orbital_vault::props::PropEntry]) -> Option<gtk::Widget> + 'static,
-    ) {
+    pub fn set_on_header(&self, f: impl Fn(&RelPath, &Header) -> Option<gtk::Widget> + 'static) {
         *self.0.on_header.borrow_mut() = Some(Box::new(f));
     }
 
@@ -341,8 +353,7 @@ impl Editor {
             let parsed = gio::spawn_blocking(move || {
                 let prepared = reader::Prepared::new(&text);
                 let props = orbital_vault::props::markdown::locate(&text)
-                    .and_then(|r| orbital_vault::props::yaml::parse_block(&text[r]).ok())
-                    .unwrap_or_default();
+                    .map(|r| orbital_vault::props::yaml::parse_block(&text[r]));
                 (prepared, props)
             })
             .await;
@@ -353,9 +364,22 @@ impl Editor {
             let Ok((prepared, props)) = parsed else {
                 return;
             };
-            let header = || match (i.on_header.borrow().as_ref(), this.current_path()) {
-                (Some(f), Some(path)) => f(&path, &props),
-                _ => None,
+            let header = || {
+                let read_only = i.meta.borrow().as_ref().is_none_or(|m| m.read_only);
+                let (entries, error) = match props {
+                    Some(Ok(e)) => (e, None),
+                    Some(Err(e)) => (Vec::new(), Some(e)),
+                    None => (Vec::new(), None),
+                };
+                let h = Header {
+                    entries,
+                    error,
+                    read_only,
+                };
+                match (i.on_header.borrow().as_ref(), this.current_path()) {
+                    (Some(f), Some(path)) => f(&path, &h),
+                    _ => None,
+                }
             };
             let base = i.base_dir.borrow().clone();
             i.reader.render(prepared, header, base);
@@ -450,8 +474,75 @@ impl Editor {
         *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
         *i.vault.borrow_mut() = Some(vault);
+        let mut meta = note.clone();
+        meta.source = String::new();
+        *i.meta.borrow_mut() = Some(meta);
         self.emit(&Status::Saved(None));
         self.render_now();
+    }
+
+    /// Cambia (o quita, con `None`) una propiedad sobre el texto del editor, no sobre el disco
+    /// (research R7): edita solo sus líneas y lo guarda el autoguardado. Con `rebuild` en `false`,
+    /// la lista ya muestra el valor nuevo y no se vuelve a armar (la fila no pierde el foco).
+    pub fn edit_prop(
+        &self,
+        key: &str,
+        value: Option<&orbital_vault::props::PropValue>,
+        rebuild: bool,
+    ) -> Result<(), String> {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let note = i
+            .meta
+            .borrow()
+            .as_ref()
+            .ok_or("No hay ninguna nota abierta")?
+            .reparse(text.clone())
+            .map_err(|e| e.to_string())?;
+        let new = match value {
+            Some(v) => note.with_prop(key, v),
+            None => note.without_prop(key),
+        }
+        .map_err(|e| e.to_string())?;
+        if new == text {
+            return Ok(());
+        }
+        if !rebuild {
+            let h = orbital_vault::props::markdown::locate(&new)
+                .map_or(0, |r| orbital_vault::write::hash(new[r].as_bytes()));
+            i.reader.adopt_header(h);
+        }
+        replace_changed(b, &text, &new);
+        Ok(())
+    }
+
+    /// Deshace el último cambio si nada cambió después (para el «Deshacer» de quitar una propiedad).
+    pub fn undo_if_last(&self, edits: u64) -> bool {
+        let b = &self.0.buffer;
+        if self.0.edits.get() != edits || !b.can_undo() {
+            return false;
+        }
+        b.undo();
+        true
+    }
+
+    /// Contador de cambios del texto (ver [`Editor::undo_if_last`]).
+    pub fn edits(&self) -> u64 {
+        self.0.edits.get()
+    }
+
+    /// Pasa a la vista Código y pone el cursor en una línea.
+    pub fn show_code_line(&self, line: i32) {
+        self.set_view(View::Codigo);
+        let b = &self.0.buffer;
+        if let Some(it) = b.iter_at_line(line) {
+            b.place_cursor(&it);
+            self.0
+                .view
+                .scroll_to_iter(&mut it.clone(), 0.1, false, 0.0, 0.0);
+        }
+        self.0.view.grab_focus();
     }
 
     /// Cierra la nota sin guardar (después de un `flush`, o para recargarla).
@@ -466,6 +557,7 @@ impl Editor {
         if i.loading.get() {
             return;
         }
+        i.edits.set(i.edits.get() + 1);
         let Some(session) = i.session.borrow_mut().as_mut().map(|s| {
             s.edited();
             s.state().clone()
@@ -550,10 +642,13 @@ impl Editor {
             return;
         };
         let edited = i.edited_during_save.get();
-        if let orbital_vault::session::SaveResult::Written { hash } = &result
+        if let orbital_vault::session::SaveResult::Written { hash, also, .. } = &result
             && let (Some(f), Some(path)) = (i.on_saved.borrow().as_ref(), self.current_path())
         {
             f(&path, *hash);
+            for (other, h) in also {
+                f(other, *h);
+            }
         }
         let outcome = match i.session.borrow_mut().as_mut() {
             Some(s) => s.apply(result, at, edited),
@@ -659,4 +754,32 @@ impl Editor {
         clock.disconnect(h2);
         out
     }
+}
+
+/// Reemplaza en el buffer solo la parte que difiere entre `old` y `new`, como una sola acción
+/// del usuario (se puede deshacer y el resto del texto, con el cursor, queda donde estaba).
+fn replace_changed(b: &sourceview5::Buffer, old: &str, new: &str) {
+    let prefix = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let old_rest: Vec<char> = old.chars().skip(prefix).collect();
+    let new_rest: Vec<char> = new.chars().skip(prefix).collect();
+    let suffix = old_rest
+        .iter()
+        .rev()
+        .zip(new_rest.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let inserted: String = new_rest[..new_rest.len() - suffix].iter().collect();
+    let start = prefix as i32;
+    let end = (prefix + old_rest.len() - suffix) as i32;
+    b.begin_user_action();
+    let mut from = b.iter_at_offset(start);
+    let mut to = b.iter_at_offset(end);
+    b.delete(&mut from, &mut to);
+    let mut at = b.iter_at_offset(start);
+    b.insert(&mut at, &inserted);
+    b.end_user_action();
 }

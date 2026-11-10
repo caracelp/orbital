@@ -251,6 +251,14 @@ impl Reader {
         i.view.set_buffer(Some(&gtk::TextBuffer::new(Some(&table))));
     }
 
+    /// El encabezado mostrado ya corresponde a este frontmatter (la lista de propiedades se
+    /// actualizó sola): el próximo volcado no lo rearma.
+    pub fn adopt_header(&self, hash: u64) {
+        if self.0.header.get().is_some() {
+            self.0.header.set(Some(hash));
+        }
+    }
+
     fn buffer(&self) -> gtk::TextBuffer {
         self.0.view.buffer()
     }
