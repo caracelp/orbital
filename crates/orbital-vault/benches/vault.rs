@@ -182,3 +182,43 @@ fn log_add(bencher: divan::Bencher) {
         .len()
     });
 }
+
+/// Vista formateada de una nota de ~100 KB (objetivo: < 5 ms).
+#[divan::bench]
+fn render_100k(bencher: divan::Bencher) {
+    let mut text = String::from("---\ntype: atomo\ntitle: Grande\n---\n");
+    let mut i = 0;
+    while text.len() < 100 * 1024 {
+        text.push_str(&format!(
+            "## Sección {i}\n\nPárrafo con **negrita**, *cursiva*, `código` y [enlace](/otra.md).\n\n- uno\n- [ ] tarea\n\n> [!nota] Título\n> cuerpo\n\n```rust\nfn main() {{}}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        ));
+        i += 1;
+    }
+    bencher.bench(|| {
+        orbital_vault::render::render_markdown(divan::black_box(&text))
+            .blocks
+            .len()
+    });
+}
+
+/// Solo pulldown-cmark sobre el mismo texto (referencia para render_100k).
+#[divan::bench]
+fn cmark_only_100k(bencher: divan::Bencher) {
+    let mut text = String::new();
+    let mut i = 0;
+    while text.len() < 100 * 1024 {
+        text.push_str(&format!(
+            "## Sección {i}\n\nPárrafo con **negrita**, *cursiva*, `código` y [enlace](/otra.md).\n\n- uno\n- [ ] tarea\n\n> [!nota] Título\n> cuerpo\n\n```rust\nfn main() {{}}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        ));
+        i += 1;
+    }
+    let mut opts = pulldown_cmark::Options::empty();
+    opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
+    opts.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+    opts.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
+    bencher.bench(|| {
+        pulldown_cmark::Parser::new_ext(divan::black_box(&text), opts)
+            .into_offset_iter()
+            .count()
+    });
+}

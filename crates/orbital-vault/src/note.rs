@@ -99,6 +99,33 @@ impl Note {
         edit(self, key, Some(value))
     }
 
+    /// Contenido que tendría la nota sin `key`, sin escribir nada.
+    pub fn without_prop(&self, key: &str) -> Result<String, VaultError> {
+        edit(self, key, None)
+    }
+
+    /// La misma nota (ruta, zona, formato) con otro texto: para editar las propiedades sobre el
+    /// texto del editor en lugar del disco (research R7 de la 002).
+    pub fn reparse(&self, source: String) -> Result<Note, VaultError> {
+        parse(self.path.clone(), self.zone, source, self.read_only)
+    }
+
+    /// Analiza un texto como si fuera el contenido de `path` en `vault`.
+    pub(crate) fn parse_for(vault: &Vault, path: &RelPath, source: &str) -> Option<Note> {
+        parse(path.clone(), vault.zone(path), source.to_owned(), false).ok()
+    }
+
+    /// Huella de lo que muestra `index.md` de esta nota: si cambia al guardar, hay que ponerlo al día.
+    pub(crate) fn index_key(&self) -> u64 {
+        let mut text = String::new();
+        for key in ["title", "description", "type", "archived"] {
+            if let Some(v) = self.prop(key) {
+                text.push_str(&format!("{key}={v:?}\n"));
+            }
+        }
+        hash(text.as_bytes())
+    }
+
     /// El texto de la nota sin el bloque de propiedades (lo que se muestra al leerla).
     pub fn body(&self) -> &str {
         match (self.format, &self.props) {

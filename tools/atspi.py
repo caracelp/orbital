@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Maneja Orbital por AT-SPI (la capa de accesibilidad que usa Orca), para probar la interfaz.
 
-Uso: python3 -I tools/atspi.py <comando> [args]
+Uso: ORBITAL_PID=<pid> python3 -I tools/atspi.py <comando> [args]
+La app de prueba se lanza con ORBITAL_INSTANCIA_PROPIA=1 para no tocar la del usuario.
   arbol                      imprime el árbol accesible de la ventana de Orbital
   activar <rol> <nombre>     ejecuta la acción principal del primer elemento con ese rol y nombre
   esperar <rol> <nombre>     espera (hasta 10 s) a que aparezca un elemento
@@ -22,10 +23,24 @@ from gi.repository import Atspi  # noqa: E402
 
 
 def app():
+    """La instancia de Orbital de prueba.
+
+    Exige ORBITAL_PID: el usuario puede tener su propio Orbital abierto, y las pruebas nunca deben
+    tocarlo. Lanzar la app de prueba con ORBITAL_INSTANCIA_PROPIA=1 y pasar su PID.
+    """
+    import os
+
+    pid = os.environ.get("ORBITAL_PID")
+    if not pid:
+        sys.exit("Falta ORBITAL_PID: el PID de la instancia de prueba (nunca la del usuario).")
     desktop = Atspi.get_desktop(0)
     for i in range(desktop.get_child_count()):
         a = desktop.get_child_at_index(i)
-        if a and (a.get_name() or "").lower() in ("orbital", "io.github.caracelp.orbital"):
+        if (
+            a
+            and (a.get_name() or "").lower() in ("orbital", "io.github.caracelp.orbital")
+            and str(a.get_process_id()) == pid
+        ):
             return a
     return None
 
@@ -98,10 +113,14 @@ def main():
         if not hits:
             print(f"No hay ninguna fila con {sys.argv[2]!r}")
             return 1
-        # La interfaz de selección usa la posición en el modelo (posinset), no el índice visible.
-        fila = lista.get_child_at_index(hits[0])
-        posicion = int(fila.get_attributes().get("posinset", hits[0] + 1)) - 1
-        lista.get_selection_iface().select_child(posicion)
+        # La interfaz de selección usa la posición absoluta en la lista. GTK informa `posinset`
+        # dentro del nivel del árbol, así que no sirve con carpetas abiertas: se usa el índice
+        # visible, que coincide con la posición absoluta mientras la lista no esté desplazada.
+        primera = lista.get_child_at_index(0)
+        desplazada = primera is not None and primera.get_attributes().get("posinset") != "1"
+        if desplazada:
+            print("Aviso: la lista está desplazada; el resultado puede no ser exacto.")
+        lista.get_selection_iface().select_child(hits[0])
         print(f"Elegí {nombres[hits[0]]!r}")
         return 0
     role, name = sys.argv[2], sys.argv[3]
@@ -120,7 +139,9 @@ def main():
         if action is None or action.get_n_actions() == 0:
             print(f"[{node.get_role_name()}] {node.get_name()!r} no tiene acciones")
             return 1
-        action.do_action(0)
+        if not action.do_action(0):
+            print(f"AT-SPI rechazó la acción de [{node.get_role_name()}] {node.get_name()!r}")
+            return 1
         print(f"Activé [{node.get_role_name()}] {node.get_name()!r} ({Atspi.Action.get_action_name(action, 0)})")
     elif cmd == "escribir":
         editable = node.get_editable_text_iface()

@@ -15,6 +15,8 @@ use orbital_vault::props::{PropEntry, PropValue, Warning};
 use orbital_vault::{DeletePlan, Entry, EntryKind, Format, Note, NoteMeta, RelPath, Vault};
 use webkit6::prelude::*;
 
+use crate::editor::props::display;
+use crate::editor::{self, Editor};
 use crate::html_view;
 use crate::open_dialog::{self, Answer};
 use crate::state::AppState;
@@ -35,6 +37,15 @@ struct Inner {
     list_view: gtk::ListView,
     editor: gtk::TextView,
     content_stack: gtk::Stack,
+    code_editor: Editor,
+    /// Subtítulo de la nota sin el estado del guardado.
+    subtitle_base: RefCell<String>,
+    /// La ventana ya guardó lo pendiente y puede cerrarse.
+    closing: Cell<bool>,
+    /// Evita abrir más de un diálogo de conflicto a la vez.
+    conflict_dialog_open: Cell<bool>,
+    /// Escrituras propias recientes (ruta → hash), que el monitor no debe tomar como externas.
+    own_writes: RefCell<HashMap<RelPath, u64>>,
     props_list: gtk::ListBox,
     note_banner: adw::Banner,
     type_banner: adw::Banner,
@@ -112,6 +123,10 @@ impl Window {
             .build();
         content_stack.add_named(&empty, Some("vacio"));
         content_stack.add_named(&editor_scroll, Some("nota"));
+        // Editor de notas (002): Código, Lectura y Dividida, con guardado automático.
+        let code_editor = Editor::new();
+        code_editor.switcher().set_visible(false);
+        content_stack.add_named(code_editor.widget(), Some("codigo"));
         // Página de notas HTML: propiedades arriba y la vista web (que se crea al usarla) abajo.
         let html_props = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -162,6 +177,8 @@ impl Window {
             ],
         );
         content_header.pack_end(&note_menu_button);
+        // El selector de vista del editor (Código, Lectura, Dividida) va a la izquierda.
+        content_header.pack_start(code_editor.switcher());
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
@@ -270,6 +287,11 @@ impl Window {
             list_view,
             editor,
             content_stack,
+            code_editor,
+            subtitle_base: RefCell::new(String::new()),
+            closing: Cell::new(false),
+            conflict_dialog_open: Cell::new(false),
+            own_writes: RefCell::new(HashMap::new()),
             props_list,
             note_banner,
             type_banner,
@@ -291,6 +313,7 @@ impl Window {
         let content = this.0.content_stack.clone();
         this.setup_drop(&content);
         this.setup_raw_drop();
+        this.setup_editor();
         this.setup_list();
         this
     }
@@ -383,6 +406,15 @@ impl Window {
                 }
             }),
             simple("preferences", Window::show_preferences),
+            simple("view-code", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Codigo)
+            }),
+            simple("view-read", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Lectura)
+            }),
+            simple("view-split", |w| {
+                w.0.code_editor.set_view(crate::editor::View::Dividida)
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -392,6 +424,9 @@ impl Window {
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
         app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+        app.set_accels_for_action("win.view-code", &["<Control>1"]);
+        app.set_accels_for_action("win.view-read", &["<Control>2"]);
+        app.set_accels_for_action("win.view-split", &["<Control>3"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -415,6 +450,9 @@ impl Window {
             "<Control>comma",
         ));
         section.add(adw::ShortcutsItem::new("Nota nueva", "<Control>n"));
+        section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
+        section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
+        section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -672,7 +710,30 @@ impl Window {
                 this.show_entry(e);
             }
         });
+        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
+        let expanded: std::collections::HashSet<String> = i
+            .list_view
+            .model()
+            .map(|old| {
+                (0..old.n_items())
+                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
+                    .filter(|r| r.is_expanded())
+                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
+                    .map(|o| o.string().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
         i.list_view.set_model(Some(&selection));
+        let mut n = 0;
+        while n < selection.n_items() {
+            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
+                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
+                && expanded.contains(o.string().as_str())
+            {
+                row.set_expanded(true);
+            }
+            n += 1;
+        }
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
@@ -716,6 +777,15 @@ impl Window {
         };
         let this = self.clone();
         glib::spawn_future_local(async move {
+            // Antes de cambiar de nota, se guarda lo pendiente de la anterior (FR-002).
+            let editor = this.0.code_editor.clone();
+            if editor.current_path().is_some_and(|p| p != entry.path) {
+                editor.flush().await;
+                if editor.has_pending() {
+                    return;
+                }
+                editor.close();
+            }
             let is_note = Format::from_name(entry.path.file_name()).is_some();
             let loaded = if is_note {
                 let (v, p) = (vault.clone(), entry.path.clone());
@@ -743,6 +813,7 @@ impl Window {
                 subtitle.push_str(" · solo lectura");
             }
             i.content_title.set_subtitle(&subtitle);
+            *i.subtitle_base.borrow_mut() = subtitle;
             this.clear_note_view();
             let raw = entry.zone == orbital_vault::Zone::Raw;
             match loaded {
@@ -784,6 +855,7 @@ impl Window {
 
     fn clear_note_view(&self) {
         let i = &self.0;
+        i.code_editor.switcher().set_visible(false);
         i.props_list.remove_all();
         i.props_list.set_visible(false);
         i.html_props.remove_all();
@@ -804,8 +876,13 @@ impl Window {
                 err.line, err.message
             ));
             i.note_banner.set_visible(true);
-            i.editor.buffer().set_text(&note.source);
-            i.content_stack.set_visible_child_name("nota");
+            if note.format == Format::Md && !note.read_only {
+                // Las propiedades inválidas se corrigen en la vista Código (FR-018).
+                self.open_in_code(&note);
+            } else {
+                i.editor.buffer().set_text(&note.source);
+                i.content_stack.set_visible_child_name("nota");
+            }
         } else {
             let list = match note.format {
                 Format::Md => &i.props_list,
@@ -823,10 +900,14 @@ impl Window {
                 i.note_banner.set_visible(true);
             }
             match note.format {
+                Format::Md if !note.read_only => self.open_in_code(&note),
                 Format::Md => {
                     i.editor.buffer().set_text(note.body());
                     i.content_stack.set_visible_child_name("nota");
                 }
+                // Las notas `.html` editables van al editor (Visual y Código, US4); las de `raw/`
+                // se muestran como página de solo lectura.
+                Format::Html if !note.read_only => self.open_in_code(&note),
                 Format::Html => {
                     self.load_html(&note);
                     i.content_stack.set_visible_child_name("html");
@@ -834,6 +915,132 @@ impl Window {
             }
         }
         *i.current_note.borrow_mut() = Some(note);
+    }
+
+    /// Abre una nota `.md` en la vista Código. Si ya está abierta (por ejemplo, al recargar la
+    /// lista), no se recarga el texto: se conservan el cursor, la selección y el deshacer.
+    fn open_in_code(&self, note: &Note) {
+        let i = &self.0;
+        if i.code_editor.current_path().as_ref() != Some(&note.path)
+            && let Some(vault) = i.vault.borrow().clone()
+        {
+            i.code_editor.load(vault, note);
+        }
+        // Las propiedades se ven en el texto (Código) o arriba de la vista formateada.
+        i.props_list.set_visible(false);
+        i.code_editor.switcher().set_visible(true);
+        i.content_stack.set_visible_child_name("codigo");
+    }
+
+    /// Conecta el editor con la ventana: estado del guardado, errores y cierre.
+    fn setup_editor(&self) {
+        // Las propiedades arriba de la vista formateada (con los botones de fuentes).
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_header(move |path, header| {
+            let i = weak.upgrade()?;
+            Window(i).props_header(path, header)
+        });
+        // Enlaces: web afuera (con un clic, principio V); notas de la bóveda, adentro.
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_link(move |from, url| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("mailto:")
+            {
+                gtk::UriLauncher::new(url).launch(
+                    Some(&w.0.window),
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                return;
+            }
+            let Some(vault) = w.0.vault.borrow().clone() else {
+                return;
+            };
+            match vault.resolve_link(from, url) {
+                orbital_vault::Resolution::Found(p) => w.show_path(p.as_str()),
+                _ => w.toast(&format!("Todavía no existe «{url}»")),
+            }
+        });
+        // La vista elegida se recuerda (FR-013).
+        let persist = self.0.persist.get();
+        self.0.code_editor.set_on_view(move |format, v| {
+            if !persist {
+                return;
+            }
+            let name = v.name().to_owned();
+            glib::spawn_future_local(async move {
+                let _ = gio::spawn_blocking(move || {
+                    let mut state = AppState::load();
+                    match format {
+                        Format::Md => state.md_view = Some(name),
+                        Format::Html => state.html_view = Some(name),
+                    }
+                    state.save()
+                })
+                .await;
+            });
+        });
+        let editor = self.0.code_editor.clone();
+        glib::spawn_future_local(async move {
+            let saved = gio::spawn_blocking(|| {
+                let s = AppState::load();
+                (s.md_view, s.html_view)
+            })
+            .await
+            .unwrap_or_default();
+            let view = |s: Option<String>, default| {
+                s.as_deref()
+                    .and_then(crate::editor::View::from_name)
+                    .unwrap_or(default)
+            };
+            editor.set_initial_views(
+                view(saved.0, crate::editor::View::Lectura),
+                view(saved.1, crate::editor::View::Visual),
+            );
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_status(move |status| {
+            let Some(i) = weak.upgrade() else { return };
+            let base = i.subtitle_base.borrow().clone();
+            let label = status.label();
+            i.content_title.set_subtitle(&if label.is_empty() {
+                base
+            } else {
+                format!("{base} · {label}")
+            });
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_saved(move |path, hash| {
+            if let Some(i) = weak.upgrade() {
+                i.own_writes.borrow_mut().insert(path.clone(), hash);
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_error(move |msg| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).toast(msg);
+            }
+        });
+        // Al cerrar la ventana, primero se guarda lo pendiente.
+        let this = self.clone();
+        self.0.window.connect_close_request(move |w| {
+            if this.0.closing.get() || !this.0.code_editor.has_pending() {
+                return glib::Propagation::Proceed;
+            }
+            let (this, w) = (this.clone(), w.clone());
+            glib::spawn_future_local(async move {
+                this.0.code_editor.flush().await;
+                if this.0.code_editor.has_pending() {
+                    return;
+                }
+                this.0.closing.set(true);
+                w.close();
+            });
+            glib::Propagation::Stop
+        });
     }
 
     /// Muestra una nota HTML como página, creando la vista web la primera vez.
@@ -865,43 +1072,8 @@ impl Window {
     /// que abre la fuente (FR-006, historia 6).
     fn fill_props(&self, list: &gtk::ListBox, note: &RelPath, entries: &[PropEntry]) {
         for e in entries {
-            if e.key == "sources"
-                && let PropValue::List(items) = &e.value
-            {
-                for item in items {
-                    let PropValue::Map(fields) = item else {
-                        continue;
-                    };
-                    let get = |k: &str| {
-                        fields
-                            .iter()
-                            .find(|(key, _)| key == k)
-                            .and_then(|(_, v)| v.as_text())
-                    };
-                    let Some(resource) = get("resource") else {
-                        continue;
-                    };
-                    let title = get("title").or(get("id")).unwrap_or("fuente");
-                    let row = adw::ActionRow::builder()
-                        .title(format!("sources · {}", glib::markup_escape_text(title)))
-                        .subtitle(glib::markup_escape_text(resource).as_str())
-                        .subtitle_selectable(true)
-                        .build();
-                    let open = gtk::Button::builder()
-                        .icon_name("document-open-symbolic")
-                        .tooltip_text("Abrir la fuente")
-                        .valign(gtk::Align::Center)
-                        .css_classes(["flat"])
-                        .build();
-                    open.update_property(&[gtk::accessible::Property::Label(&format!(
-                        "Abrir la fuente {title}"
-                    ))]);
-                    let (this, from, res) = (self.clone(), note.clone(), resource.to_owned());
-                    open.connect_clicked(move |_| this.open_source(&from, &res));
-                    row.add_suffix(&open);
-                    row.set_activatable_widget(Some(&open));
-                    list.append(&row);
-                }
+            if let Some(rows) = self.source_rows(note, e) {
+                rows.iter().for_each(|r| list.append(r));
                 continue;
             }
             let row = adw::ActionRow::builder()
@@ -913,6 +1085,124 @@ impl Window {
             list.append(&row);
         }
         list.set_visible(!entries.is_empty());
+    }
+
+    /// Filas de `sources` (OKF): una por fuente, con un botón para abrirla.
+    fn source_rows(&self, note: &RelPath, e: &PropEntry) -> Option<Vec<gtk::Widget>> {
+        let PropValue::List(items) = &e.value else {
+            return None;
+        };
+        if e.key != "sources" {
+            return None;
+        }
+        let mut rows = Vec::new();
+        for item in items {
+            let PropValue::Map(fields) = item else {
+                continue;
+            };
+            let get = |k: &str| {
+                fields
+                    .iter()
+                    .find(|(key, _)| key == k)
+                    .and_then(|(_, v)| v.as_text())
+            };
+            let Some(resource) = get("resource") else {
+                continue;
+            };
+            let title = get("title").or(get("id")).unwrap_or("fuente");
+            let row = adw::ActionRow::builder()
+                .title(format!("sources · {}", glib::markup_escape_text(title)))
+                .subtitle(glib::markup_escape_text(resource).as_str())
+                .subtitle_selectable(true)
+                .build();
+            let open = gtk::Button::builder()
+                .icon_name("document-open-symbolic")
+                .tooltip_text("Abrir la fuente")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            open.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Abrir la fuente {title}"
+            ))]);
+            let (this, from, res) = (self.clone(), note.clone(), resource.to_owned());
+            open.connect_clicked(move |_| this.open_source(&from, &res));
+            row.add_suffix(&open);
+            row.set_activatable_widget(Some(&open));
+            rows.push(row.upcast());
+        }
+        Some(rows)
+    }
+
+    /// Lista editable de propiedades arriba de la vista formateada (US3 de la 002).
+    fn props_header(&self, path: &RelPath, h: &editor::Header) -> Option<gtk::Widget> {
+        use editor::props::{Actions, Mode, list};
+        let mode = match (&h.error, h.read_only) {
+            (Some(e), _) => Mode::Invalid(e.clone()),
+            (None, true) => Mode::ReadOnly,
+            (None, false) => Mode::Editable,
+        };
+        if h.entries.is_empty() && matches!(mode, Mode::ReadOnly) {
+            return None;
+        }
+        let weak = Rc::downgrade(&self.0);
+        let set = {
+            let weak = weak.clone();
+            move |key: &str, value: PropValue, rebuild: bool| {
+                let Some(i) = weak.upgrade() else { return };
+                let w = Window(i);
+                if let Err(e) = w.0.code_editor.edit_prop(key, Some(&value), rebuild) {
+                    w.toast(&format!("No se pudo cambiar «{key}»: {e}"));
+                }
+            }
+        };
+        let remove = {
+            let weak = weak.clone();
+            let old: Vec<(String, PropValue)> = h
+                .entries
+                .iter()
+                .map(|e| (e.key.clone(), e.value.clone()))
+                .collect();
+            move |key: &str| {
+                let Some(i) = weak.upgrade() else { return };
+                let w = Window(i);
+                let editor = w.0.code_editor.clone();
+                if let Err(e) = editor.edit_prop(key, None, true) {
+                    w.toast(&format!("No se pudo quitar «{key}»: {e}"));
+                    return;
+                }
+                let edits = editor.edits();
+                let value = old.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                let k = key.to_owned();
+                w.toast_undo(&format!("Se quitó «{key}»"), move || {
+                    // Si no se escribió nada después, se deshace en el sitio; si no, se agrega
+                    // de nuevo al final.
+                    if !editor.undo_if_last(edits)
+                        && let Some(v) = &value
+                    {
+                        let _ = editor.edit_prop(&k, Some(v), true);
+                    }
+                });
+            }
+        };
+        let go_code = {
+            let weak = weak.clone();
+            let line = h.error.as_ref().map_or(0, |e| e.line as i32);
+            move || {
+                if let Some(i) = weak.upgrade() {
+                    // El bloque empieza después de la línea `---` (y los errores cuentan desde 1).
+                    i.code_editor.show_code_line(line);
+                }
+            }
+        };
+        let actions = Rc::new(Actions {
+            set: Box::new(set),
+            remove: Box::new(remove),
+            go_code: Box::new(go_code),
+        });
+        let this = self.clone();
+        let note = path.clone();
+        let custom = move |e: &PropEntry| this.source_rows(&note, e);
+        Some(list(&h.entries, mode, actions, &custom))
     }
 
     /// Abre una fuente citada con la aplicación del sistema, si existe en la bóveda o es una URL.
@@ -1195,6 +1485,10 @@ impl Window {
     }
 
     async fn set_archived(&self, path: RelPath, archived: bool) {
+        self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1221,6 +1515,10 @@ impl Window {
 
     /// Guarda archivos como adjuntos de la nota abierta y la vuelve a mostrar.
     async fn attach_files(&self, files: Vec<(String, Vec<u8>)>) {
+        self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1315,18 +1613,162 @@ impl Window {
         };
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let changes = gio::spawn_blocking(move || vault.on_external_change(&paths))
-                .await
-                .unwrap_or_default();
-            if changes.is_empty() {
-                return;
-            }
+            let v = vault.clone();
+            let own: Vec<(RelPath, u64)> = this
+                .0
+                .own_writes
+                .borrow()
+                .iter()
+                .map(|(p, h)| (p.clone(), *h))
+                .collect();
+            let (mut changes, echoes) = gio::spawn_blocking(move || {
+                let changes = v.on_external_change(&paths);
+                // Un cambio cuyo contenido es el que escribió el editor es un eco propio.
+                let echoes: Vec<RelPath> = own
+                    .into_iter()
+                    .filter(|(p, h)| {
+                        std::fs::read(p.to_path(v.root()))
+                            .is_ok_and(|b| orbital_vault::write::hash(&b) == *h)
+                    })
+                    .map(|(p, _)| p)
+                    .collect();
+                (changes, echoes)
+            })
+            .await
+            .unwrap_or_default();
+            changes.retain(
+                |c| !matches!(c, orbital_vault::ExternalChange::Modified(p) if echoes.contains(p)),
+            );
             let current = this
                 .0
                 .current_entry
                 .borrow()
                 .as_ref()
                 .map(|e| e.path.clone());
+            // La nota abierta en el editor: el eco de un guardado propio se ignora, y con cambios
+            // sin guardar no se pisa nada (FR-019).
+            let editor = this.0.code_editor.clone();
+            if let Some(open) = editor.current_path() {
+                let touched = changes
+                    .iter()
+                    .any(|c| matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open));
+                if touched {
+                    let abs = open.to_path(vault.root());
+                    let disk = gio::spawn_blocking(move || std::fs::read(abs).ok())
+                        .await
+                        .ok()
+                        .flatten();
+                    let disk_hash = disk.as_deref().map(orbital_vault::write::hash).unwrap_or(0);
+                    match editor.external_change(disk_hash) {
+                        orbital_vault::session::ExternalAction::Ignore => changes.retain(|c| {
+                            !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                        }),
+                        orbital_vault::session::ExternalAction::Reload => {
+                            let (v, p) = (vault.clone(), open.clone());
+                            let note = gio::spawn_blocking(move || v.read_note(&p))
+                                .await
+                                .ok()
+                                .and_then(Result::ok);
+                            if let Some(note) = note {
+                                editor.load(vault.clone(), &note);
+                            }
+                            changes.retain(|c| {
+                                !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                            });
+                        }
+                        orbital_vault::session::ExternalAction::AskUser => {
+                            changes.retain(|c| {
+                                !matches!(c, orbital_vault::ExternalChange::Modified(p) if *p == open)
+                            });
+                            if !this.0.conflict_dialog_open.get() {
+                                this.0.conflict_dialog_open.set(true);
+                                let disk_text = disk
+                                    .and_then(|b| String::from_utf8(b).ok())
+                                    .unwrap_or_default();
+                                let mine_text = editor.text();
+                                let name = open.file_name().to_string();
+                                let format = editor.format();
+                                let this_c = this.clone();
+                                let v_c = vault.clone();
+                                let ed = editor.clone();
+                                crate::editor::conflict::show_conflict_dialog(
+                                    &this.0.window,
+                                    &name,
+                                    mine_text,
+                                    disk_text,
+                                    format,
+                                    move |choice| {
+                                        this_c.0.conflict_dialog_open.set(false);
+                                        let this_choice = this_c.clone();
+                                        let v_choice = v_c.clone();
+                                        let ed_choice = ed.clone();
+                                        glib::spawn_future_local(async move {
+                                            match choice {
+                                                crate::editor::conflict::ConflictChoice::KeepMine => {
+                                                    if let Err(e) = ed_choice.keep_mine(v_choice).await {
+                                                        this_choice.toast(&format!("Error al conservar cambios: {e}"));
+                                                    }
+                                                }
+                                                crate::editor::conflict::ConflictChoice::UseDisk => {
+                                                    if let Err(e) = ed_choice.use_disk(v_choice).await {
+                                                        this_choice.toast(&format!("Error al usar la versión del disco: {e}"));
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                let gone = changes
+                    .iter()
+                    .any(|c| matches!(c, orbital_vault::ExternalChange::Removed(p) if *p == open));
+                if gone && editor.has_pending() {
+                    if !this.0.conflict_dialog_open.get() {
+                        this.0.conflict_dialog_open.set(true);
+                        let name = open.file_name().to_string();
+                        let this_c = this.clone();
+                        let v_c = vault.clone();
+                        let ed = editor.clone();
+                        crate::editor::conflict::show_deleted_dialog(
+                            &this.0.window,
+                            &name,
+                            move |choice| {
+                                this_c.0.conflict_dialog_open.set(false);
+                                let this_choice = this_c.clone();
+                                let v_choice = v_c.clone();
+                                let ed_choice = ed.clone();
+                                glib::spawn_future_local(async move {
+                                    match choice {
+                                        crate::editor::conflict::DeletedChoice::SaveAgain => {
+                                            if let Err(e) = ed_choice.keep_mine(v_choice).await {
+                                                this_choice.toast(&format!(
+                                                    "Error al guardar la nota: {e}"
+                                                ));
+                                            }
+                                        }
+                                        crate::editor::conflict::DeletedChoice::DiscardToBackup => {
+                                            if let Err(e) =
+                                                ed_choice.discard_to_backup(v_choice).await
+                                            {
+                                                this_choice.toast(&format!(
+                                                    "Error al descartar a respaldo: {e}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                    }
+                    return;
+                }
+            }
+            if changes.is_empty() {
+                return;
+            }
             let removed = current.as_ref().is_some_and(|c| {
                 changes
                     .iter()
@@ -1509,6 +1951,10 @@ impl Window {
 
     /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
     async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
+        self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1520,6 +1966,8 @@ impl Window {
         .await;
         match result {
             Ok(Ok(_)) => {
+                // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
+                self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
                 if undoable {
                     let this = self.clone();
@@ -1564,6 +2012,10 @@ impl Window {
     }
 
     async fn do_trash(&self, path: RelPath) {
+        self.0.code_editor.flush().await;
+        if self.0.code_editor.has_pending() {
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
@@ -1601,6 +2053,7 @@ impl Window {
             v.after_delete(&for_log, &ctx)
         })
         .await;
+        self.0.code_editor.close();
         self.reload(None).await;
         let msg = match &in_vault {
             None => format!("«{}» se movió a la papelera", path.file_name()),
@@ -1727,6 +2180,11 @@ impl Window {
             }
             None => false,
         }
+    }
+
+    /// Desarrollo: latencia al escribir en la nota abierta (ver `Editor::measure_typing`).
+    pub async fn measure_typing(&self, chars: usize) -> Vec<f64> {
+        self.0.code_editor.measure_typing(chars).await
     }
 
     /// Ejecuta `f` cuando termina de dibujarse el próximo cuadro de la ventana.
@@ -1948,26 +2406,6 @@ fn save_state_opened(path: PathBuf) {
         })
         .await;
     });
-}
-
-/// Texto legible de un valor de propiedad.
-fn display(v: &PropValue) -> String {
-    match v {
-        PropValue::Null => "—".to_owned(),
-        PropValue::Text(s)
-        | PropValue::Link(s)
-        | PropValue::Number(s)
-        | PropValue::Date(s)
-        | PropValue::DateTime(s) => s.clone(),
-        PropValue::Bool(true) => "Sí".to_owned(),
-        PropValue::Bool(false) => "No".to_owned(),
-        PropValue::List(items) => items.iter().map(display).collect::<Vec<_>>().join(", "),
-        PropValue::Map(items) => items
-            .iter()
-            .map(|(k, v)| format!("{k}: {}", display(v)))
-            .collect::<Vec<_>>()
-            .join(" · "),
-    }
 }
 
 /// El archivo más reciente de la papelera cuya ruta original es `original`.

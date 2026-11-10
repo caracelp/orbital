@@ -23,8 +23,65 @@ pub const SIDEBAR_BG: Rgb = Rgb(0x14, 0x14, 0x17);
 pub const HEADERBAR_BG: Rgb = Rgb(0x18, 0x18, 0x1b);
 pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
 
+// Colores de comparación (diff)
+pub const DIFF_REMOVED_BG: Rgb = Rgb(0x36, 0x1a, 0x24);
+#[allow(dead_code)]
+pub const DIFF_REMOVED_FG: Rgb = Rgb(0xff, 0xb3, 0xd9);
+pub const DIFF_REMOVED_MARKER: Rgb = Rgb(0xff, 0x8c, 0xc6);
+
+pub const DIFF_ADDED_BG: Rgb = Rgb(0x16, 0x29, 0x1f);
+#[allow(dead_code)]
+pub const DIFF_ADDED_FG: Rgb = Rgb(0xa6, 0xf5, 0xc0);
+pub const DIFF_ADDED_MARKER: Rgb = Rgb(0x8f, 0xf0, 0xa4);
+
+// Callouts
+pub const CALLOUT_NOTA_BG: Rgb = Rgb(0x1b, 0x24, 0x33);
+#[allow(dead_code)]
+pub const CALLOUT_NOTA_FG: Rgb = Rgb(0xcb, 0xe0, 0xff);
+
+pub const CALLOUT_CONSEJO_BG: Rgb = Rgb(0x16, 0x29, 0x1f);
+#[allow(dead_code)]
+pub const CALLOUT_CONSEJO_FG: Rgb = Rgb(0xa6, 0xf5, 0xc0);
+
+pub const CALLOUT_IMPORTANTE_BG: Rgb = Rgb(0x2a, 0x1a, 0x33);
+#[allow(dead_code)]
+pub const CALLOUT_IMPORTANTE_FG: Rgb = Rgb(0xf0, 0xc2, 0xff);
+
+pub const CALLOUT_ADVERTENCIA_BG: Rgb = Rgb(0x33, 0x29, 0x0f);
+#[allow(dead_code)]
+pub const CALLOUT_ADVERTENCIA_FG: Rgb = Rgb(0xff, 0xe0, 0x82);
+
+pub const CALLOUT_PELIGRO_BG: Rgb = Rgb(0x36, 0x1a, 0x1d);
+#[allow(dead_code)]
+pub const CALLOUT_PELIGRO_FG: Rgb = Rgb(0xff, 0xb3, 0xba);
+
+// Resaltado de sintaxis (paleta rosa y negro)
+pub const SYNTAX_TEXT: Rgb = Rgb(0xe6, 0xe6, 0xe6);
+pub const SYNTAX_KEYWORD: Rgb = ACCENT_TEXT;
+pub const SYNTAX_STRING: Rgb = Rgb(0xf0, 0xa8, 0xd0);
+pub const SYNTAX_TYPE: Rgb = Rgb(0xff, 0xb3, 0xd9);
+pub const SYNTAX_COMMENT: Rgb = Rgb(0x94, 0x94, 0x98);
+
+// Paleta de formato
+#[allow(dead_code)]
+pub const FORMAT_ROSA: Rgb = ACCENT_TEXT;
+#[allow(dead_code)]
+pub const FORMAT_ROJO: Rgb = Rgb(0xff, 0x6b, 0x6b);
+#[allow(dead_code)]
+pub const FORMAT_NARANJA: Rgb = Rgb(0xff, 0xa9, 0x4d);
+#[allow(dead_code)]
+pub const FORMAT_AMARILLO: Rgb = Rgb(0xff, 0xd4, 0x3b);
+#[allow(dead_code)]
+pub const FORMAT_VERDE: Rgb = Rgb(0x69, 0xdb, 0x7c);
+#[allow(dead_code)]
+pub const FORMAT_AZUL: Rgb = Rgb(0x74, 0xc0, 0xfc);
+#[allow(dead_code)]
+pub const FORMAT_VIOLETA: Rgb = Rgb(0xb1, 0x97, 0xfc);
+#[allow(dead_code)]
+pub const FORMAT_GRIS: Rgb = Rgb(0xad, 0xb5, 0xbd);
+
 impl Rgb {
-    fn hex(self) -> String {
+    pub fn hex(self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
     }
 
@@ -138,5 +195,73 @@ mod tests {
     fn known_ratios() {
         assert!((contrast_ratio(Rgb(0, 0, 0), Rgb(255, 255, 255)) - 21.0).abs() < 1e-9);
         assert!((contrast_ratio(Rgb(9, 9, 9), Rgb(9, 9, 9)) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn syntax_colors_meet_wcag_aa() {
+        for fg in [
+            SYNTAX_TEXT,
+            SYNTAX_KEYWORD,
+            SYNTAX_STRING,
+            SYNTAX_TYPE,
+            SYNTAX_COMMENT,
+        ] {
+            for bg in [WINDOW_BG, VIEW_BG] {
+                let r = contrast_ratio(fg, bg);
+                assert!(r >= 4.5, "sintaxis {fg:?} sobre {bg:?}: {r:.2} < 4.5");
+            }
+        }
+    }
+
+    #[test]
+    fn diff_colors_meet_wcag_aa() {
+        let r_rem = contrast_ratio(DIFF_REMOVED_FG, DIFF_REMOVED_BG);
+        assert!(r_rem >= 4.5, "diff removed texto: {r_rem:.2}");
+        let r_rem_m = contrast_ratio(DIFF_REMOVED_MARKER, DIFF_REMOVED_BG);
+        assert!(r_rem_m >= 3.0, "diff removed marker: {r_rem_m:.2}");
+
+        let r_add = contrast_ratio(DIFF_ADDED_FG, DIFF_ADDED_BG);
+        assert!(r_add >= 4.5, "diff added texto: {r_add:.2}");
+        let r_add_m = contrast_ratio(DIFF_ADDED_MARKER, DIFF_ADDED_BG);
+        assert!(r_add_m >= 3.0, "diff added marker: {r_add_m:.2}");
+    }
+
+    #[test]
+    fn callout_colors_meet_wcag_aa() {
+        let pairs = [
+            (CALLOUT_NOTA_FG, CALLOUT_NOTA_BG, "nota"),
+            (CALLOUT_CONSEJO_FG, CALLOUT_CONSEJO_BG, "consejo"),
+            (CALLOUT_IMPORTANTE_FG, CALLOUT_IMPORTANTE_BG, "importante"),
+            (
+                CALLOUT_ADVERTENCIA_FG,
+                CALLOUT_ADVERTENCIA_BG,
+                "advertencia",
+            ),
+            (CALLOUT_PELIGRO_FG, CALLOUT_PELIGRO_BG, "peligro"),
+        ];
+        for (fg, bg, name) in pairs {
+            let r = contrast_ratio(fg, bg);
+            assert!(r >= 4.5, "callout {name}: {r:.2} < 4.5");
+        }
+    }
+
+    #[test]
+    fn format_colors_meet_wcag_aa() {
+        let colors = [
+            FORMAT_ROSA,
+            FORMAT_ROJO,
+            FORMAT_NARANJA,
+            FORMAT_AMARILLO,
+            FORMAT_VERDE,
+            FORMAT_AZUL,
+            FORMAT_VIOLETA,
+            FORMAT_GRIS,
+        ];
+        for fg in colors {
+            for bg in [WINDOW_BG, VIEW_BG] {
+                let r = contrast_ratio(fg, bg);
+                assert!(r >= 4.5, "formato {fg:?} sobre {bg:?}: {r:.2} < 4.5");
+            }
+        }
     }
 }

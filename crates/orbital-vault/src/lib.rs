@@ -8,20 +8,25 @@
 
 pub mod aux_files;
 pub mod config;
+pub mod diff;
 pub mod entry;
 pub mod error;
+pub mod html_edit;
 pub mod links;
 pub mod note;
 pub mod okf_files;
 pub mod ops;
 pub mod props;
+pub mod render;
 pub mod scan;
+pub mod session;
 pub mod template;
 pub mod vault;
 pub mod write;
 
 pub use aux_files::AuxFile;
 pub use config::{LinkStyle, VaultConfig};
+pub use diff::{DiffKind, DiffLine, diff_lines};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
 pub use links::Resolution;
