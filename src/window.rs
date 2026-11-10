@@ -128,14 +128,14 @@ impl Window {
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
         content_header.set_title_widget(Some(&content_title));
-        let note_menu = gio::Menu::new();
-        note_menu.append(Some("Renombrar o mover…"), Some("win.rename"));
-        note_menu.append(Some("Mover a la papelera"), Some("win.trash"));
-        let note_menu_button = gtk::MenuButton::builder()
-            .icon_name("view-more-symbolic")
-            .tooltip_text("Opciones de la nota")
-            .menu_model(&note_menu)
-            .build();
+        let note_menu_button = menu_button(
+            "view-more-symbolic",
+            "Opciones de la nota",
+            &[
+                ("Renombrar o mover…", "win.rename", "F2"),
+                ("Mover a la papelera", "win.trash", "Supr"),
+            ],
+        );
         content_header.pack_end(&note_menu_button);
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
@@ -788,10 +788,12 @@ impl Window {
 
     /// Avisa con un botón «Deshacer» que ejecuta `undo`.
     fn toast_undo(&self, msg: &str, undo: impl Fn() + 'static) {
+        // Sin tiempo límite (WCAG 2.2.1): queda hasta que se descarta o lo reemplaza otro aviso.
         let toast = adw::Toast::builder()
             .title(msg)
             .button_label("Deshacer")
-            .timeout(8)
+            .timeout(0)
+            .priority(adw::ToastPriority::High)
             .build();
         toast.connect_button_clicked(move |_| undo());
         self.0.toasts.add_toast(toast);
@@ -1096,15 +1098,66 @@ fn icon_for(kind: EntryKind) -> &'static str {
 }
 
 fn open_menu_button() -> gtk::MenuButton {
-    let menu = gio::Menu::new();
-    menu.append(Some("Abrir una carpeta…"), Some("win.open"));
-    menu.append(Some("Abrir como bóveda de Orbital…"), Some("win.open-as"));
-    menu.append(Some("Atajos de teclado"), Some("win.shortcuts"));
-    gtk::MenuButton::builder()
-        .icon_name("folder-open-symbolic")
-        .tooltip_text("Abrir")
-        .menu_model(&menu)
-        .build()
+    menu_button(
+        "folder-open-symbolic",
+        "Abrir",
+        &[
+            ("Abrir una carpeta…", "win.open", "Ctrl+O"),
+            (
+                "Abrir como bóveda de Orbital…",
+                "win.open-as",
+                "Ctrl+Mayús+O",
+            ),
+            ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
+        ],
+    )
+}
+
+/// Botón con un menú hecho de botones planos.
+///
+/// Los menús de `gio::Menu` en GTK 4.24 no tienen nombre accesible en sus ítems (Orca no puede
+/// leerlos); con botones comunes, cada opción se anuncia con su texto. El atajo se muestra a la
+/// derecha y se agrega a la descripción accesible.
+fn menu_button(icon: &str, tooltip: &str, items: &[(&str, &str, &str)]) -> gtk::MenuButton {
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    column.add_css_class("menu");
+    let popover = gtk::Popover::builder()
+        .child(&column)
+        .has_arrow(true)
+        .build();
+    popover.add_css_class("menu");
+    for &(label, action, accel) in items {
+        let text = gtk::Label::builder()
+            .label(label)
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        let shortcut = gtk::Label::new(Some(accel));
+        shortcut.add_css_class("dim-label");
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        row.append(&text);
+        row.append(&shortcut);
+        let button = gtk::Button::builder()
+            .child(&row)
+            .action_name(action)
+            .css_classes(["flat"])
+            .build();
+        button.update_property(&[
+            gtk::accessible::Property::Label(label),
+            gtk::accessible::Property::KeyShortcuts(accel),
+        ]);
+        let p = popover.clone();
+        button.connect_clicked(move |_| p.popdown());
+        column.append(&button);
+    }
+    let button = gtk::MenuButton::builder()
+        .icon_name(icon)
+        .tooltip_text(tooltip)
+        .popover(&popover)
+        .build();
+    // Sin esto, el nombre accesible se arma con el texto de las opciones del menú.
+    button.update_property(&[gtk::accessible::Property::Label(tooltip)]);
+    button
 }
 
 fn start_page() -> adw::StatusPage {
