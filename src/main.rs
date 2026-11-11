@@ -2,6 +2,7 @@ mod editor;
 mod html_view;
 mod open_dialog;
 mod preferences;
+mod search_panel;
 mod state;
 mod style;
 mod watcher;

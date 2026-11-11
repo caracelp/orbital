@@ -200,7 +200,7 @@ impl Vault {
         Ok(())
     }
 
-    fn zone(&self, path: &RelPath) -> Zone {
+    pub fn zone(&self, path: &RelPath) -> Zone {
         let l = self.layout();
         let structured = l.raw == crate::Presence::Present || l.wiki == crate::Presence::Present;
         zone_of(path, structured)

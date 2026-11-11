@@ -75,6 +75,14 @@ struct Inner {
     graph_gen: Cell<u64>,
     /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
     pending_line: Cell<Option<(RelPath, usize)>>,
+    /// Panel lateral izquierdo: stack de páginas (Archivos, Búsqueda).
+    sidebar_stack: adw::ViewStack,
+    /// Panel de búsqueda en toda la bóveda (US1 de la 004).
+    search_panel: crate::search_panel::SearchPanel,
+    /// Índice de búsqueda en memoria; `None` mientras se arma en segundo plano.
+    search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
+    /// Generación del índice para descartar construcciones viejas.
+    search_gen: Cell<u64>,
 }
 
 /// Ventana de Orbital.
@@ -242,6 +250,24 @@ impl Window {
             .vexpand(true)
             .build();
 
+        // --- Panel de búsqueda (US1) ---
+        let initial_search_raw = AppState::load().search_raw;
+        let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
+
+        // --- ViewStack de la barra lateral izquierda (T014) ---
+        let sidebar_stack = adw::ViewStack::new();
+        let files_page = sidebar_stack.add_titled(&sidebar_scroll, Some("archivos"), "Archivos");
+        files_page.set_icon_name(Some("folder-symbolic"));
+
+        let search_page =
+            sidebar_stack.add_titled(search_panel.widget(), Some("busqueda"), "Búsqueda");
+        search_page.set_icon_name(Some("edit-find-symbolic"));
+
+        let sidebar_switcher = adw::ViewSwitcher::builder()
+            .stack(&sidebar_stack)
+            .policy(adw::ViewSwitcherPolicy::Narrow)
+            .build();
+
         let banner = adw::Banner::builder()
             .title("Estructura incompleta")
             .button_label("Completar…")
@@ -252,7 +278,7 @@ impl Window {
 
         let sidebar_title = adw::WindowTitle::new("Orbital", "");
         let sidebar_header = adw::HeaderBar::new();
-        sidebar_header.set_title_widget(Some(&sidebar_title));
+        sidebar_header.set_title_widget(Some(&sidebar_switcher));
         sidebar_header.pack_start(&open_menu_button());
         let new_button = menu_button("list-add-symbolic", "Nueva nota", &[]);
         sidebar_header.pack_end(&new_button);
@@ -265,7 +291,7 @@ impl Window {
             .visible(false)
             .build();
         sidebar_view.add_top_bar(&gone_banner);
-        sidebar_view.set_content(Some(&sidebar_scroll));
+        sidebar_view.set_content(Some(&sidebar_stack));
         let sidebar_page = adw::NavigationPage::builder()
             .title("Bóveda")
             .child(&sidebar_view)
@@ -333,6 +359,10 @@ impl Window {
             graph: RefCell::new(None),
             graph_gen: Cell::new(0),
             pending_line: Cell::new(None),
+            sidebar_stack,
+            search_panel: search_panel.clone(),
+            search_index: RefCell::new(None),
+            search_gen: Cell::new(0),
             html_props,
             new_button,
             external_page,
@@ -345,6 +375,27 @@ impl Window {
             gone: Cell::new(false),
             gone_banner,
         }));
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.search_panel.connect_open_match(move |path, line| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            w.0.pending_line.set(Some((path.clone(), line)));
+            w.show_path(path.as_str());
+        });
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.search_panel.connect_raw_toggled(move |active| {
+            let Some(i) = weak.upgrade() else { return };
+            if i.persist.get() {
+                let mut s = AppState::load();
+                s.search_raw = active;
+                glib::spawn_future_local(async move {
+                    let _ = gio::spawn_blocking(move || s.save()).await;
+                });
+            }
+        });
+
         this.setup_actions(app);
         let content = this.0.content_stack.clone();
         this.setup_drop(&content);
@@ -455,6 +506,8 @@ impl Window {
                 let s = &w.0.right_split;
                 s.set_show_sidebar(!s.shows_sidebar());
             }),
+            simple("search", Window::focus_search),
+            simple("toggle-search-raw", Window::toggle_search_raw),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -468,6 +521,7 @@ impl Window {
         app.set_accels_for_action("win.view-code", &["<Control>1"]);
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
+        app.set_accels_for_action("win.search", &["<Control><Shift>f"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
@@ -495,6 +549,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
         section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
         section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
+        section.add(adw::ShortcutsItem::new(
+            "Buscar en toda la bóveda",
+            "<Control><Shift>f",
+        ));
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
@@ -728,8 +786,14 @@ impl Window {
                 },
             ));
         self.set_gone(false);
-        *i.vault.borrow_mut() = Some(Arc::new(vault));
+        let arc_vault = Arc::new(vault);
+        *i.vault.borrow_mut() = Some(arc_vault.clone());
+        i.search_panel.set_vault(Some(arc_vault));
         self.rebuild_graph();
+        let this = self.clone();
+        self.after_next_frame(move || {
+            this.rebuild_search_index();
+        });
 
         let root = children_model(&tree, "");
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -1045,6 +1109,107 @@ impl Window {
         });
     }
 
+    /// Construye el índice de búsqueda de la bóveda en segundo plano (US1 de la 004).
+    fn rebuild_search_index(&self) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let generation = i.search_gen.get() + 1;
+        i.search_gen.set(generation);
+        *i.search_index.borrow_mut() = None;
+        i.search_panel.set_search_index(None);
+
+        let measure_ticks = std::env::var_os("ORBITAL_MEDIR_INDICE").is_some();
+        let tick_state = if measure_ticks {
+            let last_tick: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
+            let max_gap = Rc::new(Cell::new(std::time::Duration::ZERO));
+            let running = Rc::new(Cell::new(true));
+            let last = last_tick.clone();
+            let max = max_gap.clone();
+            let run = running.clone();
+            self.0.window.add_tick_callback(move |w, _| {
+                if !run.get() {
+                    return glib::ControlFlow::Break;
+                }
+                let now = std::time::Instant::now();
+                if let Some(prev) = last.get() {
+                    let dt = now.duration_since(prev);
+                    if dt > max.get() {
+                        max.set(dt);
+                    }
+                }
+                last.set(Some(now));
+                w.queue_draw();
+                glib::ControlFlow::Continue
+            });
+            Some((running, max_gap, std::time::Instant::now()))
+        } else {
+            None
+        };
+
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let built = gio::spawn_blocking(move || orbital_vault::SearchIndex::build(&vault))
+                .await
+                .ok();
+            if let Some((run, max_gap, start)) = tick_state {
+                run.set(false);
+                let elapsed = start.elapsed();
+                let worst_ms = max_gap.get().as_secs_f64() * 1000.0;
+                println!(
+                    "ORBITAL_MEDIR_INDICE: armado en {:.2} ms, peor intervalo entre cuadros: {:.2} ms",
+                    elapsed.as_secs_f64() * 1000.0,
+                    worst_ms
+                );
+            }
+            if this.0.search_gen.get() != generation {
+                return;
+            }
+            let arc_idx = built.map(|idx| Arc::new(std::sync::RwLock::new(idx)));
+            *this.0.search_index.borrow_mut() = arc_idx.clone();
+            this.0.search_panel.set_search_index(arc_idx);
+        });
+    }
+
+    /// Pone al día el archivo en el índice de búsqueda, en otro hilo (US1 de la 004).
+    fn update_search_index(&self, path: RelPath, removed: bool) {
+        let i = &self.0;
+        let (Some(index), Some(vault)) =
+            (i.search_index.borrow().clone(), i.vault.borrow().clone())
+        else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let _ = gio::spawn_blocking(move || {
+                let text = if removed {
+                    None
+                } else {
+                    std::fs::read_to_string(path.to_path(vault.root())).ok()
+                };
+                let Ok(mut idx) = index.write() else { return };
+                match text {
+                    Some(t) => idx.update_file(&vault, &path, &t),
+                    None => idx.remove_file(&path),
+                }
+            })
+            .await;
+            this.0
+                .search_panel
+                .set_search_index(this.0.search_index.borrow().clone());
+        });
+    }
+
+    pub fn focus_search(&self) {
+        self.0.sidebar_stack.set_visible_child_name("busqueda");
+        self.0.search_panel.grab_focus();
+    }
+
+    pub fn toggle_search_raw(&self) {
+        self.0.search_panel.toggle_raw();
+    }
+
     /// Muestra en el panel los retroenlaces de la nota abierta (solo si el panel está a la vista).
     fn refresh_backlinks(&self) {
         use crate::editor::right_sidebar::Backlinks;
@@ -1159,7 +1324,8 @@ impl Window {
         self.0.code_editor.set_on_saved(move |path, hash| {
             if let Some(i) = weak.upgrade() {
                 i.own_writes.borrow_mut().insert(path.clone(), hash);
-                Window(i).update_graph(path.clone(), false);
+                Window(i.clone()).update_graph(path.clone(), false);
+                Window(i).update_search_index(path.clone(), false);
             }
         });
         let weak = Rc::downgrade(&self.0);
@@ -1792,9 +1958,13 @@ impl Window {
             for c in &changes {
                 match c {
                     orbital_vault::ExternalChange::Modified(p) => {
-                        this.update_graph(p.clone(), false)
+                        this.update_graph(p.clone(), false);
+                        this.update_search_index(p.clone(), false);
                     }
-                    orbital_vault::ExternalChange::Removed(p) => this.update_graph(p.clone(), true),
+                    orbital_vault::ExternalChange::Removed(p) => {
+                        this.update_graph(p.clone(), true);
+                        this.update_search_index(p.clone(), true);
+                    }
                     _ => {}
                 }
             }

@@ -22,6 +22,8 @@ pub struct AppState {
     pub md_view: Option<String>,
     /// Última vista usada en notas `.html`.
     pub html_view: Option<String>,
+    /// Si la búsqueda incluye archivos de `raw/` (T017 de la 004).
+    pub search_raw: bool,
 }
 
 fn state_file() -> PathBuf {
@@ -58,11 +60,19 @@ impl AppState {
         let html_view = find(&entries, "html_view")
             .and_then(|e| e.value.as_text())
             .map(str::to_owned);
+        let search_raw = find(&entries, "search_raw")
+            .and_then(|e| match &e.value {
+                PropValue::Bool(b) => Some(*b),
+                PropValue::Text(s) => Some(s == "true"),
+                _ => None,
+            })
+            .unwrap_or(false);
         Self {
             last_vault,
             recent,
             md_view,
             html_view,
+            search_raw,
         }
     }
 
@@ -97,6 +107,9 @@ impl AppState {
         }
         if let Some(v) = &self.md_view {
             entries.push(("md_view", PropValue::Text(v.clone())));
+        }
+        if self.search_raw {
+            entries.push(("search_raw", PropValue::Bool(true)));
         }
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }

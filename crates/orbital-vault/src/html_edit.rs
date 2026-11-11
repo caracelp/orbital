@@ -8,18 +8,18 @@
 use std::ops::Range;
 
 /// Una etiqueta encontrada por el escáner.
-struct Tag {
+pub(crate) struct Tag {
     /// Desde `<` hasta después de `>`.
-    range: Range<usize>,
+    pub(crate) range: Range<usize>,
     /// Nombre en minúsculas (`/body` para el cierre).
-    name: String,
+    pub(crate) name: String,
     /// Nombres de los atributos, en minúsculas.
-    attrs: Vec<String>,
+    pub(crate) attrs: Vec<String>,
 }
 
 /// Recorre las etiquetas de `s` desde `from`, salteando comentarios y el contenido de
 /// `<script>` y `<style>`.
-fn tags(s: &str, from: usize) -> impl Iterator<Item = Tag> + '_ {
+pub(crate) fn tags(s: &str, from: usize) -> impl Iterator<Item = Tag> + '_ {
     let mut i = from;
     std::iter::from_fn(move || {
         loop {
