@@ -36,9 +36,9 @@ impl CompletionCandidate {
         let name = path.file_name();
         let stem = name.rsplit_once('.').map_or(name, |(s, _)| s).to_owned();
         let keys = Keys {
-            stem: stem.to_lowercase(),
-            title: title.as_deref().map(str::to_lowercase),
-            aliases: aliases.iter().map(|a| a.to_lowercase()).collect(),
+            stem: orbital_vault::fold(&stem),
+            title: title.as_deref().map(orbital_vault::fold),
+            aliases: aliases.iter().map(|a| orbital_vault::fold(a)).collect(),
         };
         Self {
             target: stem.clone(),
@@ -52,7 +52,7 @@ impl CompletionCandidate {
 
     /// Retorna el alias que coincide con la consulta, si lo hay.
     pub fn matching_alias(&self, query: &str) -> Option<&str> {
-        let q = query.trim().to_lowercase();
+        let q = orbital_vault::fold(query.trim());
         if q.is_empty() {
             return None;
         }
@@ -126,7 +126,7 @@ pub fn filter_candidates(
     query: &str,
     limit: usize,
 ) -> Vec<CompletionCandidate> {
-    let q = query.trim().to_lowercase();
+    let q = orbital_vault::fold(query.trim());
     if q.is_empty() {
         return candidates.iter().take(limit).cloned().collect();
     }

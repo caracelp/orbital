@@ -83,6 +83,8 @@ struct Inner {
     search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
     /// Generación del índice para descartar construcciones viejas.
     search_gen: Cell<u64>,
+    /// Candidatos para el selector rápido de notas (US2 de la 004).
+    candidates: RefCell<Vec<crate::editor::completion::CompletionCandidate>>,
 }
 
 /// Ventana de Orbital.
@@ -363,6 +365,7 @@ impl Window {
             search_panel: search_panel.clone(),
             search_index: RefCell::new(None),
             search_gen: Cell::new(0),
+            candidates: RefCell::new(Vec::new()),
             html_props,
             new_button,
             external_page,
@@ -508,6 +511,7 @@ impl Window {
             }),
             simple("search", Window::focus_search),
             simple("toggle-search-raw", Window::toggle_search_raw),
+            simple("quick-open", Window::open_switcher),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -522,6 +526,7 @@ impl Window {
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
         app.set_accels_for_action("win.search", &["<Control><Shift>f"]);
+        app.set_accels_for_action("win.quick-open", &["<Control>p"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
@@ -552,6 +557,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Buscar en toda la bóveda",
             "<Control><Shift>f",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Saltar a una nota (selector rápido)",
+            "<Control>p",
         ));
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
@@ -788,7 +797,21 @@ impl Window {
         self.set_gone(false);
         let arc_vault = Arc::new(vault);
         *i.vault.borrow_mut() = Some(arc_vault.clone());
-        i.search_panel.set_vault(Some(arc_vault));
+        i.search_panel.set_vault(Some(arc_vault.clone()));
+
+        let baseline = Self::collect_candidates_baseline(&arc_vault);
+        *i.candidates.borrow_mut() = baseline;
+        let vault_for_cand = arc_vault.clone();
+        let this_cand = self.clone();
+        glib::spawn_future_local(async move {
+            let full = gio::spawn_blocking(move || Self::collect_candidates_full(&vault_for_cand))
+                .await
+                .ok();
+            if let Some(full) = full {
+                *this_cand.0.candidates.borrow_mut() = full;
+            }
+        });
+
         self.rebuild_graph();
         let this = self.clone();
         self.after_next_frame(move || {
@@ -929,7 +952,21 @@ impl Window {
             this.clear_note_view();
             let raw = entry.zone == orbital_vault::Zone::Raw;
             match loaded {
-                Ok(Some(note)) => this.show_note(note),
+                Ok(Some(note)) => {
+                    if this.0.persist.get() {
+                        let rel = note.path.as_str().to_string();
+                        let vroot = vault.root().to_path_buf();
+                        glib::spawn_future_local(async move {
+                            let _ = gio::spawn_blocking(move || {
+                                let mut s = AppState::load();
+                                s.note_opened(&vroot, &rel);
+                                s.save()
+                            })
+                            .await;
+                        });
+                    }
+                    this.show_note(note);
+                }
                 Ok(None) => i.content_stack.set_visible_child_name("nota"),
                 Err(_) => {
                     i.external_page.set_title(entry.path.file_name());
@@ -1208,6 +1245,82 @@ impl Window {
 
     pub fn toggle_search_raw(&self) {
         self.0.search_panel.toggle_raw();
+    }
+
+    pub fn open_switcher(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let candidates = self.0.candidates.borrow().clone();
+        let state = AppState::load();
+        let recent = state.recent_notes_for(vault.root()).to_vec();
+        let this = self.clone();
+        crate::switcher::SwitcherDialog::present(&self.0.window, candidates, recent, move |path| {
+            this.show_path(path.as_str());
+        });
+    }
+
+    fn collect_candidates_baseline(
+        vault: &Vault,
+    ) -> Vec<crate::editor::completion::CompletionCandidate> {
+        let mut list: Vec<_> = vault
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.zone == orbital_vault::Zone::Wiki
+                    && matches!(
+                        e.kind,
+                        orbital_vault::EntryKind::AtomNote
+                            | orbital_vault::EntryKind::SynthesisNote
+                    )
+            })
+            .map(|e| {
+                crate::editor::completion::CompletionCandidate::new(
+                    e.path.clone(),
+                    None,
+                    Vec::new(),
+                )
+            })
+            .collect();
+        crate::editor::completion::qualify_duplicates(&mut list);
+        list
+    }
+
+    fn collect_candidates_full(
+        vault: &Vault,
+    ) -> Vec<crate::editor::completion::CompletionCandidate> {
+        let mut list: Vec<_> = vault
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.zone == orbital_vault::Zone::Wiki
+                    && matches!(
+                        e.kind,
+                        orbital_vault::EntryKind::AtomNote
+                            | orbital_vault::EntryKind::SynthesisNote
+                    )
+            })
+            .map(|e| {
+                let props = vault.read_props(&e.path).ok().flatten();
+                let entries = props.as_ref().map_or(&[][..], |p| &p.entries[..]);
+                let title = orbital_vault::props::find(entries, "title")
+                    .and_then(|v| v.value.as_text())
+                    .map(str::to_owned);
+                let aliases = orbital_vault::props::find(entries, "aliases")
+                    .map(|v| match &v.value {
+                        orbital_vault::props::PropValue::List(l) => l
+                            .iter()
+                            .filter_map(|x| x.as_text().map(str::to_owned))
+                            .collect(),
+                        orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                crate::editor::completion::CompletionCandidate::new(e.path.clone(), title, aliases)
+            })
+            .collect();
+        crate::editor::completion::qualify_duplicates(&mut list);
+        list
     }
 
     /// Muestra en el panel los retroenlaces de la nota abierta (solo si el panel está a la vista).

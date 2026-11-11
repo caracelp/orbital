@@ -5,6 +5,7 @@ mod preferences;
 mod search_panel;
 mod state;
 mod style;
+mod switcher;
 mod watcher;
 mod window;
 mod write_ctx;
