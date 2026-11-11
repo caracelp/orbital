@@ -266,8 +266,9 @@ mod tests {
 
     #[test]
     fn link_colors_meet_wcag_aa() {
+        // Fondos donde aparecen enlaces: la ventana, la vista, las tarjetas y las transclusiones.
         for fg in [LINK_FG, LINK_MISSING_FG] {
-            for bg in [WINDOW_BG, VIEW_BG] {
+            for bg in [WINDOW_BG, VIEW_BG, CARD_BG, EMBED_BG] {
                 let r = contrast_ratio(fg, bg);
                 assert!(r >= 4.5, "enlace {fg:?} sobre {bg:?}: {r:.2} < 4.5");
             }

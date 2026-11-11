@@ -2108,7 +2108,8 @@ impl Window {
         });
     }
 
-    /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
+    /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso. Si la
+    /// nota tiene enlaces entrantes, ofrece actualizarlos (US6 de la 003).
     async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
         self.0.code_editor.flush().await;
         if self.0.code_editor.has_pending() {
@@ -2117,32 +2118,129 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
-        let (f, t) = (from.clone(), to.clone());
+        // Los enlaces que hoy apuntan a la nota (antes de renombrar: la resolución mira la bóveda
+        // actual). Con el grafo armado se revisan solo sus retroenlaces; si no, toda la bóveda.
+        let mut plan = None;
+        if undoable && Format::from_name(from.file_name()).is_some() {
+            let sources: Option<Vec<RelPath>> = self.0.graph.borrow().as_ref().and_then(|g| {
+                g.lock().ok().map(|g| {
+                    let mut v: Vec<RelPath> = g
+                        .backlinks_for(&from)
+                        .iter()
+                        .map(|b| b.from.clone())
+                        .collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+            });
+            let (v, f, t) = (vault.clone(), from.clone(), to.clone());
+            let found =
+                gio::spawn_blocking(move || v.plan_link_updates(&f, &t, sources.as_deref()))
+                    .await
+                    .unwrap_or_default();
+            if !found.is_empty() {
+                match self.ask_link_update(&from, &found).await {
+                    LinkAnswer::Cancel => return,
+                    LinkAnswer::Skip => {}
+                    LinkAnswer::Update => plan = Some(Arc::new(found)),
+                }
+            }
+        }
+        let (f, t, p) = (from.clone(), to.clone(), plan.clone());
         let result = gio::spawn_blocking(move || {
             let ctx = write_ctx::now(Some(vault.config()));
-            vault.rename(&f, &t, &ctx)
+            let renamed = vault.rename(&f, &t, &ctx)?;
+            // Los enlaces se escriben después de renombrar (la nota puede enlazarse a sí misma).
+            let failed = p.map_or_else(Vec::new, |p| vault.apply_link_updates(&p, &ctx).1);
+            Ok::<_, orbital_vault::VaultError>((renamed, failed))
         })
         .await;
         match result {
-            Ok(Ok(_)) => {
+            Ok(Ok((_, failed))) => {
                 // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
                 self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
+                if !failed.is_empty() {
+                    let names: Vec<&str> = failed.iter().map(|(p, _)| p.file_name()).collect();
+                    self.toast(&format!(
+                        "No se actualizaron los enlaces de {} (cambiaron mientras tanto)",
+                        names.join(", ")
+                    ));
+                }
                 if undoable {
                     let this = self.clone();
-                    self.toast_undo(
-                        &format!("«{}» ahora es «{to}»", from.file_name()),
-                        move || {
-                            let (this, from, to) = (this.clone(), from.clone(), to.clone());
-                            glib::spawn_future_local(async move {
-                                this.do_rename(to, from, false).await;
-                            });
-                        },
-                    );
+                    let message = match &plan {
+                        Some(p) => format!(
+                            "«{}» ahora es «{to}»; {} {} actualizados",
+                            from.file_name(),
+                            p.links(),
+                            if p.links() == 1 { "enlace" } else { "enlaces" }
+                        ),
+                        None => format!("«{}» ahora es «{to}»", from.file_name()),
+                    };
+                    self.toast_undo(&message, move || {
+                        let (this, from, to, plan) =
+                            (this.clone(), from.clone(), to.clone(), plan.clone());
+                        glib::spawn_future_local(async move {
+                            // Primero los enlaces, después el nombre: todo vuelve a ser igual.
+                            let vault = this.0.vault.borrow().clone();
+                            if let (Some(plan), Some(vault)) = (plan, vault) {
+                                this.0.code_editor.flush().await;
+                                let failed = gio::spawn_blocking(move || {
+                                    let ctx = write_ctx::now(Some(vault.config()));
+                                    vault.revert_link_updates(&plan, &ctx).1
+                                })
+                                .await
+                                .unwrap_or_default();
+                                if !failed.is_empty() {
+                                    this.toast(
+                                        "Algunos enlaces cambiaron después y no se revirtieron",
+                                    );
+                                }
+                            }
+                            this.do_rename(to, from, false).await;
+                        });
+                    });
                 }
             }
             Ok(Err(e)) => self.toast(&e.to_string()),
             Err(_) => self.toast("No se pudo renombrar"),
+        }
+    }
+
+    /// «Se encontraron N enlaces a esta nota en M archivos. ¿Querés actualizarlos?» (FR-018).
+    async fn ask_link_update(
+        &self,
+        from: &RelPath,
+        plan: &orbital_vault::LinkUpdatePlan,
+    ) -> LinkAnswer {
+        let (links, files) = (plan.links(), plan.files());
+        let dialog = adw::AlertDialog::new(
+            Some("¿Actualizar los enlaces?"),
+            Some(&format!(
+                "Se {} {links} {} a «{}» en {files} {}. ¿Querés actualizarlos para que sigan \
+                 apuntando a la nota?",
+                if links == 1 {
+                    "encontró"
+                } else {
+                    "encontraron"
+                },
+                if links == 1 { "enlace" } else { "enlaces" },
+                from.file_name(),
+                if files == 1 { "archivo" } else { "archivos" },
+            )),
+        );
+        dialog.add_response("cancel", "Cancelar");
+        dialog.add_response("skip", "No actualizar");
+        dialog.add_response("update", "Actualizar enlaces");
+        dialog.set_response_appearance("update", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("update"));
+        dialog.set_close_response("cancel");
+        match dialog.choose_future(Some(&self.0.window)).await.as_str() {
+            "update" => LinkAnswer::Update,
+            "skip" => LinkAnswer::Skip,
+            _ => LinkAnswer::Cancel,
         }
     }
 
@@ -2796,4 +2894,11 @@ fn warn_portable(window: &Window, name: &str) {
             "«{name}» tiene {bad}, que puede dar problemas al sincronizar con Windows o con la nube"
         ));
     }
+}
+
+/// Respuesta al diálogo de actualizar enlaces al renombrar.
+enum LinkAnswer {
+    Cancel,
+    Skip,
+    Update,
 }

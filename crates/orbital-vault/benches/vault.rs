@@ -74,6 +74,24 @@ fn link_graph_5000(bencher: divan::Bencher) {
     });
 }
 
+/// Extraer los enlaces de una nota de 100 KB (objetivo de la 003: < 2 ms).
+#[divan::bench]
+fn extract_links_100k(bencher: divan::Bencher) {
+    let (dir, path) = big_note_vault();
+    let text = std::fs::read_to_string(path.to_path(&dir)).unwrap();
+    bencher.bench(|| orbital_vault::extract_links(divan::black_box(&text), false).len());
+}
+
+/// Poner al día el grafo de 5000 notas cuando se guarda una (objetivo de la 003: < 1 ms).
+#[divan::bench(sample_count = 50)]
+fn link_graph_update_one(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let mut graph = orbital_vault::LinkGraph::build(&vault).unwrap();
+    let path = note_paths()[2500].clone();
+    let text = std::fs::read_to_string(path.to_path(vault.root())).unwrap();
+    bencher.bench_local(|| graph.update_file(&vault, &path, divan::black_box(&text), false));
+}
+
 /// Notas de la bóveda de 5000.
 fn note_paths() -> &'static Vec<orbital_vault::RelPath> {
     static PATHS: OnceLock<Vec<orbital_vault::RelPath>> = OnceLock::new();
