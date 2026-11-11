@@ -1,6 +1,6 @@
 //! Índice de búsqueda de la bóveda (R1, R3, spec 004).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::ops::Range;
@@ -10,7 +10,7 @@ use memchr::memmem;
 use crate::entry::{RelPath, Zone};
 use crate::fold::fold;
 use crate::html_text::html_text;
-use crate::props::{self, html, markdown, yaml};
+use crate::props::{self, PropValue, html, markdown, yaml};
 use crate::query::{Atom, Query};
 use crate::tags::{TagNode, TagTree, extract_tags, inline_fields};
 use crate::vault::Vault;
@@ -415,6 +415,18 @@ fn is_text_file(path: &RelPath) -> bool {
     false
 }
 
+fn prop_values_as_strings(val: &PropValue) -> Vec<String> {
+    match val {
+        PropValue::Text(s) | PropValue::Link(s) => vec![s.clone()],
+        PropValue::Number(s) => vec![s.clone()],
+        PropValue::Bool(b) => vec![b.to_string()],
+        PropValue::Date(s) | PropValue::DateTime(s) => vec![s.clone()],
+        PropValue::List(items) => items.iter().flat_map(prop_values_as_strings).collect(),
+        PropValue::Null => vec![String::new()],
+        PropValue::Map(_) => vec![],
+    }
+}
+
 fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
     let file_name = path.file_name();
     let is_html = file_name.ends_with(".html") || file_name.ends_with(".htm");
@@ -475,12 +487,14 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
     let tags: Vec<String> = tags_set.into_iter().collect();
 
     // Propiedades
-    let mut props_map = HashMap::new();
-    // 1. Campos inline
-    for (k, v) in inline_fields(text) {
-        props_map.insert(fold(&k), fold(&v));
+    // 1. Campos inline (sobre el texto visible, para HTML extrae sin etiquetas)
+    let mut inline_props = Vec::new();
+    for (k, v) in inline_fields(&content) {
+        inline_props.push((fold(&k), fold(&v)));
     }
-    // 2. Frontmatter YAML (manda sobre inline)
+    // 2. Frontmatter YAML (el bloque manda si la clave se repite, T027)
+    let mut yaml_props = Vec::new();
+    let mut yaml_keys = HashSet::new();
     let region = if is_html {
         html::scan(text).block
     } else {
@@ -490,13 +504,21 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         && let Ok(entries) = yaml::parse_block(&text[r])
     {
         for entry in entries {
-            if let Some(val_str) = entry.value.as_text() {
-                props_map.insert(fold(&entry.key), fold(val_str));
+            let k_fold = fold(&entry.key);
+            yaml_keys.insert(k_fold.clone());
+            let vals = prop_values_as_strings(&entry.value);
+            for v in vals {
+                yaml_props.push((k_fold.clone(), fold(&v)));
             }
         }
     }
 
-    let props: Vec<(String, String)> = props_map.into_iter().collect();
+    let mut props = yaml_props;
+    for (k, v) in inline_props {
+        if !yaml_keys.contains(&k) {
+            props.push((k, v));
+        }
+    }
 
     Doc {
         zone,
@@ -637,6 +659,15 @@ fn matches_atom(doc: &Doc, path: &RelPath, atom: &Atom) -> bool {
             let lines: Vec<&str> = doc.folded.lines().collect();
             if doc.headings.is_empty() {
                 return matches_text_slice(&doc.folded, sub);
+            }
+            if let Some(&(first_line, _)) = doc.headings.first() {
+                let end_lead = (first_line.saturating_sub(1)) as usize;
+                if end_lead > 0 && end_lead <= lines.len() {
+                    let lead_text = lines[..end_lead].join("\n");
+                    if matches_text_slice(&lead_text, sub) {
+                        return true;
+                    }
+                }
             }
             for (idx, &(line_num, _)) in doc.headings.iter().enumerate() {
                 let start_idx = (line_num.saturating_sub(1)) as usize;

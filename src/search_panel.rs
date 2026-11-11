@@ -96,15 +96,97 @@ impl SearchPanel {
             .build();
         root.update_property(&[gtk::accessible::Property::Label("Panel de búsqueda")]);
 
-        // Cabecera del panel: entrada de búsqueda
-        let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("Buscar en toda la bóveda…")
+        // Cabecera del panel: entrada de búsqueda y ayuda con operadores
+        let header_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
             .margin_start(12)
             .margin_end(12)
             .margin_top(8)
             .margin_bottom(4)
             .build();
+
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Buscar en toda la bóveda…")
+            .hexpand(true)
+            .build();
         search_entry.update_property(&[gtk::accessible::Property::Label("Campo de búsqueda")]);
+
+        let help_btn = gtk::MenuButton::builder()
+            .label("?")
+            .tooltip_text("Operadores de búsqueda")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        help_btn.update_property(&[
+            gtk::accessible::Property::Label("Ayuda con operadores de búsqueda"),
+            gtk::accessible::Property::Description(
+                "Muestra los operadores de búsqueda disponibles",
+            ),
+        ]);
+
+        let popover = gtk::Popover::builder()
+            .position(gtk::PositionType::Bottom)
+            .autohide(true)
+            .build();
+        popover.update_property(&[gtk::accessible::Property::Label(
+            "Operadores de búsqueda disponibles",
+        )]);
+
+        let help_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        help_content.set_margin_start(12);
+        help_content.set_margin_end(12);
+        help_content.set_margin_top(12);
+        help_content.set_margin_bottom(12);
+        help_content.set_size_request(300, -1);
+
+        let help_title = gtk::Label::builder()
+            .label("Operadores de búsqueda")
+            .css_classes(["heading"])
+            .xalign(0.0)
+            .build();
+        help_content.append(&help_title);
+
+        let grid = gtk::Grid::builder()
+            .column_spacing(10)
+            .row_spacing(6)
+            .build();
+
+        let operators = [
+            ("palabra1 palabra2", "Contiene ambas palabras"),
+            ("\"frase exacta\"", "Palabras contiguas en ese orden"),
+            ("-palabra", "Excluye notas con el término"),
+            ("a OR b", "Contiene al menos uno"),
+            ("tag:#etiqueta", "Etiqueta (incluye subetiquetas)"),
+            ("path:carpeta", "Ruta de la nota"),
+            ("file:nombre", "Nombre de archivo"),
+            ("[clave]", "Propiedad existente"),
+            ("[clave:valor]", "Propiedad con ese valor"),
+            ("line:(a b)", "Términos en la misma línea"),
+            ("section:(a b)", "Términos en la misma sección"),
+        ];
+
+        for (row, (syntax, desc)) in operators.iter().enumerate() {
+            let syn_label = gtk::Label::builder()
+                .label(*syntax)
+                .xalign(0.0)
+                .css_classes(["monospace", "dim-label"])
+                .build();
+            let desc_label = gtk::Label::builder()
+                .label(*desc)
+                .xalign(0.0)
+                .wrap(true)
+                .build();
+            grid.attach(&syn_label, 0, row as i32, 1, 1);
+            grid.attach(&desc_label, 1, row as i32, 1, 1);
+        }
+
+        help_content.append(&grid);
+        popover.set_child(Some(&help_content));
+        help_btn.set_popover(Some(&popover));
+
+        header_box.append(&search_entry);
+        header_box.append(&help_btn);
 
         // Filtro: Incluir fuentes (raw/)
         let raw_check = gtk::CheckButton::builder()
@@ -313,7 +395,7 @@ impl SearchPanel {
 
         status_stack.add_named(&results_box, Some("results"));
 
-        root.append(&search_entry);
+        root.append(&header_box);
         root.append(&raw_check);
         root.append(&error_banner);
         root.append(&status_stack);

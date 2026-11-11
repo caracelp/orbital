@@ -321,3 +321,156 @@ fn search_limits_and_raw_inclusion() {
     assert_eq!(res_limit.notes.len(), 1);
     assert!(res_limit.total_notes > 1);
 }
+
+#[test]
+fn search_props_block_and_inline_fields_precedence() {
+    let tmp = TempDir::new("search-props");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+
+    // Nota 1: type: atomo en bloque, estado:: pendiente en texto
+    std::fs::write(
+        root.join("wiki/atomo.md"),
+        "\
+---
+type: atomo
+prioridad: 1
+---
+# El átomo
+El átomo almacena energía.
+estado:: pendiente
+",
+    )
+    .unwrap();
+
+    // Nota 2: estado: terminado en bloque, pero también estado:: pendiente en texto.
+    // El bloque manda si la clave se repite (T027): estado debe ser 'terminado', NO 'pendiente'.
+    std::fs::write(
+        root.join("wiki/molecula.md"),
+        "\
+---
+type: molecula
+estado: terminado
+---
+# La molécula
+estado:: pendiente
+",
+    )
+    .unwrap();
+
+    let vault = orbital_vault::open(root).unwrap();
+    let index = SearchIndex::build(&vault);
+
+    // [type:atomo]
+    let q = parse_query("[type:atomo]").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/atomo.md");
+
+    // [type] (cualquier valor)
+    let q = parse_query("[type]").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 2);
+
+    // [prioridad:1] (número en bloque)
+    let q = parse_query("[prioridad:1]").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/atomo.md");
+
+    // [estado:pendiente] -> solo atomo.md, porque en molecula.md el bloque (terminado) manda
+    let q = parse_query("[estado:pendiente]").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/atomo.md");
+
+    // [estado:terminado] -> molecula.md
+    let q = parse_query("[estado:terminado]").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/molecula.md");
+
+    // Tres condiciones combinadas del test independiente de US4:
+    // [type:atomo] [estado:pendiente] energía
+    let q = parse_query("[type:atomo] [estado:pendiente] energía").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/atomo.md");
+}
+
+#[test]
+fn search_line_and_section_operators() {
+    let tmp = TempDir::new("search-line-section");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+
+    // Nota 1: 'alfa' y 'beta' en la misma línea
+    std::fs::write(
+        root.join("wiki/misma_linea.md"),
+        "\
+# Sección A
+Esta línea contiene alfa y beta juntos.
+",
+    )
+    .unwrap();
+
+    // Nota 2: 'alfa' y 'beta' en distintas líneas de la misma sección
+    std::fs::write(
+        root.join("wiki/misma_seccion.md"),
+        "\
+# Sección A
+Línea con alfa únicamente.
+Otra línea con beta únicamente.
+# Sección B
+Nada relevante aquí.
+",
+    )
+    .unwrap();
+
+    // Nota 3: 'alfa' y 'beta' en secciones distintas
+    std::fs::write(
+        root.join("wiki/distinta_seccion.md"),
+        "\
+# Sección Uno
+Contiene alfa.
+# Sección Dos
+Contiene beta.
+",
+    )
+    .unwrap();
+
+    let vault = orbital_vault::open(root).unwrap();
+    let index = SearchIndex::build(&vault);
+
+    // line:(alfa beta) -> solo la primera nota
+    let q = parse_query("line:(alfa beta)").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/misma_linea.md");
+
+    // section:(alfa beta) -> primera y segunda nota, pero no la tercera
+    let q = parse_query("section:(alfa beta)").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 2);
+    let paths: Vec<&str> = res.notes.iter().map(|n| n.path.as_str()).collect();
+    assert!(paths.contains(&"wiki/misma_linea.md"));
+    assert!(paths.contains(&"wiki/misma_seccion.md"));
+    assert!(!paths.contains(&"wiki/distinta_seccion.md"));
+}
+
+#[test]
+fn search_combined_tag_path_file_props_and_content() {
+    let (_tmp, vault) = create_test_vault();
+    let index = SearchIndex::build(&vault);
+
+    // Combinación de tag:, path:, file:, palabra
+    let q = parse_query("tag:#fisica path:wiki file:entropia fundamental").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 1);
+    assert_eq!(res.notes[0].path.as_str(), "wiki/entropia.md");
+
+    // Si file no coincide, 0 notas
+    let q = parse_query("tag:#fisica file:mecanica").unwrap();
+    let res = index.search(&vault, &q, &SearchOptions::default());
+    assert_eq!(res.total_notes, 0);
+}
