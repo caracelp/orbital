@@ -43,9 +43,15 @@ pub fn show(
         .title("Autor de las notas (vacío: el usuario del sistema)")
         .text(current.actor.as_deref().unwrap_or(""))
         .build();
+    let ask_missing = adw::SwitchRow::builder()
+        .title("Confirmar antes de crear notas pendientes")
+        .subtitle("Preguntar antes de crear una nota al hacer clic en un enlace inexistente")
+        .active(current.ask_create_missing_notes)
+        .build();
     group.add(&links);
     group.add(&journal);
     group.add(&actor);
+    group.add(&ask_missing);
     page.add(&group);
     dialog.add(&page);
 
@@ -71,6 +77,7 @@ pub fn show(
                     format!("human:{actor_text}")
                 }
             }),
+            ask_create_missing_notes: ask_missing.is_active(),
             ..current.clone()
         };
         if next == current {

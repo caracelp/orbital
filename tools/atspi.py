@@ -69,7 +69,8 @@ def find(role, name):
             continue
         exact = name.startswith("=")
         hit = nm == name[1:] if exact else name.lower() in nm.lower()
-        if (role == "*" or r == role) and hit:
+        role_hit = role == "*" or r == role or (role == "button" and "button" in r)
+        if role_hit and hit:
             return node
     return None
 
@@ -89,6 +90,27 @@ def main():
                 print("  " * depth + f"[{node.get_role_name()}] {node.get_name()!r}")
             except Exception:
                 pass
+        return 0
+    if cmd == "tecla":
+        name = sys.argv[2]
+        mapping = {
+            "tab": (0xFF09, Atspi.KeySynthType.SYM),
+            "enter": (0xFF0D, Atspi.KeySynthType.SYM),
+            "return": (0xFF0D, Atspi.KeySynthType.SYM),
+            "space": (0x0020, Atspi.KeySynthType.SYM),
+            "escape": (0xFF1B, Atspi.KeySynthType.SYM),
+            "up": (0xFF52, Atspi.KeySynthType.SYM),
+            "down": (0xFF54, Atspi.KeySynthType.SYM),
+            "left": (0xFF51, Atspi.KeySynthType.SYM),
+            "right": (0xFF53, Atspi.KeySynthType.SYM),
+        }
+        val, synth = mapping.get(name.lower(), (0, None))
+        if synth:
+            Atspi.generate_keyboard_event(val, None, Atspi.KeySynthType.PRESS | synth)
+            time.sleep(0.05)
+            Atspi.generate_keyboard_event(val, None, Atspi.KeySynthType.RELEASE | synth)
+        else:
+            Atspi.generate_keyboard_event(0, name, Atspi.KeySynthType.STRING)
         return 0
     if cmd == "elegir":
         lista = find("list", "Contenido de la bóveda")
@@ -139,10 +161,17 @@ def main():
         if action is None or action.get_n_actions() == 0:
             print(f"[{node.get_role_name()}] {node.get_name()!r} no tiene acciones")
             return 1
-        if not action.do_action(0):
+        act_idx = 0
+        if len(sys.argv) > 4:
+            target_act = sys.argv[4]
+            for i in range(action.get_n_actions()):
+                if action.get_action_name(i).lower() == target_act.lower():
+                    act_idx = i
+                    break
+        if not action.do_action(act_idx):
             print(f"AT-SPI rechazó la acción de [{node.get_role_name()}] {node.get_name()!r}")
             return 1
-        print(f"Activé [{node.get_role_name()}] {node.get_name()!r} ({Atspi.Action.get_action_name(action, 0)})")
+        print(f"Activé [{node.get_role_name()}] {node.get_name()!r} ({action.get_action_name(act_idx)})")
     elif cmd == "escribir":
         editable = node.get_editable_text_iface()
         if editable is None:
@@ -153,6 +182,13 @@ def main():
     elif cmd == "texto":
         t = node.get_text_iface()
         print(Atspi.Text.get_text(t, 0, Atspi.Text.get_character_count(t)) if t else node.get_name())
+    elif cmd == "foco":
+        comp = node.get_component_iface()
+        if comp is None:
+            print(f"[{node.get_role_name()}] {node.get_name()!r} no es un componente")
+            return 1
+        comp.grab_focus()
+        print(f"Di foco a [{node.get_role_name()}] {node.get_name()!r}")
     return 0
 
 

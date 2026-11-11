@@ -65,6 +65,10 @@ pub struct Vault {
     entries: Vec<Entry>,
     config: VaultConfig,
     warnings: Vec<String>,
+    /// Notas de `wiki/` por nombre sin extensión en minúsculas (índices en `entries`). Se arma la
+    /// primera vez que se resuelve un wikilink: sin él, resolver era recorrer toda la bóveda por
+    /// enlace (el grafo de 5000 notas tardaba 15 s).
+    names: std::sync::OnceLock<std::collections::HashMap<String, Vec<usize>>>,
 }
 
 /// Abre `root` como bóveda. **No escribe nada** (FR-002): ni `.orbital/` ni ningún otro archivo.
@@ -91,12 +95,39 @@ pub fn open(root: &Path) -> Result<Vault, VaultError> {
         entries: scanned.entries,
         config,
         warnings,
+        names: std::sync::OnceLock::new(),
     })
 }
 
 impl Vault {
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Las notas de `wiki/` cuyo nombre sin extensión es `stem` (en minúsculas).
+    pub(crate) fn notes_named(&self, stem: &str) -> impl Iterator<Item = &Entry> {
+        let names = self.names.get_or_init(|| {
+            let mut m: std::collections::HashMap<String, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (n, e) in self.entries.iter().enumerate() {
+                if e.zone == crate::entry::Zone::Wiki
+                    && matches!(
+                        e.kind,
+                        crate::entry::EntryKind::AtomNote | crate::entry::EntryKind::SynthesisNote
+                    )
+                {
+                    let name = e.path.file_name().to_lowercase();
+                    let key = name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s);
+                    m.entry(key.to_owned()).or_default().push(n);
+                }
+            }
+            m
+        });
+        names
+            .get(stem)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|&n| &self.entries[n])
     }
 
     pub fn entries(&self) -> &[Entry] {

@@ -204,3 +204,70 @@ fn us4_webkit() {
         fs::remove_dir_all(root).unwrap();
     });
 }
+
+/// US5 de la 003 (T027): transclusiones en una nota `.html` abierta en Visual. Ejecutar con
+/// `cargo test --bin orbital us5_webkit_embeds -- --ignored --nocapture --test-threads=1`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn us5_webkit_embeds() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-us5-{}", std::process::id()));
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::write(root.join("wiki/a.md"), "# Átomo A\n\nTexto de A.\n").unwrap();
+        let source = "<!doctype html><html><head>\n<script type=\"application/yaml\">\ntype: sintesis\n</script>\n</head><body><p>Antes.</p><p>![[a]]</p><p>Después.</p></body></html>";
+        fs::write(root.join("wiki/s.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/s.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .title("Orbital — prueba aislada US5")
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        assert_eq!(editor.0.mode.get(), View::Visual);
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let card = "document.querySelector('[data-orbital-embed]')";
+        for _ in 0..50 {
+            if eval(&web, &format!("!!{card}")).await == "true" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert!(eval(&web, &format!("{card}.textContent")).await.contains("Texto de A."));
+        println!("OK: la tarjeta muestra la nota incrustada");
+
+        // Escribir en Visual y guardar: el archivo conserva `![[a]]` y no la tarjeta.
+        eval(&web, "const p = document.querySelectorAll('body > p')[2]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'Después, editado.')").await;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/s.html")).unwrap();
+        assert!(saved.contains("Después, editado."), "{saved}");
+        assert!(saved.contains("![[a]]"), "{saved}");
+        assert!(!saved.contains("orbital-embed"), "{saved}");
+        assert!(!saved.contains("Texto de A."), "{saved}");
+        assert_eq!(saved.split("<body>").next(), source.split("<body>").next());
+        println!("OK: la tarjeta no se guarda; el <head> queda igual");
+
+        // En vivo: cambia la nota incrustada.
+        fs::write(root.join("wiki/a.md"), "# Átomo A\n\nTexto nuevo de A.\n").unwrap();
+        editor.dependency_changed(&orbital_vault::RelPath::new("wiki/a.md").unwrap());
+        for _ in 0..50 {
+            if eval(&web, &format!("{card}.textContent")).await.contains("Texto nuevo de A.") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert!(eval(&web, &format!("{card}.textContent")).await.contains("Texto nuevo de A."));
+        assert_eq!(eval(&web, "document.querySelectorAll('[data-orbital-embed]').length").await, "1");
+        println!("OK: la tarjeta se actualiza en vivo");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

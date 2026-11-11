@@ -124,6 +124,14 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
 - Markdown estándar: `[texto](/ruta.md)` relativo a la raíz de `wiki/` (forma recomendada por OKF §6.1) o
   `[texto](./ruta.md)` relativo a la nota.
 - Un enlace a una nota inexistente es válido: representa una nota por escribir.
+- Transclusiones: un párrafo que es solo `![[nombre]]` o `![[nombre#encabezado]]` muestra el contenido de esa
+  nota (o de esa sección: el encabezado y lo que sigue hasta otro del mismo nivel o mayor) en la vista
+  formateada. Se resuelven como los wikilinks. Se anidan hasta 3 niveles; una referencia circular se muestra
+  como aviso. En las notas `.html` el archivo guarda solo el texto `![[…]]`: la tarjeta la dibuja Orbital y
+  nunca se escribe en el archivo.
+- Al renombrar o mover una nota, Orbital ofrece actualizar los enlaces que **resuelven** a ella (no los que
+  solo comparten el nombre). De cada enlace cambia solo la ruta, en el mismo estilo (con o sin carpeta o
+  extensión, `/…` o relativa); alias, anclas y el resto del archivo quedan iguales.
 
 ## 7. `wiki/index.md` y `wiki/log.md`
 

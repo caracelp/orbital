@@ -1,10 +1,55 @@
-//! Resolución de destinos de enlaces (FR-017 a FR-019, contrato §6).
-//!
-//! Solo resuelve un destino a una ruta. Extraer los enlaces del texto y los retroenlaces es parte
-//! del núcleo de notas (bloque A).
+//! Resolución, extracción y reescritura de destinos de enlaces (FR-001 a FR-006, contrato §6).
 
-use crate::entry::{EntryKind, RelPath, Zone};
+use crate::entry::RelPath;
 use crate::vault::Vault;
+
+/// Tipo sintáctico del enlace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LinkKind {
+    /// Enlace interno tipo wikilink: `[[destino]]` o `[[destino|alias]]`
+    Wikilink,
+    /// Enlace estándar de CommonMark / Markdown: `[texto](destino)`
+    Markdown,
+    /// Transclusión de contenido: `![[destino]]` o `![[destino#encabezado]]`
+    Transclusion,
+}
+
+/// Destino desglosado de un enlace.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LinkTarget {
+    /// Ruta o identificador base (ej: "Entropía", "fisica/termodinamica.md", "/raw/libro.pdf")
+    pub path: String,
+    /// Encabezado o ancla opcional (ej: "Segunda ley", sin `#`)
+    pub anchor: Option<String>,
+    /// Texto de reemplazo / alias si está explícito (ej: "mi alias")
+    pub alias: Option<String>,
+}
+
+/// Instancia de enlace encontrada en un documento.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkOccurrence {
+    pub kind: LinkKind,
+    pub target: LinkTarget,
+    /// Número de línea en el archivo fuente (base 1)
+    pub line: usize,
+    /// Fragmento contextual: línea completa donde aparece el enlace
+    pub snippet: String,
+    /// Rango de bytes en el texto fuente
+    pub byte_range: std::ops::Range<usize>,
+}
+
+/// Referencia inversa (retroenlace / backlink).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BacklinkRef {
+    /// Archivo origen donde se encuentra el enlace
+    pub from: RelPath,
+    /// Destino especificado en el enlace
+    pub target: LinkTarget,
+    /// Línea en la nota origen (base 1)
+    pub line: usize,
+    /// Fragmento contextual
+    pub snippet: String,
+}
 
 /// Resultado de resolver un enlace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,8 +61,34 @@ pub enum Resolution {
     Missing,
 }
 
+/// Parsea un destino crudo de enlace (como `[[Destino#ancla|alias]]` o `/wiki/nota.md#ancla`).
+pub fn parse_link_target(raw: &str) -> LinkTarget {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("![[")
+        .and_then(|t| t.strip_suffix("]]"))
+        .or_else(|| s.strip_prefix("[[").and_then(|t| t.strip_suffix("]]")))
+        .unwrap_or(s);
+
+    let (before_pipe, alias) = match s.split_once('|') {
+        Some((b, a)) => (b.trim(), Some(a.trim().to_string())),
+        None => (s.trim(), None),
+    };
+
+    let (path, anchor) = match before_pipe.split_once('#') {
+        Some((p, a)) => (p.trim(), Some(a.trim().to_string())),
+        None => (before_pipe, None),
+    };
+
+    LinkTarget {
+        path: path.to_string(),
+        anchor,
+        alias,
+    }
+}
+
 /// Decodifica `%XX` (rutas de enlaces Markdown).
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -95,7 +166,7 @@ impl Vault {
         }
     }
 
-    fn resolve_wikilink(&self, inner: &str) -> Resolution {
+    pub fn resolve_wikilink(&self, inner: &str) -> Resolution {
         let name = inner.split('|').next().unwrap_or("");
         let name = name.split(['#', '^']).next().unwrap_or("").trim();
         if name.is_empty() {
@@ -108,20 +179,15 @@ impl Vault {
         let has_ext =
             file.contains('.') && matches!(file.rsplit('.').next(), Some("md" | "html" | "htm"));
         let wanted = file.to_lowercase();
+        let key = if has_ext {
+            stem(&wanted)
+        } else {
+            wanted.as_str()
+        };
         let mut hits: Vec<RelPath> = self
-            .entries()
-            .iter()
+            .notes_named(key)
             .filter(|e| {
-                e.zone == Zone::Wiki
-                    && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
-            })
-            .filter(|e| {
-                let fname = e.path.file_name().to_lowercase();
-                let name_ok = if has_ext {
-                    fname == wanted
-                } else {
-                    stem(&fname) == wanted
-                };
+                let name_ok = !has_ext || e.path.file_name().to_lowercase() == wanted;
                 let folder_ok = folder.as_ref().is_none_or(|f| {
                     let dir = e
                         .path
@@ -141,6 +207,254 @@ impl Vault {
             _ => Resolution::Ambiguous(hits),
         }
     }
+}
+
+/// Extrae todos los enlaces (wikilinks, markdown y transclusiones) de un texto.
+pub fn extract_links(text: &str, is_html: bool) -> Vec<LinkOccurrence> {
+    if is_html {
+        extract_links_html(text)
+    } else {
+        extract_links_markdown(text)
+    }
+}
+
+/// Extrae enlaces de un documento Markdown, ignorando bloques de código.
+fn extract_links_markdown(text: &str) -> Vec<LinkOccurrence> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut byte_offset = 0;
+
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let line_num = line_idx + 1;
+        let line_len = line.len();
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            byte_offset += line_len + 1;
+            continue;
+        }
+
+        if !in_fence {
+            // Máscara simple de código en línea: caracteres entre backticks en la misma línea
+            let mut masked = line.to_string();
+            let mut in_code = false;
+            let mut mask_chars = Vec::new();
+            for c in masked.chars() {
+                if c == '`' {
+                    in_code = !in_code;
+                    mask_chars.push(' ');
+                } else if in_code {
+                    mask_chars.push(' ');
+                } else {
+                    mask_chars.push(c);
+                }
+            }
+            masked = mask_chars.into_iter().collect();
+
+            // 1. Transclusiones: ![[...]]
+            let mut search_from = 0;
+            while let Some(rel_start) = masked[search_from..].find("![[") {
+                let start_idx = search_from + rel_start;
+                if let Some(rel_end) = masked[start_idx + 3..].find("]]") {
+                    let end_idx = start_idx + 3 + rel_end + 2;
+                    let inner = &line[start_idx + 3..end_idx - 2];
+                    out.push(LinkOccurrence {
+                        kind: LinkKind::Transclusion,
+                        target: parse_link_target(inner),
+                        line: line_num,
+                        snippet: line.trim().to_string(),
+                        byte_range: (byte_offset + start_idx)..(byte_offset + end_idx),
+                    });
+                    search_from = end_idx;
+                } else {
+                    break;
+                }
+            }
+
+            // 2. Wikilinks: [[...]] (cuidando de no tomar ![[)
+            let mut search_from = 0;
+            while let Some(rel_start) = masked[search_from..].find("[[") {
+                let start_idx = search_from + rel_start;
+                if start_idx > 0 && masked.as_bytes()[start_idx - 1] == b'!' {
+                    search_from = start_idx + 2;
+                    continue;
+                }
+                if let Some(rel_end) = masked[start_idx + 2..].find("]]") {
+                    let end_idx = start_idx + 2 + rel_end + 2;
+                    let inner = &line[start_idx + 2..end_idx - 2];
+                    out.push(LinkOccurrence {
+                        kind: LinkKind::Wikilink,
+                        target: parse_link_target(inner),
+                        line: line_num,
+                        snippet: line.trim().to_string(),
+                        byte_range: (byte_offset + start_idx)..(byte_offset + end_idx),
+                    });
+                    search_from = end_idx;
+                } else {
+                    break;
+                }
+            }
+
+            // 3. Markdown: [texto](url) (cuidando de no tomar ![alt](img))
+            let mut search_from = 0;
+            while let Some(rel_start) = masked[search_from..].find('[') {
+                let start_idx = search_from + rel_start;
+                if (start_idx > 0 && masked.as_bytes()[start_idx - 1] == b'!')
+                    || (start_idx + 1 < masked.len() && masked.as_bytes()[start_idx + 1] == b'[')
+                {
+                    search_from = start_idx + 1;
+                    continue;
+                }
+                if let Some(rel_text_end) = masked[start_idx + 1..].find(']') {
+                    let text_end = start_idx + 1 + rel_text_end;
+                    if masked[text_end..].starts_with("](")
+                        && let Some(rel_url_end) = masked[text_end + 2..].find(')')
+                    {
+                        let url_end = text_end + 2 + rel_url_end;
+                        let text_content = &line[start_idx + 1..text_end];
+                        let url_content = &line[text_end + 2..url_end];
+
+                        let mut target = parse_link_target(url_content);
+                        if target.alias.is_none() && !text_content.is_empty() {
+                            target.alias = Some(text_content.to_string());
+                        }
+
+                        out.push(LinkOccurrence {
+                            kind: LinkKind::Markdown,
+                            target,
+                            line: line_num,
+                            snippet: line.trim().to_string(),
+                            byte_range: (byte_offset + start_idx)..(byte_offset + url_end + 1),
+                        });
+                        search_from = url_end + 1;
+                        continue;
+                    }
+                }
+                search_from = start_idx + 1;
+            }
+        }
+
+        byte_offset += line_len + 1;
+    }
+
+    out.sort_by_key(|o| o.byte_range.start);
+    out
+}
+
+/// Extrae enlaces de un documento HTML (etiquetas `<a>` y wikilinks en texto).
+fn extract_links_html(text: &str) -> Vec<LinkOccurrence> {
+    let mut out = Vec::new();
+    let mut byte_offset = 0;
+
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let line_num = line_idx + 1;
+        let line_len = line.len();
+
+        // 1. Buscar <a ... href="..." ...> ... </a>
+        let mut search_from = 0;
+        let lower = line.to_lowercase();
+        while let Some(tag_start) = lower[search_from..].find("<a ") {
+            let start_idx = search_from + tag_start;
+            if let Some(tag_end) = lower[start_idx..].find('>') {
+                let tag_str = &line[start_idx..start_idx + tag_end];
+                // Extraer href
+                if let Some(href_idx) = tag_str.to_lowercase().find("href=") {
+                    let rest = &tag_str[href_idx + 5..].trim_start();
+                    let (quote, quote_len) = if rest.starts_with('"') {
+                        ('"', 1)
+                    } else if rest.starts_with('\'') {
+                        ('\'', 1)
+                    } else {
+                        (' ', 0)
+                    };
+                    let href_val = if quote_len > 0 {
+                        rest[1..].split(quote).next().unwrap_or("")
+                    } else {
+                        rest.split([' ', '>']).next().unwrap_or("")
+                    };
+
+                    // Extraer texto interior hasta </a>
+                    let close_tag = "</a>";
+                    let (text_content, end_idx) =
+                        if let Some(close_idx) = lower[start_idx + tag_end + 1..].find(close_tag) {
+                            (
+                                &line[start_idx + tag_end + 1..start_idx + tag_end + 1 + close_idx],
+                                start_idx + tag_end + 1 + close_idx + close_tag.len(),
+                            )
+                        } else {
+                            ("", start_idx + tag_end + 1)
+                        };
+
+                    let mut target = parse_link_target(href_val);
+                    if target.alias.is_none() && !text_content.is_empty() {
+                        target.alias = Some(text_content.to_string());
+                    }
+
+                    out.push(LinkOccurrence {
+                        kind: LinkKind::Markdown,
+                        target,
+                        line: line_num,
+                        snippet: line.trim().to_string(),
+                        byte_range: (byte_offset + start_idx)..(byte_offset + end_idx),
+                    });
+
+                    search_from = end_idx;
+                    continue;
+                }
+            }
+            search_from = start_idx + 3;
+        }
+
+        // 2. Transclusiones en HTML: ![[...]]
+        let mut search_from = 0;
+        while let Some(rel_start) = line[search_from..].find("![[") {
+            let start_idx = search_from + rel_start;
+            if let Some(rel_end) = line[start_idx + 3..].find("]]") {
+                let end_idx = start_idx + 3 + rel_end + 2;
+                let inner = &line[start_idx + 3..end_idx - 2];
+                out.push(LinkOccurrence {
+                    kind: LinkKind::Transclusion,
+                    target: parse_link_target(inner),
+                    line: line_num,
+                    snippet: line.trim().to_string(),
+                    byte_range: (byte_offset + start_idx)..(byte_offset + end_idx),
+                });
+                search_from = end_idx;
+            } else {
+                break;
+            }
+        }
+
+        // 3. Wikilinks en HTML: [[...]]
+        let mut search_from = 0;
+        while let Some(rel_start) = line[search_from..].find("[[") {
+            let start_idx = search_from + rel_start;
+            if start_idx > 0 && line.as_bytes()[start_idx - 1] == b'!' {
+                search_from = start_idx + 2;
+                continue;
+            }
+            if let Some(rel_end) = line[start_idx + 2..].find("]]") {
+                let end_idx = start_idx + 2 + rel_end + 2;
+                let inner = &line[start_idx + 2..end_idx - 2];
+                out.push(LinkOccurrence {
+                    kind: LinkKind::Wikilink,
+                    target: parse_link_target(inner),
+                    line: line_num,
+                    snippet: line.trim().to_string(),
+                    byte_range: (byte_offset + start_idx)..(byte_offset + end_idx),
+                });
+                search_from = end_idx;
+            } else {
+                break;
+            }
+        }
+
+        byte_offset += line_len + 1;
+    }
+
+    out.sort_by_key(|o| o.byte_range.start);
+    out
 }
 
 #[cfg(test)]

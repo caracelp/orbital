@@ -48,6 +48,17 @@
     }
     s.textContent = css();
     post('input');
+
+    const sel = getSelection();
+    if (sel.rangeCount && sel.isCollapsed) {
+      const node = sel.anchorNode;
+      if (node && node.nodeType === 3) {
+        const text = node.textContent.slice(0, sel.anchorOffset);
+        if (text.endsWith('[[')) {
+          post('link-autocomplete');
+        }
+      }
+    }
   }
 
   // El bloque de primer nivel donde está el cursor.
@@ -193,8 +204,53 @@
     else document.execCommand('insertText', false, data.getData('text/plain'));
   }, true);
 
+  // Transclusiones `![[nota]]` (US5 de la 003): Orbital pasa el HTML de cada tarjeta y se inserta
+  // después del bloque de primer nivel que contiene el `![[…]]`. Son elementos no editables con
+  // `data-orbital-embed`: `body()` los quita, así nunca se guardan en el archivo.
+  const EMBED_CSS =
+    '.orbital-embed{border-left:3px solid #ff8cc6;background:rgba(255,140,198,0.07);' +
+    'padding:0.4em 1em;margin:0.75em 0;border-radius:6px;user-select:text}' +
+    '.orbital-embed-title{font-weight:600;margin-bottom:0.25em}' +
+    '.orbital-embed-note{font-weight:normal;opacity:0.75}' +
+    '.orbital-embed li.orbital-task{list-style:none;margin-left:-1.2em}';
+
+  function setEmbeds(map) {
+    document.querySelectorAll('[data-orbital-embed]').forEach((e) => e.remove());
+    if (!document.getElementById('orbital-embed-style')) {
+      const st = document.createElement('style');
+      st.id = 'orbital-embed-style';
+      st.textContent = EMBED_CSS;
+      document.head.appendChild(st);
+    }
+    const keys = Object.keys(map);
+    if (!keys.length) return;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const hits = [];
+    let n;
+    while ((n = walker.nextNode())) {
+      for (const k of keys) if (n.data.includes(k)) hits.push([n, k]);
+    }
+    for (const [node, k] of hits) {
+      let top = node.parentNode;
+      while (top && top.parentNode && top.parentNode !== document.body) top = top.parentNode;
+      if (!top || top === document.body) continue;
+      const tpl = document.createElement('template');
+      tpl.innerHTML = map[k];
+      top.after(tpl.content);
+    }
+  }
+
+  // El cuerpo sin las tarjetas de transclusión.
+  function body() {
+    const copy = document.body.cloneNode(true);
+    copy.querySelectorAll('[data-orbital-embed]').forEach((e) => e.remove());
+    return copy.innerHTML;
+  }
+
   // Lo que llama Orbital desde la barra de formato.
   window.orbital = {
+    setEmbeds,
+    body,
     rememberSelection() {
       rememberSelection();
       selectionLocked = true;
@@ -216,7 +272,7 @@
         }
       }
     },
-    // Lo que se guarda: `document.body.innerHTML` y estas reglas (las de las clases usadas).
+    // Lo que se guarda: `body()` (sin las tarjetas) y estas reglas (las de las clases usadas).
     css,
   };
 })();

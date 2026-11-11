@@ -34,6 +34,14 @@ const ATTACH_BATCH: usize = 8;
 
 type ToggleFn = Box<dyn Fn(usize)>;
 type LinkFn = Box<dyn Fn(&str)>;
+type IsMissingFn = Rc<dyn Fn(&str) -> bool>;
+
+#[derive(Clone)]
+struct LinkItem {
+    url: String,
+    start: gtk::TextMark,
+    end: gtk::TextMark,
+}
 
 /// Lo que la vista guarda de cada bloque de primer nivel.
 struct BlockInfo {
@@ -46,6 +54,10 @@ struct BlockInfo {
     base: Rc<Cell<usize>>,
     /// Etiquetas propias del bloque (enlaces, plegado, tablas): se quitan con el bloque.
     tags: Vec<gtk::TextTag>,
+    /// Texto plano del encabezado si el bloque es un título.
+    heading: Option<String>,
+    /// Enlaces contenidos en el bloque (para navegación por teclado).
+    links: Vec<LinkItem>,
 }
 
 struct Inner {
@@ -57,6 +69,7 @@ struct Inner {
     /// Hash del frontmatter mostrado arriba (`None`: sin mostrar todavía).
     header: Cell<Option<u64>>,
     links: RefCell<HashMap<gtk::TextTag, String>>,
+    focused_link: Cell<Option<usize>>,
     /// Etiquetas con sangría: (etiqueta, sangría extra en píxeles).
     indents: RefCell<Vec<(gtk::TextTag, i32)>>,
     side: Cell<i32>,
@@ -67,9 +80,13 @@ struct Inner {
     /// Widgets que todavía no se anclaron: se anclan al acercarse a la parte visible. Anclar
     /// cientos de una vez congelaba la ventana medio segundo.
     pending: RefCell<Vec<(gtk::Widget, gtk::TextChildAnchor)>>,
+    /// Línea del texto fuente a mostrar cuando termine el volcado en curso (al abrir una nota
+    /// desde un retroenlace).
+    pending_line: Cell<Option<usize>>,
     attach_scheduled: Cell<bool>,
     on_toggle: RefCell<Option<ToggleFn>>,
     on_link: RefCell<Option<LinkFn>>,
+    is_missing: RefCell<Option<IsMissingFn>>,
 }
 
 #[derive(Clone)]
@@ -88,15 +105,40 @@ pub struct Prepared {
     pub hashes: Vec<u64>,
     /// Hash del frontmatter.
     pub header: u64,
+    /// Notas incrustadas con `![[…]]`: si una cambia, hay que volver a dibujar (US5).
+    pub deps: Vec<orbital_vault::RelPath>,
 }
 
 impl Prepared {
     pub fn new(text: &str) -> Self {
-        let doc = orbital_vault::render::render_markdown(text);
+        Self::build(text, None)
+    }
+
+    /// Como [`Prepared::new`], con las transclusiones expandidas (lee las notas incrustadas: va
+    /// en el hilo de fondo).
+    pub fn with_vault(
+        text: &str,
+        vault: &orbital_vault::Vault,
+        from: &orbital_vault::RelPath,
+    ) -> Self {
+        Self::build(text, Some((vault, from)))
+    }
+
+    fn build(text: &str, vault: Option<(&orbital_vault::Vault, &orbital_vault::RelPath)>) -> Self {
+        let mut doc = orbital_vault::render::render_markdown(text);
+        let deps = vault.map_or_else(Vec::new, |(v, from)| v.expand_transclusions(from, &mut doc));
+        // Un bloque con transclusiones cambia también si cambia lo incrustado: la huella entra en
+        // su hash, y la actualización en el sitio reemplaza solo esa tarjeta.
         let hashes = doc
             .blocks
             .iter()
-            .map(|b| orbital_vault::write::hash(text[b.source.clone()].as_bytes()))
+            .map(|b| {
+                let h = orbital_vault::write::hash(text[b.source.clone()].as_bytes());
+                match orbital_vault::transclusion::fingerprint(b) {
+                    0 => h,
+                    fp => orbital_vault::write::hash(&[h.to_le_bytes(), fp.to_le_bytes()].concat()),
+                }
+            })
             .collect();
         let header = orbital_vault::props::markdown::locate(text)
             .map(|r| orbital_vault::write::hash(text[r].as_bytes()))
@@ -105,6 +147,7 @@ impl Prepared {
             doc,
             hashes,
             header,
+            deps,
         }
     }
 }
@@ -114,6 +157,7 @@ impl Reader {
         let view = gtk::TextView::builder()
             .editable(false)
             .cursor_visible(false)
+            .focusable(true)
             .wrap_mode(gtk::WrapMode::WordChar)
             .top_margin(28)
             .bottom_margin(64)
@@ -136,14 +180,17 @@ impl Reader {
             blocks: RefCell::new(Vec::new()),
             header: Cell::new(None),
             links: RefCell::new(HashMap::new()),
+            focused_link: Cell::new(None),
             indents: RefCell::new(Vec::new()),
             side: Cell::new(12),
             width: Cell::new(120),
             wide: RefCell::new(Vec::new()),
             pending: RefCell::new(Vec::new()),
+            pending_line: Cell::new(None),
             attach_scheduled: Cell::new(false),
             on_toggle: RefCell::new(None),
             on_link: RefCell::new(None),
+            is_missing: RefCell::new(None),
         }));
         this.create_tags();
         this.center();
@@ -235,6 +282,11 @@ impl Reader {
         *self.0.on_link.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Consulta si un enlace apunta a una nota pendiente o inexistente.
+    pub fn set_is_missing(&self, f: impl Fn(&str) -> bool + 'static) {
+        *self.0.is_missing.borrow_mut() = Some(Rc::new(f));
+    }
+
     /// Olvida lo mostrado: el próximo volcado arma todo de nuevo (al cambiar de nota).
     pub fn reset(&self) {
         let i = &self.0;
@@ -247,6 +299,7 @@ impl Reader {
         }
         i.links.borrow_mut().clear();
         i.pending.borrow_mut().clear();
+        i.pending_line.set(None);
         i.header.set(None);
         i.view.set_buffer(Some(&gtk::TextBuffer::new(Some(&table))));
     }
@@ -295,8 +348,18 @@ impl Reader {
             .build());
         add(gtk::TextTag::builder()
             .name("link")
-            .foreground("#ff8cc6")
+            .foreground(crate::style::LINK_FG.hex())
             .underline(pango::Underline::Single)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("link-missing")
+            .foreground(crate::style::LINK_MISSING_FG.hex())
+            .underline(pango::Underline::Single)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("link-focused")
+            .background(crate::style::ACCENT_BG.hex())
+            .foreground(crate::style::ACCENT_FG.hex())
             .build());
         add(gtk::TextTag::builder()
             .name("dim")
@@ -352,6 +415,15 @@ impl Reader {
             .name("callout-title")
             .weight(700)
             .build());
+        add(gtk::TextTag::builder()
+            .name("embed-gap")
+            .scale(0.4)
+            .pixels_below_lines(0)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("embed")
+            .paragraph_background(crate::style::EMBED_BG.hex())
+            .build());
     }
 
     /// Etiqueta de sangría: se recalcula con el margen de la columna.
@@ -400,11 +472,43 @@ impl Reader {
         h.connect_page_size_notify(move |a| apply(a.page_size()));
     }
 
+    fn all_link_items(&self) -> Vec<LinkItem> {
+        self.0
+            .blocks
+            .borrow()
+            .iter()
+            .flat_map(|b| b.links.iter().cloned())
+            .collect()
+    }
+
+    fn set_focused_link(&self, next: Option<usize>) {
+        let i = &self.0;
+        let buf = self.buffer();
+        if let Some(tag) = buf.tag_table().lookup("link-focused") {
+            let (start, end) = buf.bounds();
+            buf.remove_tag(&tag, &start, &end);
+        }
+        i.focused_link.set(next);
+        if let Some(idx) = next {
+            let items = self.all_link_items();
+            if let Some(item) = items.get(idx) {
+                let start = buf.iter_at_mark(&item.start);
+                let end = buf.iter_at_mark(&item.end);
+                if let Some(tag) = buf.tag_table().lookup("link-focused") {
+                    buf.apply_tag(&tag, &start, &end);
+                }
+                let mut it = start;
+                i.view.scroll_to_iter(&mut it, 0.1, false, 0.0, 0.0);
+            }
+        }
+    }
+
     fn setup_links(&self) {
         let click = gtk::GestureClick::new();
         let weak = Rc::downgrade(&self.0);
         click.connect_released(move |g, _, x, y| {
             let Some(i) = weak.upgrade() else { return };
+            Reader(i.clone()).set_focused_link(None);
             let (bx, by) =
                 i.view
                     .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
@@ -421,6 +525,59 @@ impl Reader {
             }
         });
         self.0.view.add_controller(click);
+
+        let key = gtk::EventControllerKey::new();
+        let weak_key = Rc::downgrade(&self.0);
+        key.connect_key_pressed(move |_, keyval, _, state| {
+            let Some(i) = weak_key.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let reader = Reader(i.clone());
+            let items = reader.all_link_items();
+            if items.is_empty() {
+                return glib::Propagation::Proceed;
+            }
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if keyval == gtk::gdk::Key::Tab || keyval == gtk::gdk::Key::ISO_Left_Tab {
+                let cur = i.focused_link.get();
+                let next = if is_shift {
+                    match cur {
+                        None => Some(items.len().saturating_sub(1)),
+                        Some(0) => None,
+                        Some(idx) => Some(idx.saturating_sub(1)),
+                    }
+                } else {
+                    match cur {
+                        None => Some(0),
+                        Some(idx) if idx + 1 < items.len() => Some(idx + 1),
+                        Some(_) => None,
+                    }
+                };
+                reader.set_focused_link(next);
+                if next.is_some() {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            } else if (keyval == gtk::gdk::Key::Return
+                || keyval == gtk::gdk::Key::KP_Enter
+                || keyval == gtk::gdk::Key::space)
+                && let Some(idx) = i.focused_link.get()
+                && let Some(item) = items.get(idx)
+            {
+                let url = item.url.clone();
+                if let Some(f) = i.on_link.borrow().as_ref() {
+                    f(&url);
+                }
+                glib::Propagation::Stop
+            } else if keyval == gtk::gdk::Key::Escape && i.focused_link.get().is_some() {
+                reader.set_focused_link(None);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.0.view.add_controller(key);
     }
 
     /// Vuelca un documento. `header` arma las propiedades (solo se llama si cambiaron);
@@ -438,6 +595,7 @@ impl Reader {
             doc,
             hashes,
             header: header_hash,
+            ..
         } = prepared;
         let in_place = {
             let old = i.blocks.borrow();
@@ -482,8 +640,10 @@ impl Reader {
             base_dir,
             tags: RefCell::new(Vec::new()),
             links: RefCell::new(Vec::new()),
+            link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
+            embedded: Cell::new(0),
         });
         if let Some(h) = header() {
             let mut end = state.buffer.end_iter();
@@ -528,6 +688,7 @@ impl Reader {
     /// Pone en la vista el buffer armado por `rebuild` y suelta lo anterior.
     fn swap_in(&self, s: &RenderState, blocks: Vec<BlockInfo>, header_hash: u64) {
         let i = &self.0;
+        i.focused_link.set(None);
         let table = s.buffer.tag_table();
         let mut links = i.links.borrow_mut();
         for b in i.blocks.borrow_mut().drain(..) {
@@ -548,6 +709,9 @@ impl Reader {
         i.header.set(Some(header_hash));
         // La disposición todavía no está calculada: se ancla lo visible en el próximo reposo.
         self.schedule_attach();
+        if let Some(line) = i.pending_line.take() {
+            self.scroll_to_line(line);
+        }
     }
 
     /// Reemplaza en el sitio los bloques que cambiaron; el prefijo `p` y el sufijo `s` quedan.
@@ -572,9 +736,12 @@ impl Reader {
             base_dir,
             tags: RefCell::new(Vec::new()),
             links: RefCell::new(Vec::new()),
+            link_items: RefCell::new(Vec::new()),
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
+            embedded: Cell::new(0),
         };
+        i.focused_link.set(None);
         let mut old = std::mem::take(&mut *i.blocks.borrow_mut());
         let suffix = old.split_off(old.len() - s);
         let removed = old.split_off(p);
@@ -592,6 +759,10 @@ impl Reader {
                 for t in &b.tags {
                     links.remove(t);
                     table.remove(t);
+                }
+                for item in &b.links {
+                    buffer.delete_mark(&item.start);
+                    buffer.delete_mark(&item.end);
                 }
                 buffer.delete_mark(&b.mark);
             }
@@ -642,12 +813,37 @@ impl Reader {
     }
 
     /// Desplaza la vista para mostrar el bloque que contiene la línea `line` del texto fuente.
+    /// Como [`Reader::scroll_to_line`], pero si la nota todavía se está volcando, espera a que
+    /// termine.
+    pub fn scroll_to_line_when_ready(&self, line: usize) {
+        if self.0.blocks.borrow().is_empty() {
+            self.0.pending_line.set(Some(line));
+        } else {
+            self.scroll_to_line(line);
+        }
+    }
+
     pub fn scroll_to_line(&self, line: usize) {
         let blocks = self.0.blocks.borrow();
         let idx = blocks.partition_point(|b| b.line <= line).saturating_sub(1);
         if let Some(b) = blocks.get(idx) {
             self.0.view.scroll_to_mark(&b.mark, 0.0, true, 0.0, 0.0);
         }
+    }
+
+    /// Desplaza la vista hasta el encabezado con el texto indicado. Devuelve si lo encontró.
+    pub fn scroll_to_heading(&self, heading: &str) -> bool {
+        let wanted = heading.trim().to_lowercase();
+        let blocks = self.0.blocks.borrow();
+        for b in blocks.iter() {
+            if let Some(h) = &b.heading
+                && h.trim().to_lowercase() == wanted
+            {
+                self.0.view.scroll_to_mark(&b.mark, 0.0, true, 0.0, 0.0);
+                return true;
+            }
+        }
+        false
     }
 
     /// Un widget anclado que sigue el ancho de la columna (sin fijar un mínimo mayor que el panel).
@@ -683,12 +879,18 @@ impl Reader {
         *s.block_base.borrow_mut() = base.clone();
         s.block_start.set(block.source.start);
         self.block(s, end, block, 0);
+        let heading = match &block.kind {
+            BlockKind::Heading { inlines, .. } => Some(orbital_vault::render::plain_text(inlines)),
+            _ => None,
+        };
         BlockInfo {
             hash,
             line: block.line,
             mark,
             base,
             tags: std::mem::take(&mut *s.tags.borrow_mut()),
+            heading,
+            links: std::mem::take(&mut *s.link_items.borrow_mut()),
         }
     }
 
@@ -788,7 +990,119 @@ impl Reader {
                 buf.insert_with_tags(end, text.trim_end(), &refs);
                 buf.insert(end, "\n");
             }
+            BlockKind::Transclusion(t) => self.transclusion(s, end, t, depth, &base),
         }
+    }
+
+    /// Tarjeta de una transclusión (US5 de la 003): un encabezado con la nota de origen (un enlace
+    /// que la abre) y su contenido, con fondo y sangría. Lo incrustado no se edita desde acá: sus
+    /// casillas quedan deshabilitadas.
+    fn transclusion(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        t: &orbital_vault::render::Transclusion,
+        depth: i32,
+        base: &[gtk::TextTag],
+    ) {
+        use orbital_vault::render::Embed;
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let start = end.offset();
+        let url = match &t.anchor {
+            Some(a) => format!("[[{}#{a}]]", t.target),
+            None => format!("[[{}]]", t.target),
+        };
+        let shown = match &t.anchor {
+            Some(a) => format!("{} › {a}", t.target),
+            None => t.target.clone(),
+        };
+        let link = |text: String| orbital_vault::render::Inline::Link {
+            url: url.clone(),
+            children: vec![orbital_vault::render::Inline::Text(text)],
+        };
+        let mut title: Vec<gtk::TextTag> = base.to_vec();
+        title.extend(table.lookup("callout-title"));
+        let mut dim: Vec<gtk::TextTag> = base.to_vec();
+        dim.extend(table.lookup("dim"));
+        let text = |end: &mut gtk::TextIter, tags: &[gtk::TextTag], t: &str| {
+            buf.insert_with_tags(end, t, &tags.iter().collect::<Vec<_>>());
+        };
+        text(end, &title, "↪  ");
+        match &t.content {
+            Embed::Note { blocks, .. } => {
+                self.inlines(s, end, &[link(shown)], &title);
+                buf.insert(end, "\n");
+                s.embedded.set(s.embedded.get() + 1);
+                for b in blocks {
+                    self.block(s, end, b, depth + 1);
+                }
+                s.embedded.set(s.embedded.get() - 1);
+            }
+            Embed::Missing => {
+                text(end, &dim, "Nota inexistente: ");
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, " (creala desde el enlace)");
+                buf.insert(end, "\n");
+            }
+            Embed::SectionMissing { .. } => {
+                self.inlines(s, end, &[link(t.target.clone())], &title);
+                let a = t.anchor.as_deref().unwrap_or("");
+                text(end, &dim, &format!(" no tiene el encabezado «{a}»"));
+                buf.insert(end, "\n");
+            }
+            Embed::Html { .. } => {
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, " es una nota HTML: abrila para verla");
+                buf.insert(end, "\n");
+            }
+            Embed::Ambiguous(all) => {
+                text(
+                    end,
+                    &dim,
+                    &format!(
+                        "Hay {} notas «{}»: escribí la carpeta, por ejemplo ![[{}]]",
+                        all.len(),
+                        t.target,
+                        all[0]
+                            .as_str()
+                            .strip_prefix("wiki/")
+                            .unwrap_or(all[0].as_str())
+                            .rsplit_once('.')
+                            .map_or("", |(p, _)| p),
+                    ),
+                );
+                buf.insert(end, "\n");
+            }
+            Embed::Cycle { .. } => {
+                text(end, &dim, "↻ Referencia circular a ");
+                self.inlines(s, end, &[link(shown)], &title);
+                text(end, &dim, ": ya se está mostrando más arriba");
+                buf.insert(end, "\n");
+            }
+            Embed::TooDeep => {
+                text(
+                    end,
+                    &dim,
+                    &format!(
+                        "Demasiados niveles de transclusión (máximo {}): ",
+                        orbital_vault::transclusion::MAX_DEPTH
+                    ),
+                );
+                self.inlines(s, end, &[link(shown)], &title);
+                buf.insert(end, "\n");
+            }
+            Embed::Pending => {
+                text(end, &dim, &format!("![[{}]]", t.target));
+                buf.insert(end, "\n");
+            }
+        }
+        if let Some(bg) = table.lookup("embed") {
+            buf.apply_tag(&bg, &buf.iter_at_offset(start), end);
+        }
+        // Un espacio corto sin fondo: dos tarjetas seguidas no se ven como una sola.
+        let gap: Vec<gtk::TextTag> = table.lookup("embed-gap").into_iter().collect();
+        buf.insert_with_tags(end, "\n", &gap.iter().collect::<Vec<_>>());
     }
 
     /// Casilla de una tarea: un `CheckButton` que cambia un solo byte del texto fuente.
@@ -803,6 +1117,23 @@ impl Reader {
             .active(task.checked)
             .valign(gtk::Align::Center)
             .build();
+        // Una casilla de una nota incrustada no es de esta nota: no se marca desde acá.
+        if s.embedded.get() > 0 {
+            check.set_sensitive(false);
+            check.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Tarea de otra nota: {}",
+                item.blocks
+                    .first()
+                    .map(|b| match &b.kind {
+                        BlockKind::Paragraph(p) => plain_text(p),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default()
+            ))]);
+            self.anchor(s, end, check.upcast());
+            s.buffer.insert(end, " ");
+            return;
+        }
         let label = item
             .blocks
             .first()
@@ -1002,11 +1333,20 @@ impl Reader {
                     self.inlines(s, end, c, &more);
                 }
                 Inline::Link { url, children } => {
+                    let is_missing = self.0.is_missing.borrow().as_ref().is_some_and(|f| f(url));
+                    let tag_name = if is_missing { "link-missing" } else { "link" };
+                    let start_mark = buf.create_mark(None, end, true);
                     let tag = self.link_tag(s, url);
                     let mut more = tags.to_vec();
-                    more.extend(table.lookup("link"));
+                    more.extend(table.lookup(tag_name));
                     more.push(tag);
                     self.inlines(s, end, children, &more);
+                    let end_mark = buf.create_mark(None, end, false);
+                    s.link_items.borrow_mut().push(LinkItem {
+                        url: url.clone(),
+                        start: start_mark,
+                        end: end_mark,
+                    });
                 }
                 Inline::Image { url, alt } => self.image(s, end, url, alt, tags),
                 Inline::SoftBreak => buf.insert(end, " "),
@@ -1080,6 +1420,13 @@ struct RenderState {
     /// Etiquetas propias del bloque de primer nivel en curso.
     tags: RefCell<Vec<gtk::TextTag>>,
     links: RefCell<Vec<(gtk::TextTag, String)>>,
+    link_items: RefCell<Vec<LinkItem>>,
     block_base: RefCell<Rc<Cell<usize>>>,
     block_start: Cell<usize>,
+    /// Profundidad dentro de transclusiones (lo incrustado no se edita desde acá).
+    embedded: Cell<u32>,
 }
+
+#[cfg(test)]
+#[path = "reader_tests.rs"]
+mod reader_tests;

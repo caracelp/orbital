@@ -22,6 +22,13 @@ pub const VIEW_BG: Rgb = Rgb(0x16, 0x16, 0x18);
 pub const SIDEBAR_BG: Rgb = Rgb(0x14, 0x14, 0x17);
 pub const HEADERBAR_BG: Rgb = Rgb(0x18, 0x18, 0x1b);
 pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
+/// Fondo de las transclusiones `![[nota]]` en la vista formateada (rosado muy oscuro).
+pub const EMBED_BG: Rgb = Rgb(0x23, 0x18, 0x20);
+
+/// Enlaces a notas existentes.
+pub const LINK_FG: Rgb = ACCENT_TEXT;
+/// Enlaces a notas pendientes o inexistentes (rosa atenuado con contraste WCAG AA ≥ 4,5:1).
+pub const LINK_MISSING_FG: Rgb = Rgb(0xc9, 0x82, 0xa7);
 
 // Colores de comparación (diff)
 pub const DIFF_REMOVED_BG: Rgb = Rgb(0x36, 0x1a, 0x24);
@@ -117,6 +124,8 @@ fn css() -> String {
         ("sidebar-bg-color", SIDEBAR_BG),
         ("headerbar-bg-color", HEADERBAR_BG),
         ("card-bg-color", CARD_BG),
+        ("link-fg", LINK_FG),
+        ("link-missing-fg", LINK_MISSING_FG),
     ];
     let mut out = String::from(":root {\n");
     for (name, c) in vars {
@@ -134,7 +143,10 @@ fn css() -> String {
     // Texto de lectura: un poco más grande que la interfaz.
     out.push_str(
         ".orbital-reader { font-size: 1.08em; } \
-         .orbital-reader, .orbital-reader text { background: transparent; }\n",
+         .orbital-reader, .orbital-reader text { background: transparent; }\n\
+         a.orbital-link-missing, .orbital-link-missing { color: var(--link-missing-fg); text-decoration: underline; }\n\
+         popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
+         listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
     );
     for (name, c) in vars {
         out.push_str(&format!(
@@ -168,7 +180,14 @@ mod tests {
 
     #[test]
     fn palette_meets_wcag_aa() {
-        for bg in [WINDOW_BG, VIEW_BG, SIDEBAR_BG, HEADERBAR_BG, CARD_BG] {
+        for bg in [
+            WINDOW_BG,
+            VIEW_BG,
+            SIDEBAR_BG,
+            HEADERBAR_BG,
+            CARD_BG,
+            EMBED_BG,
+        ] {
             let r = contrast_ratio(ACCENT_TEXT, bg);
             assert!(r >= 4.5, "acento sobre {bg:?}: {r:.2}");
             let w = contrast_ratio(Rgb(0xff, 0xff, 0xff), bg);
@@ -242,6 +261,17 @@ mod tests {
         for (fg, bg, name) in pairs {
             let r = contrast_ratio(fg, bg);
             assert!(r >= 4.5, "callout {name}: {r:.2} < 4.5");
+        }
+    }
+
+    #[test]
+    fn link_colors_meet_wcag_aa() {
+        // Fondos donde aparecen enlaces: la ventana, la vista, las tarjetas y las transclusiones.
+        for fg in [LINK_FG, LINK_MISSING_FG] {
+            for bg in [WINDOW_BG, VIEW_BG, CARD_BG, EMBED_BG] {
+                let r = contrast_ratio(fg, bg);
+                assert!(r >= 4.5, "enlace {fg:?} sobre {bg:?}: {r:.2} < 4.5");
+            }
         }
     }
 

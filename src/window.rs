@@ -66,6 +66,15 @@ struct Inner {
     /// La carpeta de la bóveda dejó de estar disponible (disco desconectado).
     gone: Cell<bool>,
     gone_banner: adw::Banner,
+    /// Panel lateral derecho con los retroenlaces (US4 de la 003).
+    right: crate::editor::right_sidebar::RightSidebar,
+    right_split: adw::OverlaySplitView,
+    /// Grafo de enlaces de la bóveda; `None` mientras se arma en segundo plano.
+    graph: RefCell<Option<Arc<std::sync::Mutex<orbital_vault::LinkGraph>>>>,
+    /// Cada bóveda nueva sube la generación: un grafo viejo que termina tarde se descarta.
+    graph_gen: Cell<u64>,
+    /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
+    pending_line: Cell<Option<(RelPath, usize)>>,
 }
 
 /// Ventana de Orbital.
@@ -193,7 +202,29 @@ impl Window {
         let note_banner = adw::Banner::builder().revealed(true).visible(false).build();
         content_view.add_top_bar(&type_banner);
         content_view.add_top_bar(&note_banner);
-        content_view.set_content(Some(&content_stack));
+        // Panel derecho de retroenlaces, debajo de la cabecera de la nota (Ctrl+Mayús+B).
+        let right = crate::editor::right_sidebar::RightSidebar::new();
+        let right_split = adw::OverlaySplitView::builder()
+            .content(&content_stack)
+            .sidebar(right.widget())
+            .sidebar_position(gtk::PackType::End)
+            .show_sidebar(false)
+            .min_sidebar_width(260.0)
+            .max_sidebar_width(340.0)
+            .build();
+        let backlinks_button = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-right-symbolic")
+            .tooltip_text("Retroenlaces (Ctrl+Mayús+B)")
+            .build();
+        backlinks_button
+            .update_property(&[gtk::accessible::Property::Label("Panel de retroenlaces")]);
+        backlinks_button
+            .bind_property("active", &right_split, "show-sidebar")
+            .bidirectional()
+            .sync_create()
+            .build();
+        content_header.pack_end(&backlinks_button);
+        content_view.set_content(Some(&right_split));
         let content_page = adw::NavigationPage::builder()
             .title("Nota")
             .child(&content_view)
@@ -297,6 +328,11 @@ impl Window {
             type_banner,
             current_note: RefCell::new(None),
             current_entry: RefCell::new(None),
+            right,
+            right_split,
+            graph: RefCell::new(None),
+            graph_gen: Cell::new(0),
+            pending_line: Cell::new(None),
             html_props,
             new_button,
             external_page,
@@ -415,11 +451,16 @@ impl Window {
             simple("view-split", |w| {
                 w.0.code_editor.set_view(crate::editor::View::Dividida)
             }),
+            simple("backlinks", |w| {
+                let s = &w.0.right_split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
             simple("archive", Window::archive_current),
             simple("paste-image", Window::paste_image),
+            simple("open-missing", Window::test_open_missing),
             from_template,
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
@@ -427,6 +468,7 @@ impl Window {
         app.set_accels_for_action("win.view-code", &["<Control>1"]);
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
+        app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -453,6 +495,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
         section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
         section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar los retroenlaces",
+            "<Control><Shift>b",
+        ));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -683,6 +729,7 @@ impl Window {
             ));
         self.set_gone(false);
         *i.vault.borrow_mut() = Some(Arc::new(vault));
+        self.rebuild_graph();
 
         let root = children_model(&tree, "");
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -807,6 +854,7 @@ impl Window {
             };
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
+            this.refresh_backlinks();
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();
             if entry.read_only {
@@ -930,10 +978,123 @@ impl Window {
         i.props_list.set_visible(false);
         i.code_editor.switcher().set_visible(true);
         i.content_stack.set_visible_child_name("codigo");
+        if let Some((path, line)) = i.pending_line.take() {
+            if path == note.path {
+                i.code_editor.reveal_line(line);
+            } else {
+                i.pending_line.set(Some((path, line)));
+            }
+        }
+    }
+
+    /// Arma el grafo de enlaces de la bóveda en segundo plano (US4; 136 ms con 5000 notas).
+    fn rebuild_graph(&self) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let generation = i.graph_gen.get() + 1;
+        i.graph_gen.set(generation);
+        *i.graph.borrow_mut() = None;
+        self.refresh_backlinks();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let built = gio::spawn_blocking(move || orbital_vault::LinkGraph::build(&vault))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            if this.0.graph_gen.get() != generation {
+                return;
+            }
+            *this.0.graph.borrow_mut() = built.map(|g| Arc::new(std::sync::Mutex::new(g)));
+            this.refresh_backlinks();
+        });
+    }
+
+    /// Pone al día en el grafo los enlaces de `path` (al guardarse o cambiar afuera), en otro hilo.
+    fn update_graph(&self, path: RelPath, removed: bool) {
+        let i = &self.0;
+        // Las transclusiones de la nota abierta que incrustan a `path` se ponen al día (US5).
+        i.code_editor.dependency_changed(&path);
+        let (Some(graph), Some(vault)) = (i.graph.borrow().clone(), i.vault.borrow().clone())
+        else {
+            return;
+        };
+        let Some(format) = Format::from_name(path.file_name()) else {
+            return;
+        };
+        if !path.as_str().starts_with("wiki/") {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let _ = gio::spawn_blocking(move || {
+                let text = if removed {
+                    None
+                } else {
+                    std::fs::read_to_string(path.to_path(vault.root())).ok()
+                };
+                let Ok(mut g) = graph.lock() else { return };
+                match text {
+                    Some(t) => g.update_file(&vault, &path, &t, format == Format::Html),
+                    None => g.remove_file(&path),
+                }
+            })
+            .await;
+            this.refresh_backlinks();
+        });
+    }
+
+    /// Muestra en el panel los retroenlaces de la nota abierta (solo si el panel está a la vista).
+    fn refresh_backlinks(&self) {
+        use crate::editor::right_sidebar::Backlinks;
+        let i = &self.0;
+        if !i.right_split.shows_sidebar() {
+            return;
+        }
+        let path = i
+            .current_entry
+            .borrow()
+            .as_ref()
+            .filter(|e| Format::from_name(e.path.file_name()).is_some())
+            .map(|e| e.path.clone());
+        let Some(path) = path else {
+            i.right.set_backlinks(Backlinks::NoNote);
+            return;
+        };
+        let graph = i.graph.borrow().clone();
+        let Some(graph) = graph else {
+            i.right.set_backlinks(Backlinks::Loading);
+            return;
+        };
+        // Se copian y se suelta el candado antes de armar los widgets.
+        let refs = match graph.lock() {
+            Ok(g) => g.backlinks_for(&path).to_vec(),
+            Err(_) => Vec::new(),
+        };
+        i.right.set_backlinks(Backlinks::Ready(&refs));
     }
 
     /// Conecta el editor con la ventana: estado del guardado, errores y cierre.
     fn setup_editor(&self) {
+        // Retroenlaces: elegir uno abre la nota de origen en la línea del enlace (FR-013).
+        let weak = Rc::downgrade(&self.0);
+        self.0.right.connect_open(move |from, line| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if w.0.code_editor.current_path().as_ref() == Some(from) {
+                w.0.code_editor.reveal_line(line);
+            } else {
+                w.0.pending_line.set(Some((from.clone(), line)));
+                w.show_path(from.as_str());
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.right_split.connect_show_sidebar_notify(move |_| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).refresh_backlinks();
+            }
+        });
         // Las propiedades arriba de la vista formateada (con los botones de fuentes).
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_header(move |path, header| {
@@ -944,25 +1105,7 @@ impl Window {
         let weak = Rc::downgrade(&self.0);
         self.0.code_editor.set_on_link(move |from, url| {
             let Some(i) = weak.upgrade() else { return };
-            let w = Window(i);
-            if url.starts_with("http://")
-                || url.starts_with("https://")
-                || url.starts_with("mailto:")
-            {
-                gtk::UriLauncher::new(url).launch(
-                    Some(&w.0.window),
-                    None::<&gio::Cancellable>,
-                    |_| {},
-                );
-                return;
-            }
-            let Some(vault) = w.0.vault.borrow().clone() else {
-                return;
-            };
-            match vault.resolve_link(from, url) {
-                orbital_vault::Resolution::Found(p) => w.show_path(p.as_str()),
-                _ => w.toast(&format!("Todavía no existe «{url}»")),
-            }
+            Window(i).open_link(Some(from), url);
         });
         // La vista elegida se recuerda (FR-013).
         let persist = self.0.persist.get();
@@ -1016,6 +1159,7 @@ impl Window {
         self.0.code_editor.set_on_saved(move |path, hash| {
             if let Some(i) = weak.upgrade() {
                 i.own_writes.borrow_mut().insert(path.clone(), hash);
+                Window(i).update_graph(path.clone(), false);
             }
         });
         let weak = Rc::downgrade(&self.0);
@@ -1053,7 +1197,12 @@ impl Window {
             .web
             .borrow_mut()
             .get_or_insert_with(|| {
-                let v = html_view::new_view();
+                let weak_link = Rc::downgrade(i);
+                let v = html_view::new_view(Some(Rc::new(move |url| {
+                    if let Some(inner) = weak_link.upgrade() {
+                        Window(inner).open_link(None, url);
+                    }
+                })));
                 v.update_property(&[gtk::accessible::Property::Label("Página de la nota")]);
                 i.html_page.append(&v);
                 v
@@ -1639,6 +1788,16 @@ impl Window {
             changes.retain(
                 |c| !matches!(c, orbital_vault::ExternalChange::Modified(p) if echoes.contains(p)),
             );
+            // El grafo de enlaces sigue los cambios de otros programas (FR-014).
+            for c in &changes {
+                match c {
+                    orbital_vault::ExternalChange::Modified(p) => {
+                        this.update_graph(p.clone(), false)
+                    }
+                    orbital_vault::ExternalChange::Removed(p) => this.update_graph(p.clone(), true),
+                    _ => {}
+                }
+            }
             let current = this
                 .0
                 .current_entry
@@ -1949,7 +2108,8 @@ impl Window {
         });
     }
 
-    /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso.
+    /// Renombra en segundo plano; si `undoable`, ofrece deshacer con el renombre inverso. Si la
+    /// nota tiene enlaces entrantes, ofrece actualizarlos (US6 de la 003).
     async fn do_rename(&self, from: RelPath, to: RelPath, undoable: bool) {
         self.0.code_editor.flush().await;
         if self.0.code_editor.has_pending() {
@@ -1958,32 +2118,129 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
-        let (f, t) = (from.clone(), to.clone());
+        // Los enlaces que hoy apuntan a la nota (antes de renombrar: la resolución mira la bóveda
+        // actual). Con el grafo armado se revisan solo sus retroenlaces; si no, toda la bóveda.
+        let mut plan = None;
+        if undoable && Format::from_name(from.file_name()).is_some() {
+            let sources: Option<Vec<RelPath>> = self.0.graph.borrow().as_ref().and_then(|g| {
+                g.lock().ok().map(|g| {
+                    let mut v: Vec<RelPath> = g
+                        .backlinks_for(&from)
+                        .iter()
+                        .map(|b| b.from.clone())
+                        .collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+            });
+            let (v, f, t) = (vault.clone(), from.clone(), to.clone());
+            let found =
+                gio::spawn_blocking(move || v.plan_link_updates(&f, &t, sources.as_deref()))
+                    .await
+                    .unwrap_or_default();
+            if !found.is_empty() {
+                match self.ask_link_update(&from, &found).await {
+                    LinkAnswer::Cancel => return,
+                    LinkAnswer::Skip => {}
+                    LinkAnswer::Update => plan = Some(Arc::new(found)),
+                }
+            }
+        }
+        let (f, t, p) = (from.clone(), to.clone(), plan.clone());
         let result = gio::spawn_blocking(move || {
             let ctx = write_ctx::now(Some(vault.config()));
-            vault.rename(&f, &t, &ctx)
+            let renamed = vault.rename(&f, &t, &ctx)?;
+            // Los enlaces se escriben después de renombrar (la nota puede enlazarse a sí misma).
+            let failed = p.map_or_else(Vec::new, |p| vault.apply_link_updates(&p, &ctx).1);
+            Ok::<_, orbital_vault::VaultError>((renamed, failed))
         })
         .await;
         match result {
-            Ok(Ok(_)) => {
+            Ok(Ok((_, failed))) => {
                 // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
                 self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
+                if !failed.is_empty() {
+                    let names: Vec<&str> = failed.iter().map(|(p, _)| p.file_name()).collect();
+                    self.toast(&format!(
+                        "No se actualizaron los enlaces de {} (cambiaron mientras tanto)",
+                        names.join(", ")
+                    ));
+                }
                 if undoable {
                     let this = self.clone();
-                    self.toast_undo(
-                        &format!("«{}» ahora es «{to}»", from.file_name()),
-                        move || {
-                            let (this, from, to) = (this.clone(), from.clone(), to.clone());
-                            glib::spawn_future_local(async move {
-                                this.do_rename(to, from, false).await;
-                            });
-                        },
-                    );
+                    let message = match &plan {
+                        Some(p) => format!(
+                            "«{}» ahora es «{to}»; {} {} actualizados",
+                            from.file_name(),
+                            p.links(),
+                            if p.links() == 1 { "enlace" } else { "enlaces" }
+                        ),
+                        None => format!("«{}» ahora es «{to}»", from.file_name()),
+                    };
+                    self.toast_undo(&message, move || {
+                        let (this, from, to, plan) =
+                            (this.clone(), from.clone(), to.clone(), plan.clone());
+                        glib::spawn_future_local(async move {
+                            // Primero los enlaces, después el nombre: todo vuelve a ser igual.
+                            let vault = this.0.vault.borrow().clone();
+                            if let (Some(plan), Some(vault)) = (plan, vault) {
+                                this.0.code_editor.flush().await;
+                                let failed = gio::spawn_blocking(move || {
+                                    let ctx = write_ctx::now(Some(vault.config()));
+                                    vault.revert_link_updates(&plan, &ctx).1
+                                })
+                                .await
+                                .unwrap_or_default();
+                                if !failed.is_empty() {
+                                    this.toast(
+                                        "Algunos enlaces cambiaron después y no se revirtieron",
+                                    );
+                                }
+                            }
+                            this.do_rename(to, from, false).await;
+                        });
+                    });
                 }
             }
             Ok(Err(e)) => self.toast(&e.to_string()),
             Err(_) => self.toast("No se pudo renombrar"),
+        }
+    }
+
+    /// «Se encontraron N enlaces a esta nota en M archivos. ¿Querés actualizarlos?» (FR-018).
+    async fn ask_link_update(
+        &self,
+        from: &RelPath,
+        plan: &orbital_vault::LinkUpdatePlan,
+    ) -> LinkAnswer {
+        let (links, files) = (plan.links(), plan.files());
+        let dialog = adw::AlertDialog::new(
+            Some("¿Actualizar los enlaces?"),
+            Some(&format!(
+                "Se {} {links} {} a «{}» en {files} {}. ¿Querés actualizarlos para que sigan \
+                 apuntando a la nota?",
+                if links == 1 {
+                    "encontró"
+                } else {
+                    "encontraron"
+                },
+                if links == 1 { "enlace" } else { "enlaces" },
+                from.file_name(),
+                if files == 1 { "archivo" } else { "archivos" },
+            )),
+        );
+        dialog.add_response("cancel", "Cancelar");
+        dialog.add_response("skip", "No actualizar");
+        dialog.add_response("update", "Actualizar enlaces");
+        dialog.set_response_appearance("update", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("update"));
+        dialog.set_close_response("cancel");
+        match dialog.choose_future(Some(&self.0.window)).await.as_str() {
+            "update" => LinkAnswer::Update,
+            "skip" => LinkAnswer::Skip,
+            _ => LinkAnswer::Cancel,
         }
     }
 
@@ -2130,7 +2387,166 @@ impl Window {
         }
     }
 
+    fn test_open_missing(&self) {
+        let from = self
+            .0
+            .current_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.path.clone());
+        self.open_link(from.as_ref(), "[[nota-nueva-pendiente]]");
+    }
+
     /// Muestra una nota por su ruta relativa (para el modo de captura).
+    /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
+    pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
+            gtk::UriLauncher::new(url).launch(
+                Some(&self.0.window),
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
+            return;
+        }
+
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+
+        // Si viene de WebKit como file://, convertirlo a relativo a la bóveda
+        let clean_url = if let Some(file_path) = url.strip_prefix("file://") {
+            let decoded = orbital_vault::percent_decode(file_path);
+            let p = std::path::Path::new(&decoded);
+            if let Ok(rel) = p.strip_prefix(vault.root()) {
+                rel.to_string_lossy().to_string()
+            } else {
+                decoded
+            }
+        } else {
+            url.to_string()
+        };
+
+        let parsed = orbital_vault::parse_link_target(&clean_url);
+        let target_str = if clean_url.starts_with("[[") {
+            format!("[[{}]]", parsed.path)
+        } else {
+            parsed.path.clone()
+        };
+
+        let default_rel = RelPath::new("wiki/index.md").ok();
+        let from_ref = from.or(default_rel.as_ref());
+        let res = from_ref.map_or(orbital_vault::Resolution::Missing, |f| {
+            vault.resolve_link(f, &target_str)
+        });
+
+        match res {
+            orbital_vault::Resolution::Found(p) => {
+                self.show_path(p.as_str());
+                if let Some(anchor) = parsed.anchor {
+                    let w_clone = self.clone();
+                    glib::idle_add_local_once(move || {
+                        w_clone.0.code_editor.scroll_to_heading(&anchor);
+                    });
+                }
+            }
+            orbital_vault::Resolution::Ambiguous(hits) => {
+                if let Some(first) = hits.first() {
+                    self.show_path(first.as_str());
+                    self.toast(&format!("Enlace ambiguo: abriendo «{}»", first));
+                }
+            }
+            orbital_vault::Resolution::Missing => {
+                let note_name = parsed.path.trim().to_string();
+                if note_name.is_empty() {
+                    return;
+                }
+                let clean_name = note_name
+                    .strip_suffix(".md")
+                    .or_else(|| note_name.strip_suffix(".html"))
+                    .unwrap_or(&note_name)
+                    .to_string();
+
+                let (dir_rel, file_name) = match clean_name.rsplit_once('/') {
+                    Some((d, f)) => (format!("wiki/{d}"), f.to_string()),
+                    None => ("wiki".to_string(), clean_name),
+                };
+
+                let Ok(dir) = RelPath::new(&dir_rel) else {
+                    self.toast(&format!("Ruta inválida «{}»", dir_rel));
+                    return;
+                };
+
+                let ask = vault.config().ask_create_missing_notes;
+                if !ask {
+                    self.create_missing_note(dir, file_name);
+                    return;
+                }
+
+                let check = gtk::CheckButton::builder()
+                    .label("No volver a preguntar")
+                    .margin_top(12)
+                    .build();
+
+                let heading = format!("¿Crear la nota «{file_name}» en wiki/?");
+                let dialog = adw::AlertDialog::builder()
+                    .heading(&heading)
+                    .body("El enlace apunta a una nota que todavía no existe en la bóveda.")
+                    .extra_child(&check)
+                    .default_response("create")
+                    .close_response("cancel")
+                    .build();
+                dialog.add_response("cancel", "Cancelar");
+                dialog.add_response("create", "Crear");
+                dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+
+                let this = self.clone();
+                let v = vault.clone();
+                dialog.choose(
+                    Some(&self.0.window),
+                    None::<&gio::Cancellable>,
+                    move |response| {
+                        if response == "create" {
+                            if check.is_active() {
+                                let mut cfg = v.config().clone();
+                                cfg.ask_create_missing_notes = false;
+                                let root = v.root().to_path_buf();
+                                gio::spawn_blocking(move || {
+                                    let _ = cfg.save(&root);
+                                });
+                            }
+                            this.create_missing_note(dir, file_name);
+                        }
+                    },
+                );
+            }
+        }
+    }
+
+    fn create_missing_note(&self, dir: RelPath, name: String) {
+        let this = self.clone();
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        glib::spawn_future_local(async move {
+            let n = name.clone();
+            let v = vault.clone();
+            let d = dir.clone();
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(v.config()));
+                v.create_note(&d, &n, orbital_vault::Format::Md, &ctx)
+            })
+            .await;
+            match result {
+                Ok(Ok(path)) => {
+                    this.reload(Some(path.clone())).await;
+                    this.toast(&format!("Se creó «{path}»"));
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo crear la nota"),
+            }
+        });
+    }
+
     pub fn show_path(&self, rel: &str) {
         // Elegir la fila la abre (ver `selection-changed`); si no está en la lista (por ejemplo,
         // archivada), se muestra igual.
@@ -2478,4 +2894,11 @@ fn warn_portable(window: &Window, name: &str) {
             "«{name}» tiene {bad}, que puede dar problemas al sincronizar con Windows o con la nube"
         ));
     }
+}
+
+/// Respuesta al diálogo de actualizar enlaces al renombrar.
+enum LinkAnswer {
+    Cancel,
+    Skip,
+    Update,
 }

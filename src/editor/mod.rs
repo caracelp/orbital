@@ -5,10 +5,12 @@
 //! o cerrar ([`Editor::flush`]).
 
 pub mod code;
+pub mod completion;
 pub mod conflict;
 pub mod html;
 pub mod props;
 pub mod reader;
+pub mod right_sidebar;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -18,7 +20,7 @@ use std::time::Duration;
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::session::{EditSession, ExternalAction, SaveOutcome, SessionState};
-use orbital_vault::{Format, Note, RelPath, Vault};
+use orbital_vault::{EntryKind, Format, Note, RelPath, Vault, Zone};
 
 use crate::write_ctx;
 
@@ -146,6 +148,14 @@ struct Inner {
     meta: RefCell<Option<Note>>,
     /// Cuenta los cambios del texto; sirve para saber si «Deshacer» sigue siendo lo último.
     edits: Cell<u64>,
+    completion: completion::LinkCompletionPopover,
+    completion_dismissed_at: Cell<Option<i32>>,
+    completion_active_start: Cell<Option<i32>>,
+    /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
+    /// dirección no se reutiliza, así que comparar punteros es seguro.
+    completion_vault: RefCell<std::sync::Weak<Vault>>,
+    /// Notas que incrusta la nota abierta (US5).
+    embed_deps: RefCell<Vec<RelPath>>,
 }
 
 /// El editor de la nota abierta.
@@ -213,6 +223,7 @@ impl Editor {
         switcher
             .upcast_ref::<gtk::Widget>()
             .update_property(&[gtk::accessible::Property::Label("Vista de la nota")]);
+        let completion = completion::LinkCompletionPopover::new(&view);
         let this = Self(Rc::new(Inner {
             view,
             buffer,
@@ -246,7 +257,64 @@ impl Editor {
             on_saved: RefCell::new(None),
             meta: RefCell::new(None),
             edits: Cell::new(0),
+            completion,
+            completion_dismissed_at: Cell::new(None),
+            completion_active_start: Cell::new(None),
+            completion_vault: RefCell::new(std::sync::Weak::new()),
+            embed_deps: RefCell::new(Vec::new()),
         }));
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&this.0);
+        key_ctrl.connect_key_pressed(move |_, keyval, _keycode, _state| {
+            let Some(i) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if i.completion.is_visible() {
+                match keyval {
+                    gtk::gdk::Key::Up => {
+                        i.completion.select_prev();
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Down => {
+                        i.completion.select_next();
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Escape => {
+                        i.completion.popdown();
+                        i.completion_dismissed_at
+                            .set(i.completion_active_start.get());
+                        return glib::Propagation::Stop;
+                    }
+                    gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab
+                        if i.completion.activate_selected() =>
+                    {
+                        return glib::Propagation::Stop;
+                    }
+                    _ => {}
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        this.0.view.add_controller(key_ctrl);
+
+        let weak = Rc::downgrade(&this.0);
+        this.0
+            .completion
+            .connect_selected(move |_candidate, target| {
+                let Some(i) = weak.upgrade() else { return };
+                if let Some(start_offset) = i.completion_active_start.get() {
+                    code::insert_link_completion(&i.buffer, &i.view, start_offset, &target);
+                }
+            });
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.buffer.connect_cursor_position_notify(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                Editor(inner).check_link_completion();
+            }
+        });
+
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_changed(move |_| {
             if let Some(inner) = weak.upgrade() {
@@ -283,6 +351,17 @@ impl Editor {
         });
         let weak = Rc::downgrade(&this.0);
         this.0.reader.set_on_link(move |url| {
+            if let Some(inner) = weak.upgrade()
+                && let (Some(f), Some(path)) = (
+                    inner.on_link.borrow().as_ref(),
+                    Editor(inner.clone()).current_path(),
+                )
+            {
+                f(&path, url);
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.visual.set_on_link(move |url| {
             if let Some(inner) = weak.upgrade()
                 && let (Some(f), Some(path)) = (
                     inner.on_link.borrow().as_ref(),
@@ -424,6 +503,32 @@ impl Editor {
         *self.0.on_link.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Desplaza la vista (Lectura, Dividida o Código) hacia el encabezado indicado.
+    pub fn scroll_to_heading(&self, heading: &str) {
+        let wanted = heading.trim();
+        if wanted.is_empty() {
+            return;
+        }
+        if self.0.reader.scroll_to_heading(wanted) {
+            return;
+        }
+        let buf = &self.0.buffer;
+        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        let wanted_lower = wanted.to_lowercase();
+        for (idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                let title = trimmed.trim_start_matches('#').trim().to_lowercase();
+                if title == wanted_lower {
+                    if let Some(mut it) = buf.iter_at_line(idx as i32) {
+                        self.0.view.scroll_to_iter(&mut it, 0.0, true, 0.0, 0.0);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     /// Cambio de vista elegido por el usuario (para recordarlo).
     pub fn set_on_view(&self, f: impl Fn(Format, View) + 'static) {
         *self.0.on_view.borrow_mut() = Some(Box::new(f));
@@ -442,9 +547,14 @@ impl Editor {
             .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
             .to_string();
         let this = self.clone();
+        let place = (i.vault.borrow().clone(), self.current_path());
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
-                let prepared = reader::Prepared::new(&text);
+                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
+                let prepared = match &place {
+                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from),
+                    _ => reader::Prepared::new(&text),
+                };
                 let props = orbital_vault::props::markdown::locate(&text)
                     .map(|r| orbital_vault::props::yaml::parse_block(&text[r]));
                 (prepared, props)
@@ -457,6 +567,7 @@ impl Editor {
             let Ok((prepared, props)) = parsed else {
                 return;
             };
+            *i.embed_deps.borrow_mut() = prepared.deps.clone();
             let header = || {
                 let read_only = i.meta.borrow().as_ref().is_none_or(|m| m.read_only);
                 let (entries, error) = match props {
@@ -587,7 +698,22 @@ impl Editor {
         i.generation.set(i.generation.get() + 1);
         *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
-        *i.vault.borrow_mut() = Some(vault);
+        let vault_weak = Arc::downgrade(&vault);
+        let from_note = note.path.clone();
+        i.reader.set_is_missing(move |url| {
+            if url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("mailto:")
+            {
+                return false;
+            }
+            let Some(v) = vault_weak.upgrade() else {
+                return false;
+            };
+            v.resolve_link(&from_note, url) == orbital_vault::Resolution::Missing
+        });
+        *i.vault.borrow_mut() = Some(vault.clone());
+        self.refresh_completion_candidates(&vault);
         let mut meta = note.clone();
         meta.source = String::new();
         *i.meta.borrow_mut() = Some(meta);
@@ -721,6 +847,64 @@ impl Editor {
         let dir = file.parent().unwrap_or(vault.root());
         i.visual.load(&text, dir, vault.root());
         self.visual_header();
+        self.visual_embeds();
+    }
+
+    /// Calcula en segundo plano las tarjetas de las transclusiones `![[…]]` de la nota `.html`
+    /// y se las pasa a la vista Visual (US5, T027).
+    fn visual_embeds(&self) {
+        let i = &self.0;
+        let (Some(vault), Some(from)) = (i.vault.borrow().clone(), self.current_path()) else {
+            return;
+        };
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let from_c = from.clone();
+            let result = gio::spawn_blocking(move || {
+                let dir = from_c
+                    .as_str()
+                    .rsplit_once('/')
+                    .map_or("", |(d, _)| d)
+                    .to_owned();
+                // Enlace de una tarjeta: la nota, relativa a la carpeta de la nota `.html`.
+                let href = move |p: &RelPath| relative_href(&dir, p.as_str());
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                let mut cards: Vec<(String, String)> = Vec::new();
+                let mut deps = Vec::new();
+                for occ in orbital_vault::links::extract_links(body, true) {
+                    if occ.kind != orbital_vault::links::LinkKind::Transclusion {
+                        continue;
+                    }
+                    let raw = body[occ.byte_range.clone()].to_owned();
+                    if cards.iter().any(|(k, _)| *k == raw) {
+                        continue;
+                    }
+                    let anchor = occ.target.anchor.as_deref();
+                    let (embed, d) = vault.embed_one(&from_c, &occ.target.path, anchor);
+                    deps.extend(d);
+                    let html = orbital_vault::transclusion::card_html(
+                        &occ.target.path,
+                        anchor,
+                        &embed,
+                        &href,
+                    );
+                    cards.push((raw, html));
+                }
+                deps.sort();
+                deps.dedup();
+                (cards, deps)
+            })
+            .await;
+            let Ok((cards, deps)) = result else { return };
+            if this.current_path() != Some(from) {
+                return;
+            }
+            *this.0.embed_deps.borrow_mut() = deps;
+            this.0.visual.set_embeds(&cards);
+        });
     }
 
     /// Las propiedades arriba de la vista Visual.
@@ -761,6 +945,35 @@ impl Editor {
         self.0.edits.get()
     }
 
+    /// Una nota de la bóveda cambió (se guardó o la cambió otro programa). Si la nota abierta la
+    /// incrusta con `![[…]]`, la vista formateada se vuelve a dibujar: solo cambia esa tarjeta y
+    /// no se pierde la posición de lectura (FR-016).
+    pub fn dependency_changed(&self, path: &RelPath) {
+        if !self.0.embed_deps.borrow().contains(path) {
+            return;
+        }
+        if self.0.mode.get() == View::Visual {
+            self.visual_embeds();
+        } else {
+            self.render_now();
+        }
+    }
+
+    /// Muestra la línea `line` (desde 1) en la vista actual, sin cambiarla: el cursor del código
+    /// va ahí y la vista formateada se desplaza cuando termina de dibujarse (retroenlaces, US4).
+    pub fn reveal_line(&self, line: usize) {
+        let i = &self.0;
+        let target = line.saturating_sub(1);
+        if let Some(it) = i.buffer.iter_at_line(target as i32) {
+            i.buffer.place_cursor(&it);
+            i.view
+                .scroll_to_mark(&i.buffer.get_insert(), 0.0, true, 0.0, 0.3);
+        }
+        if matches!(i.mode.get(), View::Lectura | View::Dividida) {
+            i.reader.scroll_to_line_when_ready(target);
+        }
+    }
+
     /// Pasa a la vista Código y pone el cursor en una línea.
     pub fn show_code_line(&self, line: i32) {
         self.set_view(View::Codigo);
@@ -781,6 +994,103 @@ impl Editor {
         *self.0.session.borrow_mut() = None;
     }
 
+    fn check_link_completion(&self) {
+        let i = &self.0;
+        if i.loading.get() || i.mode.get() == View::Lectura || i.mode.get() == View::Visual {
+            return;
+        }
+
+        let query_info = code::link_query_at_cursor(&i.buffer);
+        match query_info {
+            Some((query, start_offset)) => {
+                if i.completion_dismissed_at.get() == Some(start_offset) {
+                    return;
+                }
+                i.completion_active_start.set(Some(start_offset));
+                let matches = i.completion.filter(&query);
+                if matches > 0 {
+                    let rect = code::cursor_popup_rect(&i.view, &i.buffer);
+                    i.completion.popup_at(&rect);
+                } else {
+                    i.completion.popdown();
+                }
+            }
+            None => {
+                i.completion_dismissed_at.set(None);
+                i.completion_active_start.set(None);
+                if i.completion.is_visible() {
+                    i.completion.popdown();
+                }
+            }
+        }
+    }
+
+    /// Arma los candidatos de autocompletado de la bóveda (US3): primero los nombres, enseguida;
+    /// después títulos y alias, leídos en otro hilo. Solo cuando cambia la bóveda, no al abrir
+    /// cada nota (con 5000 notas serían 5000 lecturas por nota abierta).
+    pub fn refresh_completion_candidates(&self, vault: &Arc<Vault>) {
+        let i = &self.0;
+        if std::ptr::eq(i.completion_vault.borrow().as_ptr(), Arc::as_ptr(vault)) {
+            return;
+        }
+        *i.completion_vault.borrow_mut() = Arc::downgrade(vault);
+        let key = Arc::as_ptr(vault);
+        let notes = |v: &Vault| -> Vec<RelPath> {
+            v.entries()
+                .iter()
+                .filter(|e| {
+                    e.zone == Zone::Wiki
+                        && matches!(e.kind, EntryKind::AtomNote | EntryKind::SynthesisNote)
+                })
+                .map(|e| e.path.clone())
+                .collect()
+        };
+        let mut baseline: Vec<_> = notes(vault)
+            .into_iter()
+            .map(|p| completion::CompletionCandidate::new(p, None, Vec::new()))
+            .collect();
+        completion::qualify_duplicates(&mut baseline);
+        i.completion.set_candidates(baseline.clone());
+        i.visual.set_candidates(baseline);
+
+        let vault = vault.clone();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let full = gio::spawn_blocking(move || {
+                let mut list: Vec<_> = notes(&vault)
+                    .into_iter()
+                    .map(|path| {
+                        let props = vault.read_props(&path).ok().flatten();
+                        let entries = props.as_ref().map_or(&[][..], |p| &p.entries[..]);
+                        let title = orbital_vault::props::find(entries, "title")
+                            .and_then(|v| v.value.as_text())
+                            .map(str::to_owned);
+                        let aliases = orbital_vault::props::find(entries, "aliases")
+                            .map(|v| match &v.value {
+                                orbital_vault::props::PropValue::List(l) => l
+                                    .iter()
+                                    .filter_map(|x| x.as_text().map(str::to_owned))
+                                    .collect(),
+                                orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
+                                _ => Vec::new(),
+                            })
+                            .unwrap_or_default();
+                        completion::CompletionCandidate::new(path, title, aliases)
+                    })
+                    .collect();
+                completion::qualify_duplicates(&mut list);
+                list
+            })
+            .await
+            .unwrap_or_default();
+            // Si mientras tanto se abrió otra bóveda, estos candidatos ya no sirven.
+            if std::ptr::eq(this.0.completion_vault.borrow().as_ptr(), key) {
+                this.0.completion.set_candidates(full.clone());
+                this.0.visual.set_candidates(full);
+            }
+        });
+    }
+
     fn on_changed(&self) {
         let i = &self.0;
         if i.loading.get() {
@@ -795,6 +1105,7 @@ impl Editor {
             }
         }
         i.edits.set(i.edits.get() + 1);
+        self.check_link_completion();
         let Some(session) = i.session.borrow_mut().as_mut().map(|s| {
             s.edited();
             s.state().clone()
@@ -1171,4 +1482,19 @@ fn fill_toggles(group: &adw::ToggleGroup, format: Format) {
                 .build(),
         );
     }
+}
+
+/// Ruta de `target` (relativa a la bóveda) vista desde la carpeta `dir`, con `/` y espacios
+/// codificados: el `href` de una tarjeta de transclusión en una nota `.html`.
+fn relative_href(dir: &str, target: &str) -> String {
+    let a: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+    let b: Vec<&str> = target.split('/').collect();
+    let common = a
+        .iter()
+        .zip(&b[..b.len().saturating_sub(1)])
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut parts: Vec<&str> = vec![".."; a.len() - common];
+    parts.extend(&b[common..]);
+    parts.join("/").replace(' ', "%20")
 }
