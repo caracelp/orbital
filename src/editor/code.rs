@@ -41,6 +41,8 @@ pub fn scheme_xml() -> String {
   <style name="xml:tags" foreground="{accent}"/>
   <style name="xml:attribute-name" foreground="{type_col}"/>
   <style name="xml:element-name" foreground="{accent}"/>
+
+  <style name="search-match" background="{search_bg}" foreground="{search_fg}"/>
 </style-scheme>
 "##,
         text = crate::style::SYNTAX_TEXT.hex(),
@@ -49,6 +51,8 @@ pub fn scheme_xml() -> String {
         comment = crate::style::SYNTAX_COMMENT.hex(),
         string_col = crate::style::SYNTAX_STRING.hex(),
         type_col = crate::style::SYNTAX_TYPE.hex(),
+        search_bg = crate::style::SEARCH_MATCH_BG.hex(),
+        search_fg = crate::style::SEARCH_MATCH_FG.hex(),
     )
 }
 

@@ -58,6 +58,14 @@ pub const CALLOUT_ADVERTENCIA_BG: Rgb = Rgb(0x33, 0x29, 0x0f);
 #[allow(dead_code)]
 pub const CALLOUT_ADVERTENCIA_FG: Rgb = Rgb(0xff, 0xe0, 0x82);
 
+// Búsqueda en la nota (US3)
+/// Resaltado de coincidencias de búsqueda (paleta cálida sobre fondo oscuro, WCAG AA ≥ 4,5:1).
+pub const SEARCH_MATCH_BG: Rgb = Rgb(0x5c, 0x48, 0x14);
+pub const SEARCH_MATCH_FG: Rgb = Rgb(0xff, 0xe0, 0x82);
+/// Coincidencia actual seleccionada.
+pub const SEARCH_CURRENT_BG: Rgb = Rgb(0x80, 0x58, 0x0a);
+pub const SEARCH_CURRENT_FG: Rgb = Rgb(0xff, 0xff, 0xff);
+
 pub const CALLOUT_PELIGRO_BG: Rgb = Rgb(0x36, 0x1a, 0x1d);
 #[allow(dead_code)]
 pub const CALLOUT_PELIGRO_FG: Rgb = Rgb(0xff, 0xb3, 0xba);
@@ -293,5 +301,19 @@ mod tests {
                 assert!(r >= 4.5, "formato {fg:?} sobre {bg:?}: {r:.2} < 4.5");
             }
         }
+    }
+
+    #[test]
+    fn search_match_colors_meet_wcag_aa() {
+        let r_match = contrast_ratio(SEARCH_MATCH_FG, SEARCH_MATCH_BG);
+        assert!(
+            r_match >= 4.5,
+            "search match fg sobre bg: {r_match:.2} < 4.5"
+        );
+        let r_curr = contrast_ratio(SEARCH_CURRENT_FG, SEARCH_CURRENT_BG);
+        assert!(
+            r_curr >= 4.5,
+            "search current fg sobre bg: {r_curr:.2} < 4.5"
+        );
     }
 }

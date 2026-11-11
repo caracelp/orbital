@@ -511,6 +511,11 @@ impl Window {
             }),
             simple("search", Window::focus_search),
             simple("toggle-search-raw", Window::toggle_search_raw),
+            simple("find", |w| w.0.code_editor.open_find(false)),
+            simple("replace", |w| w.0.code_editor.open_find(true)),
+            simple("undo", |w| {
+                w.0.code_editor.undo();
+            }),
             simple("quick-open", Window::open_switcher),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
@@ -526,6 +531,9 @@ impl Window {
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
         app.set_accels_for_action("win.search", &["<Control><Shift>f"]);
+        app.set_accels_for_action("win.find", &["<Control>f"]);
+        app.set_accels_for_action("win.replace", &["<Control>h"]);
+        app.set_accels_for_action("win.undo", &["<Control>z"]);
         app.set_accels_for_action("win.quick-open", &["<Control>p"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
@@ -557,6 +565,14 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Buscar en toda la bóveda",
             "<Control><Shift>f",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Buscar en la nota abierta",
+            "<Control>f",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Reemplazar en la nota abierta",
+            "<Control>h",
         ));
         section.add(adw::ShortcutsItem::new(
             "Saltar a una nota (selector rápido)",

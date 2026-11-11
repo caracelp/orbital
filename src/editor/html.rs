@@ -102,6 +102,7 @@ fn js_string(s: &str) -> String {
 type Callback = Box<dyn Fn()>;
 type ErrorFn = Box<dyn Fn(&str)>;
 type LinkFn = Box<dyn Fn(&str)>;
+type FindCountFn = Box<dyn Fn(u32)>;
 
 struct Inner {
     root: gtk::Box,
@@ -118,6 +119,9 @@ struct Inner {
     on_input: RefCell<Option<Callback>>,
     on_error: RefCell<Option<ErrorFn>>,
     on_link: RefCell<Option<LinkFn>>,
+    on_find_counted: RefCell<Option<FindCountFn>>,
+    on_find_found: RefCell<Option<FindCountFn>>,
+    on_ready: RefCell<Option<Callback>>,
     /// Tarjetas de transclusión (objeto de JavaScript `{"![[x]]": "<div…>"}`), para aplicarlas
     /// cuando termine de cargar la página.
     embeds: RefCell<String>,
@@ -155,6 +159,9 @@ impl Visual {
             on_input: RefCell::new(None),
             on_error: RefCell::new(None),
             on_link: RefCell::new(None),
+            on_find_counted: RefCell::new(None),
+            on_find_found: RefCell::new(None),
+            on_ready: RefCell::new(None),
             embeds: RefCell::new("{}".to_owned()),
             page_ready: Cell::new(false),
         }))
@@ -181,6 +188,35 @@ impl Visual {
 
     pub fn set_on_error(&self, f: impl Fn(&str) + 'static) {
         *self.0.on_error.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// La vista WebKit, si ya fue instanciada.
+    pub fn web_view(&self) -> Option<webkit6::WebView> {
+        self.0.web.borrow().clone()
+    }
+
+    /// El controlador de búsqueda de WebKit, si la página está instanciada.
+    pub fn find_controller(&self) -> Option<webkit6::FindController> {
+        self.0
+            .web
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.find_controller())
+    }
+
+    /// Notifica la cantidad total de coincidencias contadas por WebKit.
+    pub fn set_on_find_counted(&self, f: impl Fn(u32) + 'static) {
+        *self.0.on_find_counted.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Notifica cuando WebKit encuentra y selecciona una coincidencia.
+    pub fn set_on_find_found(&self, f: impl Fn(u32) + 'static) {
+        *self.0.on_find_found.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Avisa cuando la página HTML termina de cargar en WebKit.
+    pub fn set_on_ready(&self, f: impl Fn() + 'static) {
+        *self.0.on_ready.borrow_mut() = Some(Box::new(f));
     }
 
     fn error(&self, msg: &str) {
@@ -249,12 +285,41 @@ impl Visual {
                 && let Some(i) = weak.upgrade()
             {
                 i.page_ready.set(true);
-                Visual(i).apply_embeds();
+                Visual(i.clone()).apply_embeds();
+                if let Some(f) = i.on_ready.borrow().as_ref() {
+                    f();
+                }
             }
         });
         web.update_property(&[gtk::accessible::Property::Label(
             "Página editable de la nota",
         )]);
+        if let Some(fc) = web.find_controller() {
+            let weak = Rc::downgrade(&self.0);
+            fc.connect_counted_matches(move |_, count| {
+                if let Some(i) = weak.upgrade()
+                    && let Some(f) = i.on_find_counted.borrow().as_ref()
+                {
+                    f(count);
+                }
+            });
+            let weak = Rc::downgrade(&self.0);
+            fc.connect_found_text(move |_, count| {
+                if let Some(i) = weak.upgrade()
+                    && let Some(f) = i.on_find_found.borrow().as_ref()
+                {
+                    f(count);
+                }
+            });
+            let weak = Rc::downgrade(&self.0);
+            fc.connect_failed_to_find_text(move |_| {
+                if let Some(i) = weak.upgrade()
+                    && let Some(f) = i.on_find_counted.borrow().as_ref()
+                {
+                    f(0);
+                }
+            });
+        }
         self.0.root.append(&self.toolbar());
         self.0.root.append(&web);
         *self.0.web.borrow_mut() = Some(web.clone());
