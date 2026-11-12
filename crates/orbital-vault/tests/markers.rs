@@ -168,3 +168,33 @@ fn resolucion_html_prefiere_el_inline_del_cuerpo() {
     let out = orbital_vault::resolve_markers_html(text, &yaml);
     assert_eq!(out, [("estado".to_owned(), "local".to_owned())]);
 }
+
+// --- 005 T013: escenarios de US2 (resolución por sección) ---
+
+/// 2.1: dos secciones con la misma clave y distinto valor; cada marcador muestra el suyo.
+#[test]
+fn escenario_2_1_misma_clave_distinta_seccion() {
+    let text =
+        "# A\nestado:: activo\nresultado [%estado]\n\n# B\nestado:: pausado\nresultado [%estado]\n";
+    let out = resolve_markers(text, &[]);
+    assert_eq!(out[0].1, "activo");
+    assert_eq!(out[1].1, "pausado");
+}
+
+/// 2.2: sección sin campo inline cae a la propiedad YAML.
+#[test]
+fn escenario_2_2_seccion_sin_campo_cae_a_yaml() {
+    let text = "# Con campo\nestado:: local\n[%estado]\n\n# Sin campo\n[%estado]\n";
+    let yaml = orbital_vault::props::yaml::parse_block("estado: global").unwrap();
+    let out = resolve_markers(text, &yaml);
+    assert_eq!(out[0].1, "local");
+    assert_eq!(out[1].1, "global");
+}
+
+/// 2.3: un marcador no toma el campo inline de una sección ajena.
+#[test]
+fn escenario_2_3_no_toma_el_campo_ajeno() {
+    let text = "# A\nestado:: de A\n\n# B\n[%estado]\n";
+    let out = resolve_markers(text, &[]);
+    assert_eq!(out[0].1, "«faltante»");
+}

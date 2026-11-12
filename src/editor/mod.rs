@@ -130,6 +130,9 @@ struct Inner {
     switcher: adw::ToggleGroup,
     mode: Cell<View>,
     render_generation: Cell<u64>,
+    /// La nota en pantalla tiene codeblocks generados: al llegar un snapshot de tags hay que
+    /// volver a renderizar (005, T016).
+    doc_has_generated: Cell<bool>,
     base_dir: RefCell<Option<std::path::PathBuf>>,
     on_header: RefCell<Option<HeaderFn>>,
     on_link: RefCell<Option<LinkFn>>,
@@ -159,6 +162,8 @@ struct Inner {
     completion_vault: RefCell<std::sync::Weak<Vault>>,
     /// Notas que incrusta la nota abierta (US5).
     embed_deps: RefCell<Vec<RelPath>>,
+    /// Índice de búsqueda compartido con el panel, para los codeblocks `indice` (005).
+    search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
     container: gtk::Box,
     find_bar: find::FindBar,
     search_ctx: sourceview5::SearchContext,
@@ -267,6 +272,7 @@ impl Editor {
             switcher,
             mode: Cell::new(View::Codigo),
             render_generation: Cell::new(0),
+            doc_has_generated: Cell::new(false),
             base_dir: RefCell::new(None),
             on_header: RefCell::new(None),
             on_link: RefCell::new(None),
@@ -288,6 +294,7 @@ impl Editor {
             completion_is_tag: Cell::new(false),
             completion_vault: RefCell::new(std::sync::Weak::new()),
             embed_deps: RefCell::new(Vec::new()),
+            search_index: RefCell::new(None),
             container,
             find_bar,
             search_ctx,
@@ -1123,6 +1130,19 @@ impl Editor {
         *self.0.on_view.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Índice de búsqueda para los codeblocks `indice` (005); se pasa junto con el del panel.
+    pub fn set_search_index(
+        &self,
+        index: Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>,
+    ) {
+        *self.0.search_index.borrow_mut() = index;
+    }
+
+    /// La nota en pantalla tiene bloques generados (005).
+    pub fn has_generated(&self) -> bool {
+        self.0.doc_has_generated.get()
+    }
+
     /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
     pub fn render_now(&self) {
         let i = &self.0;
@@ -1137,6 +1157,7 @@ impl Editor {
             .to_string();
         let this = self.clone();
         let place = (i.vault.borrow().clone(), self.current_path());
+        let index = i.search_index.borrow().clone();
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
                 let props = orbital_vault::props::markdown::locate(&text)
@@ -1149,20 +1170,30 @@ impl Editor {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
-                let prepared = match &place {
+                let mut prepared = match &place {
                     (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from, yaml),
                     _ => reader::Prepared::new(&text, yaml),
                 };
-                (prepared, props)
+                // Los codeblocks generados (`indice`, `toc`) se completan con el índice y la ruta
+                // de la nota (005, T015/T019); los rangos y casillas quedan intactos.
+                let idx = index.as_deref().map(|i| i.read().ok()).flatten();
+                let genero = reader::complete_generated(
+                    &mut prepared.doc,
+                    &mut prepared.hashes,
+                    idx.as_deref(),
+                    place.1.as_ref(),
+                );
+                (prepared, props, genero)
             })
             .await;
             let i = &this.0;
             if i.render_generation.get() != generation {
                 return;
             }
-            let Ok((prepared, props)) = parsed else {
+            let Ok((prepared, props, genero)) = parsed else {
                 return;
             };
+            i.doc_has_generated.set(genero);
             *i.embed_deps.borrow_mut() = prepared.deps.clone();
             let header = || {
                 let read_only = i.meta.borrow().as_ref().is_none_or(|m| m.read_only);

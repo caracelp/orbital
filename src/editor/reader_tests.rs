@@ -227,3 +227,139 @@ fn us5_markers_reader_shows_value() {
         assert!(!visible.contains("[%ausente]"));
     });
 }
+
+/// 005 T015/T016/T017: el codeblock `indice` lista las notas del tag anidadas, las entradas
+/// activan (abren la nota) y leer no escribe en el disco.
+#[test]
+#[ignore = "requiere acceso GTK; tools/verificar-005-us3.sh"]
+fn us5_indice_reader_lists_and_activates() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        use std::{fs, sync::Arc};
+        let root =
+            std::env::temp_dir().join(format!("orbital-us5i-{}", glib::uuid_string_random()));
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::write(root.join("wiki/a.md"), "#fisica\nTexto de A.\n").unwrap();
+        fs::write(root.join("wiki/b.md"), "#fisica/termo\nTexto de B.\n").unwrap();
+        let nota = root.join("wiki/principal.md");
+        let fuente = "```indice\ntag: #fisica\n```\n";
+        fs::write(&nota, fuente).unwrap();
+        let hash_antes = orbital_vault::write::hash(fs::read(&nota).unwrap().as_slice());
+        let path = orbital_vault::RelPath::new("wiki/principal.md").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let index = orbital_vault::SearchIndex::build(&vault);
+
+        let mut prepared = Prepared::new(fuente, &[]);
+        assert!(complete_generated(
+            &mut prepared.doc,
+            &mut prepared.hashes,
+            Some(&index),
+            Some(&path),
+        ));
+
+        let reader = Reader::new();
+        let elegida = Rc::new(RefCell::new(String::new()));
+        let got = elegida.clone();
+        reader.set_on_link(move |url| *got.borrow_mut() = url.into());
+        reader.render(prepared, || None, None);
+        for _ in 0..100 {
+            let visible = reader
+                .buffer()
+                .text(
+                    &reader.buffer().start_iter(),
+                    &reader.buffer().end_iter(),
+                    false,
+                )
+                .to_string();
+            if visible.contains("a.md") && visible.contains("#termo") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = reader
+            .buffer()
+            .text(
+                &reader.buffer().start_iter(),
+                &reader.buffer().end_iter(),
+                false,
+            )
+            .to_string();
+        assert!(visible.contains("a.md"), "{visible:?}");
+        assert!(visible.contains("b.md"), "{visible:?}");
+        assert!(visible.contains("#termo"), "{visible:?}");
+        assert!(!visible.contains("```"), "{visible:?}");
+
+        // T016: elegir la primera entrada abre la nota (url /a.md desde la raíz de wiki/).
+        let items = reader.all_link_items();
+        assert_eq!(
+            items.len(),
+            3,
+            "{:?}\"",
+            items.iter().map(|i| i.url.clone()).collect::<Vec<_>>()
+        );
+        reader.set_focused_link(Some(0));
+        assert!(reader.activate_focused_link());
+        assert_eq!(*elegida.borrow(), "/a.md");
+
+        // T017: leer no escribe; el archivo queda byte a byte.
+        assert_eq!(
+            hash_antes,
+            orbital_vault::write::hash(fs::read(&nota).unwrap().as_slice())
+        );
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+/// 005 T015 (TOC): los encabezados del doc se listan anidados y con enlaces al ancla.
+#[test]
+#[ignore = "requiere acceso GTK; tools/verificar-005-us4.sh"]
+fn us5_toc_reader_lists_headings() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let text = "# Principal\n\n```toc\n```\n\n## Primera\n\n### Adentro\n\n## Segunda\n";
+        let path = orbital_vault::RelPath::new("wiki/principal.md").unwrap();
+        let mut prepared = Prepared::new(text, &[]);
+        assert!(complete_generated(
+            &mut prepared.doc,
+            &mut prepared.hashes,
+            None,
+            Some(&path),
+        ));
+        let reader = Reader::new();
+        reader.render(prepared, || None, None);
+        for _ in 0..100 {
+            let visible = reader
+                .buffer()
+                .text(
+                    &reader.buffer().start_iter(),
+                    &reader.buffer().end_iter(),
+                    false,
+                )
+                .to_string();
+            if visible.contains("Primera") && visible.contains("Adentro") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = reader
+            .buffer()
+            .text(
+                &reader.buffer().start_iter(),
+                &reader.buffer().end_iter(),
+                false,
+            )
+            .to_string();
+        assert!(visible.contains("Primera"), "{visible:?}");
+        assert!(visible.contains("Adentro"), "{visible:?}");
+        assert!(visible.contains("Segunda"), "{visible:?}");
+        // Los enlaces llevan a la propia nota con el ancla del encabezado.
+        let items = reader.all_link_items();
+        assert!(
+            items.iter().any(|i| i.url == "/principal.md#Primera"),
+            "{:?}",
+            items.iter().map(|i| i.url.clone()).collect::<Vec<_>>()
+        );
+    });
+}

@@ -130,7 +130,7 @@ pub fn resolve_markers_html(text: &str, yaml: &[PropEntry]) -> Vec<(String, Stri
     let visible = crate::html_text::html_text(text);
     let section = 0..visible.len();
     let sections = std::slice::from_ref(&section);
-    let values = resolve_values(&visible, &markers, &sections, yaml);
+    let values = resolve_values(&visible, &markers, sections, yaml);
     let mut out: Vec<(String, String)> = Vec::new();
     for (marker, value) in markers.into_iter().zip(values) {
         if !out.iter().any(|(k, _)| *k == marker.key) {
