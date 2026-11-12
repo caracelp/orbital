@@ -74,6 +74,7 @@ pub struct Doc {
     pub name: String,
     pub title: Option<String>,
     pub tags: Vec<String>,
+    pub raw_tags: Vec<String>,
     pub props: Vec<(String, String)>,
 }
 
@@ -119,6 +120,10 @@ impl SearchIndex {
             }
             total += doc.tags.capacity() * std::mem::size_of::<String>();
             for tag in &doc.tags {
+                total += tag.capacity();
+            }
+            total += doc.raw_tags.capacity() * std::mem::size_of::<String>();
+            for tag in &doc.raw_tags {
                 total += tag.capacity();
             }
             total += doc.props.capacity() * std::mem::size_of::<(String, String)>();
@@ -295,20 +300,30 @@ impl SearchIndex {
         }
     }
 
-    /// Devuelve todos los nombres de etiquetas existentes normalizados.
+    /// Devuelve todos los nombres de etiquetas existentes mostrando la forma más usada.
     pub fn tag_names(&self) -> Vec<String> {
-        let mut set = std::collections::BTreeSet::new();
-        for doc in self.docs.values() {
-            for tag in &doc.tags {
-                set.insert(tag.clone());
+        let tree = self.tags();
+        let mut out = Vec::new();
+        fn collect(nodes: &[TagNode], prefix: &str, out: &mut Vec<String>) {
+            for node in nodes {
+                let full = if prefix.is_empty() {
+                    node.name.clone()
+                } else {
+                    format!("{prefix}/{}", node.name)
+                };
+                out.push(full.clone());
+                collect(&node.children, &full, out);
             }
         }
-        set.into_iter().collect()
+        collect(&tree.roots, "", &mut out);
+        out
     }
 
     /// Devuelve el árbol de etiquetas para el panel.
     pub fn tags(&self) -> TagTree {
         let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut segment_forms: HashMap<String, HashMap<String, usize>> = HashMap::new();
+
         for doc in self.docs.values() {
             let mut doc_tags = std::collections::HashSet::new();
             for tag in &doc.tags {
@@ -323,14 +338,33 @@ impl SearchIndex {
             for t in doc_tags {
                 *counts.entry(t).or_insert(0) += 1;
             }
+
+            for raw in &doc.raw_tags {
+                let mut norm_acc = String::new();
+                for seg in raw.split('/') {
+                    let seg_fold = fold(seg);
+                    if norm_acc.is_empty() {
+                        norm_acc = seg_fold;
+                    } else {
+                        norm_acc.push('/');
+                        norm_acc.push_str(&seg_fold);
+                    }
+                    *segment_forms
+                        .entry(norm_acc.clone())
+                        .or_default()
+                        .entry(seg.to_string())
+                        .or_insert(0) += 1;
+                }
+            }
         }
 
         // Construir árbol
         let mut all_paths: Vec<String> = counts.keys().cloned().collect();
-        all_paths.sort();
+        // Ordenar por tramos mantiene juntas las hijas aunque exista «tema-otra».
+        all_paths.sort_by(|a, b| a.split('/').cmp(b.split('/')));
 
         TagTree {
-            roots: build_tag_forest(&all_paths, &counts, ""),
+            roots: build_tag_forest(&all_paths, &counts, &segment_forms, ""),
         }
     }
 }
@@ -338,6 +372,7 @@ impl SearchIndex {
 fn build_tag_forest(
     paths: &[String],
     counts: &HashMap<String, usize>,
+    segment_forms: &HashMap<String, HashMap<String, usize>>,
     prefix: &str,
 ) -> Vec<TagNode> {
     let mut nodes = Vec::new();
@@ -348,7 +383,12 @@ fn build_tag_forest(
         let rel = if prefix.is_empty() {
             path.as_str()
         } else if let Some(stripped) = path.strip_prefix(prefix) {
-            stripped.strip_prefix('/').unwrap_or(stripped)
+            let s = stripped.strip_prefix('/').unwrap_or(stripped);
+            if s.is_empty() {
+                i += 1;
+                continue;
+            }
+            s
         } else {
             i += 1;
             continue;
@@ -362,18 +402,27 @@ fn build_tag_forest(
         };
 
         // Encontrar todas las rutas que caen bajo este prefijo
-        let mut j = i;
-        while j < paths.len()
-            && (paths[j] == current_path || paths[j].starts_with(&format!("{current_path}/")))
-        {
+        let mut j = i + 1;
+        let child_prefix = format!("{current_path}/");
+        while j < paths.len() && paths[j].starts_with(&child_prefix) {
             j += 1;
         }
 
-        let children = build_tag_forest(&paths[i..j], counts, &current_path);
+        let children = build_tag_forest(&paths[i + 1..j], counts, segment_forms, &current_path);
         let notes = *counts.get(&current_path).unwrap_or(&0);
 
+        let display_name = segment_forms
+            .get(&current_path)
+            .and_then(|forms| {
+                forms
+                    .iter()
+                    .max_by(|(s1, c1), (s2, c2)| c1.cmp(c2).then_with(|| s1.cmp(s2)))
+                    .map(|(s, _)| s.clone())
+            })
+            .unwrap_or_else(|| segment.to_string());
+
         nodes.push(TagNode {
-            name: segment.to_string(),
+            name: display_name,
             path: current_path,
             notes,
             children,
@@ -479,12 +528,15 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
     let title = extract_title(text, is_html);
 
     // Etiquetas
-    let raw_tags = extract_tags(text, is_html);
+    let raw_tags_occ = extract_tags(text, is_html);
     let mut tags_set = std::collections::BTreeSet::new();
-    for occ in raw_tags {
+    let mut raw_tags_set = std::collections::BTreeSet::new();
+    for occ in raw_tags_occ {
         tags_set.insert(fold(&occ.tag));
+        raw_tags_set.insert(occ.tag);
     }
     let tags: Vec<String> = tags_set.into_iter().collect();
+    let raw_tags: Vec<String> = raw_tags_set.into_iter().collect();
 
     // Propiedades
     // 1. Campos inline (sobre el texto visible, para HTML extrae sin etiquetas)
@@ -528,6 +580,7 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         name,
         title,
         tags,
+        raw_tags,
         props,
     }
 }

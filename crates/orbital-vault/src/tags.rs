@@ -47,6 +47,95 @@ pub fn extract_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
     out
 }
 
+/// Prefijo de etiqueta bajo el cursor (bytes). El análisis sintáctico descarta código,
+/// encabezados y enlaces, incluso incompletos. Se llama solo al encontrar `#` en la línea actual.
+pub fn completion_query(text: &str, cursor: usize, is_html: bool) -> Option<(&str, usize)> {
+    let prefix = text.get(..cursor)?;
+    let line_start = prefix.rfind('\n').map_or(0, |p| p + 1);
+    let line = &prefix[line_start..];
+    let hash = line.rfind('#')?;
+    let query = &line[hash + 1..];
+    if !query.chars().all(is_valid_tag_char) {
+        return None;
+    }
+    if line[..hash]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || "_/:.&=?#\\".contains(c))
+    {
+        return None;
+    }
+    // No sugerir dentro de enlaces todavía sin cerrar.
+    if line[..hash]
+        .rfind('[')
+        .is_some_and(|open| !line[open..hash].contains(']'))
+        || line[..hash]
+            .rfind("](")
+            .is_some_and(|open| !line[open + 2..hash].contains(')'))
+    {
+        return None;
+    }
+    let start = line_start + hash;
+    if is_html {
+        // El centinela permite analizar también un `#` sin letras, con el mismo escáner del índice.
+        let sample = format!("{prefix}z</body>");
+        return extract_tags(&sample, true)
+            .iter()
+            .any(|t| !t.from_prop && t.byte_range.start == start)
+            .then_some((query, start));
+    }
+    if markdown::locate(text).is_some_and(|range| start <= range.end) {
+        return None;
+    }
+    // Mientras se escribe, un delimitador sin cerrar expresa intención de código aunque
+    // CommonMark todavía lo interprete como texto literal.
+    let before = &line[..hash];
+    let mut open_ticks = 0;
+    let mut bytes = before.bytes().peekable();
+    while let Some(byte) = bytes.next() {
+        if byte == b'\\' {
+            bytes.next();
+        } else if byte == b'`' {
+            let mut width = 1;
+            while bytes.peek() == Some(&b'`') {
+                bytes.next();
+                width += 1;
+            }
+            if open_ticks == 0 {
+                open_ticks = width;
+            } else if open_ticks == width {
+                open_ticks = 0;
+            }
+        }
+    }
+    if open_ticks != 0 {
+        return None;
+    }
+    use pulldown_cmark::{Event, Parser, Tag};
+    let mut excluded = 0;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        match event {
+            Event::Start(
+                Tag::CodeBlock(_) | Tag::Heading { .. } | Tag::Link { .. } | Tag::Image { .. },
+            ) => excluded += 1,
+            Event::End(
+                pulldown_cmark::TagEnd::CodeBlock
+                | pulldown_cmark::TagEnd::Heading(_)
+                | pulldown_cmark::TagEnd::Link
+                | pulldown_cmark::TagEnd::Image,
+            ) => excluded -= 1,
+            Event::Text(_) if excluded == 0 && range.start <= start && cursor <= range.end => {
+                return Some((query, start));
+            }
+            _ => {}
+        }
+        if range.start > cursor {
+            break;
+        }
+    }
+    None
+}
+
 fn extract_frontmatter_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
     let mut out = Vec::new();
     let region = if is_html {
@@ -184,7 +273,7 @@ fn extract_markdown_body_tags(text: &str) -> Vec<TagOccurrence> {
 
                     let raw_tag = &tag_content[..tag_len];
                     // Quitar posibles / o - finales
-                    let trimmed_tag = raw_tag.trim_end_matches(['/', '-']);
+                    let trimmed_tag = raw_tag.trim_end_matches('/');
                     if is_valid_tag(trimmed_tag) {
                         let final_tag_len = trimmed_tag.len();
                         let start_byte = line_start + idx;
@@ -208,20 +297,18 @@ fn extract_markdown_body_tags(text: &str) -> Vec<TagOccurrence> {
 }
 
 fn mask_markdown_line(line: &str) -> String {
-    let mut chars: Vec<char> = line.chars().collect();
-
-    // 1. Enmascarar código en línea `...`
+    // Cada byte enmascarado ocupa un espacio: los rangos siguen apuntando al fuente UTF-8.
+    let mut bytes = line.as_bytes().to_vec();
     let mut in_code = false;
-    for c in &mut chars {
-        if *c == '`' {
+    for byte in &mut bytes {
+        if *byte == b'`' {
             in_code = !in_code;
-            *c = ' ';
+            *byte = b' ';
         } else if in_code {
-            *c = ' ';
+            *byte = b' ';
         }
     }
-
-    let mut masked: String = chars.into_iter().collect();
+    let mut masked = String::from_utf8(bytes).expect("la máscara conserva UTF-8 fuera del código");
 
     // 2. Enmascarar enlaces wikilink [[...]]
     while let Some(start) = masked.find("[[") {
@@ -267,7 +354,7 @@ fn mask_markdown_line(line: &str) -> String {
 
 fn extract_html_body_tags(text: &str) -> Vec<TagOccurrence> {
     let mut out = Vec::new();
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let body_start = lower.find("<body").unwrap_or(0);
     let body_end = lower.rfind("</body>").unwrap_or(text.len());
 
@@ -356,7 +443,7 @@ fn extract_html_body_tags(text: &str) -> Vec<TagOccurrence> {
                 }
 
                 let raw_tag = &tag_content[..tag_len];
-                let trimmed_tag = raw_tag.trim_end_matches(['/', '-']);
+                let trimmed_tag = raw_tag.trim_end_matches('/');
                 if is_valid_tag(trimmed_tag) {
                     let final_tag_len = trimmed_tag.len();
                     out.push(TagOccurrence {

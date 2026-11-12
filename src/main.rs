@@ -6,6 +6,7 @@ mod search_panel;
 mod state;
 mod style;
 mod switcher;
+mod tag_panel;
 mod watcher;
 mod window;
 mod write_ctx;

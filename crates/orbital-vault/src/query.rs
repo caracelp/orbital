@@ -55,6 +55,21 @@ pub fn parse_query(text: &str) -> Result<Query, QueryError> {
     Ok(query)
 }
 
+/// Consulta de una sola etiqueta; preserva también valores de propiedad con espacios u operadores.
+pub fn tag_query(tag: &str) -> String {
+    if tag
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'))
+    {
+        format!("tag:#{tag}")
+    } else {
+        format!(
+            "tag:\"#{}\"",
+            tag.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+    }
+}
+
 struct Parser<'a> {
     input: &'a str,
     pos: usize,
@@ -266,6 +281,28 @@ impl<'a> Parser<'a> {
         // 6. tag:
         if self.starts_with("tag:") {
             self.pos += 4;
+            if self.starts_with("\"") {
+                self.pos += 1;
+                let mut value = String::new();
+                let mut escaped = false;
+                while let Some(ch) = self.remaining().chars().next() {
+                    self.pos += ch.len_utf8();
+                    if escaped {
+                        value.push(ch);
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        return Ok(Atom::Tag(value.trim_start_matches('#').to_string()));
+                    } else {
+                        value.push(ch);
+                    }
+                }
+                return Err(QueryError {
+                    at: start + 4,
+                    message: "Comillas sin cerrar en tag:".into(),
+                });
+            }
             let token = self.read_token();
             let tag = token.trim_start_matches('#');
             return Ok(Atom::Tag(tag.to_string()));

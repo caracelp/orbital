@@ -153,6 +153,7 @@ struct Inner {
     completion: completion::LinkCompletionPopover,
     completion_dismissed_at: Cell<Option<i32>>,
     completion_active_start: Cell<Option<i32>>,
+    completion_is_tag: Cell<bool>,
     /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
     /// dirección no se reutiliza, así que comparar punteros es seguro.
     completion_vault: RefCell<std::sync::Weak<Vault>>,
@@ -284,6 +285,7 @@ impl Editor {
             completion,
             completion_dismissed_at: Cell::new(None),
             completion_active_start: Cell::new(None),
+            completion_is_tag: Cell::new(false),
             completion_vault: RefCell::new(std::sync::Weak::new()),
             embed_deps: RefCell::new(Vec::new()),
             container,
@@ -466,14 +468,22 @@ impl Editor {
         });
 
         let weak = Rc::downgrade(&this.0);
-        this.0
-            .completion
-            .connect_selected(move |_candidate, target| {
-                let Some(i) = weak.upgrade() else { return };
-                if let Some(start_offset) = i.completion_active_start.get() {
+        this.0.completion.connect_selected(move |target| {
+            let Some(i) = weak.upgrade() else { return };
+            if let Some(start_offset) = i.completion_active_start.get() {
+                // Cerrar el contexto antes de editar: los cambios del buffer disparan detección.
+                let is_tag = i.completion_is_tag.get();
+                i.completion_active_start.set(None);
+                i.completion_dismissed_at.set(Some(start_offset));
+                if is_tag {
+                    code::insert_tag_completion(&i.buffer, start_offset, &target);
+                } else {
                     code::insert_link_completion(&i.buffer, &i.view, start_offset, &target);
                 }
-            });
+                i.completion.popdown();
+                i.completion_dismissed_at.set(Some(start_offset));
+            }
+        });
 
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_cursor_position_notify(move |_| {
@@ -1285,7 +1295,8 @@ impl Editor {
         let vault_weak = Arc::downgrade(&vault);
         let from_note = note.path.clone();
         i.reader.set_is_missing(move |url| {
-            if url.starts_with("http://")
+            if url.starts_with("orbital-tag:")
+                || url.starts_with("http://")
                 || url.starts_with("https://")
                 || url.starts_with("mailto:")
             {
@@ -1588,6 +1599,7 @@ impl Editor {
 
     /// Cierra la nota sin guardar (después de un `flush`, o para recargarla).
     pub fn close(&self) {
+        self.0.completion.popdown();
         self.0.generation.set(self.0.generation.get() + 1);
         self.0.reader.reset();
         *self.0.session.borrow_mut() = None;
@@ -1595,18 +1607,30 @@ impl Editor {
 
     fn check_link_completion(&self) {
         let i = &self.0;
-        if i.loading.get() || i.mode.get() == View::Lectura || i.mode.get() == View::Visual {
+        if i.loading.get()
+            || !i.view.has_focus()
+            || i.mode.get() == View::Lectura
+            || i.mode.get() == View::Visual
+        {
             return;
         }
 
-        let query_info = code::link_query_at_cursor(&i.buffer);
+        let link_query = code::link_query_at_cursor(&i.buffer);
+        let is_tag = link_query.is_none();
+        let query_info = link_query
+            .or_else(|| code::tag_query_at_cursor(&i.buffer, i.format.get() == Format::Html));
+        i.completion_is_tag.set(is_tag);
         match query_info {
             Some((query, start_offset)) => {
                 if i.completion_dismissed_at.get() == Some(start_offset) {
                     return;
                 }
                 i.completion_active_start.set(Some(start_offset));
-                let matches = i.completion.filter(&query);
+                let matches = if is_tag {
+                    i.completion.filter_tag_query(&query)
+                } else {
+                    i.completion.filter(&query)
+                };
                 if matches > 0 {
                     let rect = code::cursor_popup_rect(&i.view, &i.buffer);
                     i.completion.popup_at(&rect);
@@ -1622,6 +1646,11 @@ impl Editor {
                 }
             }
         }
+    }
+
+    pub fn set_tag_candidates(&self, tags: Vec<completion::TagCandidate>) {
+        self.0.completion.set_tags(tags);
+        self.check_link_completion();
     }
 
     /// Arma los candidatos de autocompletado de la bóveda (US3): primero los nombres, enseguida;

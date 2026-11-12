@@ -592,13 +592,8 @@ impl Reader {
             } else if (keyval == gtk::gdk::Key::Return
                 || keyval == gtk::gdk::Key::KP_Enter
                 || keyval == gtk::gdk::Key::space)
-                && let Some(idx) = i.focused_link.get()
-                && let Some(item) = items.get(idx)
+                && reader.activate_focused_link()
             {
-                let url = item.url.clone();
-                if let Some(f) = i.on_link.borrow().as_ref() {
-                    f(&url);
-                }
                 glib::Propagation::Stop
             } else if keyval == gtk::gdk::Key::Escape && i.focused_link.get().is_some() {
                 reader.set_focused_link(None);
@@ -608,6 +603,19 @@ impl Reader {
             }
         });
         self.0.view.add_controller(key);
+    }
+
+    fn activate_focused_link(&self) -> bool {
+        let Some(index) = self.0.focused_link.get() else {
+            return false;
+        };
+        let Some(item) = self.all_link_items().get(index).cloned() else {
+            return false;
+        };
+        if let Some(f) = self.0.on_link.borrow().as_ref() {
+            f(&item.url);
+        }
+        true
     }
 
     /// Vuelca un documento. `header` arma las propiedades (solo se llama si cambiaron);

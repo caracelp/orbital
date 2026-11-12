@@ -18,6 +18,30 @@ fn query_words_and_phrases() {
 }
 
 #[test]
+fn tag_literals_round_trip_without_becoming_operators() {
+    use orbital_vault::query::{Atom, tag_query};
+    for name in [
+        "física/hija",
+        "con espacios",
+        "a OR b",
+        "a(b)",
+        "a]b",
+        "a\"b",
+        "a\\b",
+    ] {
+        let query = parse_query(&tag_query(name)).unwrap();
+        assert_eq!(query.any_of.len(), 1);
+        assert_eq!(query.any_of[0].len(), 1);
+        assert_eq!(query.any_of[0][0].atom, Atom::Tag(name.into()));
+    }
+    for input in ["tag:\"sin cerrar", "tag:\"escape\\"] {
+        let error = parse_query(input).unwrap_err();
+        assert_eq!(error.at, 4);
+        assert!(error.message.contains("Comillas sin cerrar"));
+    }
+}
+
+#[test]
 fn query_negation() {
     let q = parse_query("-excluir -\"no incluir\" -tag:#viejo").unwrap();
     assert_eq!(q.any_of.len(), 1);

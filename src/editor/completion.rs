@@ -104,14 +104,53 @@ pub fn qualify_duplicates(list: &mut [CompletionCandidate]) {
     }
 }
 
-type SelectedFn = Box<dyn Fn(CompletionCandidate, String)>;
+#[derive(Clone)]
+struct Suggestion {
+    label: String,
+    detail: String,
+    target: String,
+}
+
+/// Nombres y claves plegadas preparados al cambiar el índice, nunca al escribir.
+#[derive(Clone, Debug)]
+pub struct TagCandidate {
+    name: String,
+    key: String,
+    inline: bool,
+}
+
+impl TagCandidate {
+    pub fn new(name: String) -> Self {
+        let key = orbital_vault::fold(&name);
+        // Propiedades pueden tener nombres que no se pueden escribir como #etiqueta.
+        let inline = name
+            .chars()
+            .all(|c| c.is_alphanumeric() || "_-/".contains(c))
+            && !name.ends_with('/')
+            && name.chars().any(|c| !c.is_ascii_digit())
+            && !(matches!(name.len(), 3 | 6 | 8) && name.bytes().all(|b| b.is_ascii_hexdigit()));
+        Self { name, key, inline }
+    }
+}
+
+pub fn filter_tags(candidates: &[TagCandidate], query: &str, limit: usize) -> Vec<String> {
+    let query = orbital_vault::fold(query);
+    candidates
+        .iter()
+        .filter(|c| c.inline && c.key.starts_with(&query))
+        .take(limit)
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+type SelectedFn = Box<dyn Fn(String)>;
 
 struct Inner {
     popover: gtk::Popover,
     list: gtk::ListBox,
     candidates: RefCell<Vec<CompletionCandidate>>,
-    filtered: RefCell<Vec<CompletionCandidate>>,
-    query: RefCell<String>,
+    filtered: RefCell<Vec<Suggestion>>,
+    tags: RefCell<Vec<TagCandidate>>,
     on_selected: RefCell<Option<SelectedFn>>,
 }
 
@@ -200,7 +239,7 @@ impl LinkCompletionPopover {
             list,
             candidates: RefCell::new(Vec::new()),
             filtered: RefCell::new(Vec::new()),
-            query: RefCell::new(String::new()),
+            tags: RefCell::new(Vec::new()),
             on_selected: RefCell::new(None),
         }));
 
@@ -222,10 +261,9 @@ impl LinkCompletionPopover {
                 let candidate = i.filtered.borrow().get(idx as usize).cloned();
                 if let Some(c) = candidate {
                     i.popover.popdown();
-                    let q = i.query.borrow().clone();
-                    let target = c.link_target(&q);
+                    let target = c.target;
                     if let Some(f) = i.on_selected.borrow().as_ref() {
-                        f(c, target);
+                        f(target);
                     }
                 }
             }
@@ -238,7 +276,7 @@ impl LinkCompletionPopover {
         *self.0.candidates.borrow_mut() = candidates;
     }
 
-    pub fn connect_selected(&self, f: impl Fn(CompletionCandidate, String) + 'static) {
+    pub fn connect_selected(&self, f: impl Fn(String) + 'static) {
         *self.0.on_selected.borrow_mut() = Some(Box::new(f));
     }
 
@@ -258,47 +296,82 @@ impl LinkCompletionPopover {
     /// Filtra candidatos según la consulta y actualiza la lista.
     /// Retorna la cantidad de coincidencias encontradas.
     pub fn filter(&self, query: &str) -> usize {
-        *self.0.query.borrow_mut() = query.to_string();
         let candidates = self.0.candidates.borrow();
         let matches = filter_candidates(&candidates, query, 8);
 
-        // Limpiar lista
+        let suggestions = matches
+            .into_iter()
+            .map(|c| {
+                let target = c.link_target(query);
+                let label = c.title.clone().unwrap_or_else(|| c.stem.clone());
+                let detail = if c.aliases.is_empty() {
+                    c.stem
+                } else {
+                    format!("{} · alias: {}", c.stem, c.aliases.join(", "))
+                };
+                Suggestion {
+                    label,
+                    detail,
+                    target,
+                }
+            })
+            .collect();
+        drop(candidates);
+        self.show_suggestions(suggestions, "enlaces")
+    }
+
+    pub fn set_tags(&self, tags: Vec<TagCandidate>) {
+        *self.0.tags.borrow_mut() = tags;
+    }
+
+    pub fn filter_tag_query(&self, query: &str) -> usize {
+        let suggestions = filter_tags(&self.0.tags.borrow(), query, 8)
+            .into_iter()
+            .map(|name| Suggestion {
+                label: format!("#{name}"),
+                detail: String::new(),
+                target: name,
+            })
+            .collect();
+        self.show_suggestions(suggestions, "etiquetas")
+    }
+
+    fn show_suggestions(&self, matches: Vec<Suggestion>, kind: &str) -> usize {
+        self.0
+            .list
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "Sugerencias de {kind}"
+            ))]);
+        self.0
+            .popover
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "Autocompletado de {kind}"
+            ))]);
         while let Some(row) = self.0.list.first_child() {
             self.0.list.remove(&row);
         }
-
         for c in &matches {
             let row_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
             row_box.set_margin_top(6);
             row_box.set_margin_bottom(6);
             row_box.set_margin_start(10);
             row_box.set_margin_end(10);
-
-            let title_text = c.title.as_deref().unwrap_or(&c.stem);
-            let title_lbl = gtk::Label::builder()
-                .label(title_text)
-                .xalign(0.0)
-                .css_classes(["heading"])
-                .build();
-            row_box.append(&title_lbl);
-
-            let mut subtitle_parts = Vec::new();
-            if c.title.is_some() && c.title.as_deref() != Some(&c.stem) {
-                subtitle_parts.push(c.stem.clone());
-            }
-            if !c.aliases.is_empty() {
-                subtitle_parts.push(format!("alias: {}", c.aliases.join(", ")));
-            }
-
-            if !subtitle_parts.is_empty() {
-                let sub_lbl = gtk::Label::builder()
-                    .label(subtitle_parts.join(" · "))
+            row_box.append(
+                &gtk::Label::builder()
+                    .label(&c.label)
                     .xalign(0.0)
-                    .css_classes(["dim-label"])
-                    .build();
-                row_box.append(&sub_lbl);
+                    .css_classes(["heading"])
+                    .build(),
+            );
+            if !c.detail.is_empty() {
+                row_box.append(
+                    &gtk::Label::builder()
+                        .label(&c.detail)
+                        .xalign(0.0)
+                        .css_classes(["dim-label"])
+                        .build(),
+                );
             }
-
             let row_btn = gtk::Button::builder()
                 .has_frame(false)
                 .focusable(false)
@@ -307,26 +380,23 @@ impl LinkCompletionPopover {
                 .build();
             row_btn.update_property(&[gtk::accessible::Property::Label(&format!(
                 "Sugerencia: {}",
-                c.stem
+                c.label
             ))]);
-
-            let weak_btn = Rc::downgrade(&self.0);
-            let cand_clone = c.clone();
+            let weak = Rc::downgrade(&self.0);
+            let target = c.target.clone();
             row_btn.connect_clicked(move |_| {
-                let Some(i) = weak_btn.upgrade() else { return };
+                let Some(i) = weak.upgrade() else { return };
                 i.popover.popdown();
-                let q = i.query.borrow().clone();
-                let target = cand_clone.link_target(&q);
                 if let Some(f) = i.on_selected.borrow().as_ref() {
-                    f(cand_clone.clone(), target);
+                    f(target.clone());
                 }
             });
-
-            let row = gtk::ListBoxRow::builder()
-                .child(&row_btn)
-                .focusable(false)
-                .build();
-            self.0.list.append(&row);
+            self.0.list.append(
+                &gtk::ListBoxRow::builder()
+                    .child(&row_btn)
+                    .focusable(false)
+                    .build(),
+            );
         }
 
         let count = matches.len();
@@ -380,10 +450,9 @@ impl LinkCompletionPopover {
                 let candidate = self.0.filtered.borrow().get(idx as usize).cloned();
                 if let Some(c) = candidate {
                     self.popdown();
-                    let q = self.0.query.borrow().clone();
-                    let target = c.link_target(&q);
+                    let target = c.target;
                     if let Some(f) = self.0.on_selected.borrow().as_ref() {
-                        f(c, target);
+                        f(target);
                     }
                     return true;
                 }
@@ -396,6 +465,92 @@ impl LinkCompletionPopover {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_suggestions_fold_prefixes_and_limit_results() {
+        let tags: Vec<_> = [
+            "Física",
+            "Física/Termodinámica",
+            "Química",
+            "otra/física",
+            "con espacios",
+            "123",
+            "ff00ff",
+        ]
+        .into_iter()
+        .map(|name| TagCandidate::new(name.into()))
+        .collect();
+        assert_eq!(
+            filter_tags(&tags, "fis", 8),
+            ["Física", "Física/Termodinámica"]
+        );
+        assert_eq!(filter_tags(&tags, "FÍSICA/t", 8), ["Física/Termodinámica"]);
+        assert_eq!(filter_tags(&tags, "", 1), ["Física"]);
+        assert!(filter_tags(&tags, "ausente", 8).is_empty());
+        assert_eq!(filter_tags(&tags, "", 8).len(), 4);
+    }
+
+    #[test]
+    #[ignore = "requiere acceso GTK; tools/verificar-004-us5.sh"]
+    fn us5_tag_widgets_completion() {
+        gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+        let (view, buffer) = super::super::code::new_view();
+        let window = gtk::Window::builder().child(&view).build();
+        window.present();
+        let context = gtk::glib::MainContext::default();
+        context.block_on(gtk::glib::timeout_future(std::time::Duration::from_millis(
+            50,
+        )));
+        view.grab_focus();
+        let popover = LinkCompletionPopover::new(&view);
+        popover.set_tags(
+            ["Física", "Física/Termodinámica"]
+                .into_iter()
+                .map(|s| TagCandidate::new(s.into()))
+                .collect(),
+        );
+        buffer.set_text("😀 #fis");
+        buffer.place_cursor(&buffer.end_iter());
+        let (query, start) = super::super::code::tag_query_at_cursor(&buffer, false).unwrap();
+        assert_eq!(query, "fis");
+        assert_eq!(start, 2);
+        let for_insert = buffer.clone();
+        popover.connect_selected(move |target| {
+            super::super::code::insert_tag_completion(&for_insert, start, &target)
+        });
+        assert_eq!(popover.filter_tag_query(&query), 2);
+        popover.popup_at(&gtk::gdk::Rectangle::new(0, 0, 1, 18));
+        context.block_on(gtk::glib::timeout_future(std::time::Duration::from_millis(
+            50,
+        )));
+        assert!(!popover.0.popover.is_autohide());
+        assert!(!popover.0.popover.can_focus());
+        // El foco dentro de la ventana no depende del compositor (que puede no activar una
+        // ventana de prueba); el popover no enfocable no tiene que cambiarlo.
+        assert!(
+            view.is_focus(),
+            "abrir sugerencias conserva foco en la nota"
+        );
+        if window.is_active() {
+            assert!(view.has_focus());
+        }
+        popover.select_next();
+        popover.select_prev();
+        popover.select_next();
+        assert!(popover.activate_selected());
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            "😀 #Física/Termodinámica"
+        );
+        use sourceview5::prelude::*;
+        buffer.undo();
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            "😀 #fis"
+        );
+        popover.0.popover.unparent();
+        window.destroy();
+    }
 
     #[test]
     fn filter_candidates_matches_name_title_and_alias() {

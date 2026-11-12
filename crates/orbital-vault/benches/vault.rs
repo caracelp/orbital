@@ -230,6 +230,30 @@ fn render_100k(bencher: divan::Bencher) {
     });
 }
 
+/// Barrido de exclusiones con miles de etiquetas/enlaces/código, sin patrón cuadrático.
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn render_tags_kib(bencher: divan::Bencher, kib: usize) {
+    let row = "#física [enlace](nota) `#ignorada` y **#ciencia/energía**.\n\n";
+    let text = row.repeat((kib * 1024).div_ceil(row.len()));
+    bencher.bench(|| orbital_vault::render::render_markdown(divan::black_box(&text)));
+}
+
+/// Incluye copiar 100 KiB y convertir el cursor de caracteres a bytes, como hace el editor.
+#[divan::bench(sample_count = 20)]
+fn tag_completion_100k(bencher: divan::Bencher) {
+    let row = "Párrafo con [enlace](nota), `código` y #física.\n\n";
+    let text = format!("{}Texto #fís", row.repeat((100 * 1024) / row.len()));
+    let cursor_chars = text.chars().count();
+    bencher.bench(|| {
+        let copy = divan::black_box(&text).clone();
+        let cursor = copy
+            .char_indices()
+            .nth(cursor_chars)
+            .map_or(copy.len(), |(at, _)| at);
+        assert!(orbital_vault::tags::completion_query(&copy, cursor, false).is_some());
+    });
+}
+
 /// Solo pulldown-cmark sobre el mismo texto (referencia para render_100k).
 #[divan::bench]
 fn cmark_only_100k(bencher: divan::Bencher) {

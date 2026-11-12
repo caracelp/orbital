@@ -6,6 +6,36 @@ use orbital_vault::links::{LinkKind, extract_links, parse_link_target};
 use super::*;
 
 #[test]
+#[ignore = "requiere acceso GTK; tools/verificar-004-us5.sh"]
+fn us5_tag_widgets_reader() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let reader = Reader::new();
+        let chosen = Rc::new(RefCell::new(String::new()));
+        let got = chosen.clone();
+        reader.set_on_link(move |url| *got.borrow_mut() = url.into());
+        reader.render(
+            Prepared::new("😀 #Física y `#código` #123 #ff00ff"),
+            || None,
+            None,
+        );
+        for _ in 0..100 {
+            if !reader.all_link_items().is_empty() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let items = reader.all_link_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].url, "orbital-tag:Física");
+        reader.set_focused_link(Some(0));
+        assert!(reader.activate_focused_link());
+        assert_eq!(*chosen.borrow(), "orbital-tag:Física");
+    });
+}
+
+#[test]
 fn us1_parse_and_extract_links() {
     let raw = "nota-b#Mi Seccion|Mi Alias";
     let target = parse_link_target(raw);

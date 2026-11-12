@@ -75,7 +75,7 @@ struct Inner {
     graph_gen: Cell<u64>,
     /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
     pending_line: Cell<Option<(RelPath, usize)>>,
-    /// Panel lateral izquierdo: stack de páginas (Archivos, Búsqueda).
+    /// Panel lateral izquierdo: stack de páginas (Archivos, Búsqueda, Etiquetas).
     sidebar_stack: adw::ViewStack,
     /// Panel de búsqueda en toda la bóveda (US1 de la 004).
     search_panel: crate::search_panel::SearchPanel,
@@ -83,6 +83,9 @@ struct Inner {
     search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
     /// Generación del índice para descartar construcciones viejas.
     search_gen: Cell<u64>,
+    tag_panel: crate::tag_panel::TagPanel,
+    search_updates: RefCell<HashMap<RelPath, bool>>,
+    search_updating: Cell<bool>,
     /// Candidatos para el selector rápido de notas (US2 de la 004).
     candidates: RefCell<Vec<crate::editor::completion::CompletionCandidate>>,
 }
@@ -256,6 +259,7 @@ impl Window {
         let initial_search_raw = AppState::load().search_raw;
         let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
 
+        let tag_panel = crate::tag_panel::TagPanel::new();
         // --- ViewStack de la barra lateral izquierda (T014) ---
         let sidebar_stack = adw::ViewStack::new();
         let files_page = sidebar_stack.add_titled(&sidebar_scroll, Some("archivos"), "Archivos");
@@ -264,6 +268,9 @@ impl Window {
         let search_page =
             sidebar_stack.add_titled(search_panel.widget(), Some("busqueda"), "Búsqueda");
         search_page.set_icon_name(Some("edit-find-symbolic"));
+        sidebar_stack
+            .add_titled(tag_panel.widget(), Some("etiquetas"), "Etiquetas")
+            .set_icon_name(Some("tag-symbolic"));
 
         let sidebar_switcher = adw::ViewSwitcher::builder()
             .stack(&sidebar_stack)
@@ -365,6 +372,9 @@ impl Window {
             search_panel: search_panel.clone(),
             search_index: RefCell::new(None),
             search_gen: Cell::new(0),
+            tag_panel,
+            search_updates: RefCell::new(HashMap::new()),
+            search_updating: Cell::new(false),
             candidates: RefCell::new(Vec::new()),
             html_props,
             new_button,
@@ -379,6 +389,12 @@ impl Window {
             gone_banner,
         }));
 
+        let weak = Rc::downgrade(&this.0);
+        this.0.tag_panel.connect_selected(move |tag| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).search_tag(tag);
+            }
+        });
         let weak = Rc::downgrade(&this.0);
         this.0.search_panel.connect_open_match(move |path, line| {
             let Some(i) = weak.upgrade() else { return };
@@ -814,6 +830,13 @@ impl Window {
         let arc_vault = Arc::new(vault);
         *i.vault.borrow_mut() = Some(arc_vault.clone());
         i.search_panel.set_vault(Some(arc_vault.clone()));
+        i.search_gen.set(i.search_gen.get() + 1);
+        i.search_updates.borrow_mut().clear();
+        i.search_updating.set(false);
+        *i.search_index.borrow_mut() = None;
+        i.search_panel.set_search_index(None);
+        i.tag_panel.set_tree(None);
+        i.code_editor.set_tag_candidates(Vec::new());
 
         let baseline = Self::collect_candidates_baseline(&arc_vault);
         *i.candidates.borrow_mut() = baseline;
@@ -830,8 +853,11 @@ impl Window {
 
         self.rebuild_graph();
         let this = self.clone();
+        let generation = i.search_gen.get();
         self.after_next_frame(move || {
-            this.rebuild_search_index();
+            if this.0.search_gen.get() == generation {
+                this.rebuild_search_index();
+            }
         });
 
         let root = children_model(&tree, "");
@@ -1203,9 +1229,13 @@ impl Window {
 
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let built = gio::spawn_blocking(move || orbital_vault::SearchIndex::build(&vault))
-                .await
-                .ok();
+            let built = gio::spawn_blocking(move || {
+                let index = orbital_vault::SearchIndex::build(&vault);
+                let snapshot = crate::tag_panel::TagSnapshot::from_index(&index);
+                (index, snapshot)
+            })
+            .await
+            .ok();
             if let Some((run, max_gap, start)) = tick_state {
                 run.set(false);
                 let elapsed = start.elapsed();
@@ -1219,39 +1249,84 @@ impl Window {
             if this.0.search_gen.get() != generation {
                 return;
             }
-            let arc_idx = built.map(|idx| Arc::new(std::sync::RwLock::new(idx)));
-            *this.0.search_index.borrow_mut() = arc_idx.clone();
-            this.0.search_panel.set_search_index(arc_idx);
+            if let Some((index, snapshot)) = built {
+                let arc_idx = Some(Arc::new(std::sync::RwLock::new(index)));
+                *this.0.search_index.borrow_mut() = arc_idx.clone();
+                this.0.search_panel.set_search_index(arc_idx);
+                this.apply_tag_snapshot(snapshot);
+                this.drain_search_updates();
+            }
         });
     }
 
-    /// Pone al día el archivo en el índice de búsqueda, en otro hilo (US1 de la 004).
+    /// Una sola tarea aplica cambios por vez: nunca publica una lectura vieja después de otra nueva.
+    /// Los eventos recibidos durante la construcción inicial quedan pendientes.
     fn update_search_index(&self, path: RelPath, removed: bool) {
+        self.0.search_updates.borrow_mut().insert(path, removed);
+        self.drain_search_updates();
+    }
+
+    fn drain_search_updates(&self) {
         let i = &self.0;
+        if i.search_updating.get() || i.search_updates.borrow().is_empty() {
+            return;
+        }
         let (Some(index), Some(vault)) =
             (i.search_index.borrow().clone(), i.vault.borrow().clone())
         else {
             return;
         };
+        let updates = std::mem::take(&mut *i.search_updates.borrow_mut());
+        let generation = i.search_gen.get();
+        i.search_updating.set(true);
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let _ = gio::spawn_blocking(move || {
-                let text = if removed {
-                    None
-                } else {
-                    std::fs::read_to_string(path.to_path(vault.root())).ok()
-                };
-                let Ok(mut idx) = index.write() else { return };
-                match text {
-                    Some(t) => idx.update_file(&vault, &path, &t),
-                    None => idx.remove_file(&path),
+            let snapshot = gio::spawn_blocking(move || {
+                let texts: Vec<_> = updates
+                    .into_iter()
+                    .map(|(path, removed)| {
+                        let text = (!removed)
+                            .then(|| std::fs::read_to_string(path.to_path(vault.root())).ok())
+                            .flatten();
+                        (path, text)
+                    })
+                    .collect();
+                let mut idx = index.write().ok()?;
+                for (path, text) in texts {
+                    match text {
+                        Some(t) => idx.update_file(&vault, &path, &t),
+                        None => idx.remove_file(&path),
+                    }
                 }
+                Some(crate::tag_panel::TagSnapshot::from_index(&idx))
             })
-            .await;
+            .await
+            .ok()
+            .flatten();
+            if this.0.search_gen.get() != generation {
+                return;
+            }
+            this.0.search_updating.set(false);
+            if let Some(snapshot) = snapshot {
+                this.apply_tag_snapshot(snapshot);
+            }
             this.0
                 .search_panel
                 .set_search_index(this.0.search_index.borrow().clone());
+            this.drain_search_updates();
         });
+    }
+
+    fn apply_tag_snapshot(&self, snapshot: crate::tag_panel::TagSnapshot) {
+        self.0.code_editor.set_tag_candidates(snapshot.names);
+        self.0.tag_panel.set_tree(Some(snapshot.tree));
+    }
+
+    fn search_tag(&self, tag: &str) {
+        self.0
+            .search_panel
+            .set_search_query(&orbital_vault::query::tag_query(tag));
+        self.focus_search();
     }
 
     pub fn focus_search(&self) {
@@ -2699,6 +2774,10 @@ impl Window {
     /// Muestra una nota por su ruta relativa (para el modo de captura).
     /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
     pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
+        if let Some(tag) = url.strip_prefix("orbital-tag:") {
+            self.search_tag(tag);
+            return;
+        }
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
             gtk::UriLauncher::new(url).launch(
                 Some(&self.0.window),

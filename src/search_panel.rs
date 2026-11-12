@@ -158,6 +158,10 @@ impl SearchPanel {
             ("-palabra", "Excluye notas con el término"),
             ("a OR b", "Contiene al menos uno"),
             ("tag:#etiqueta", "Etiqueta (incluye subetiquetas)"),
+            (
+                "tag:\"#con espacios\"",
+                "Etiqueta literal; \\\" y \\\\ para comilla y barra",
+            ),
             ("path:carpeta", "Ruta de la nota"),
             ("file:nombre", "Nombre de archivo"),
             ("[clave]", "Propiedad existente"),
@@ -490,9 +494,14 @@ impl SearchPanel {
     }
 
     pub fn set_search_index(&self, index: Option<Arc<RwLock<SearchIndex>>>) {
-        let had_none = self.0.search_index.borrow().is_none();
         *self.0.search_index.borrow_mut() = index;
-        if had_none && self.0.search_index.borrow().is_some() {
+        self.0.search_gen.set(self.0.search_gen.get() + 1);
+        if self.0.search_index.borrow().is_none() {
+            self.0.list_store.remove_all();
+            self.0.summary_label.set_text("");
+            self.0.status_stack.set_visible_child_name("indexing");
+        }
+        if self.0.search_index.borrow().is_some() {
             // El índice terminó de construirse
             if !self.0.search_entry.text().trim().is_empty() {
                 self.queue_search();
