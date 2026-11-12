@@ -1139,13 +1139,20 @@ impl Editor {
         let place = (i.vault.borrow().clone(), self.current_path());
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
-                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
-                let prepared = match &place {
-                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from),
-                    _ => reader::Prepared::new(&text),
-                };
                 let props = orbital_vault::props::markdown::locate(&text)
                     .map(|r| orbital_vault::props::yaml::parse_block(&text[r]));
+                // El YAML resuelto alimenta los marcadores `[%clave]` (005); un frontmatter con
+                // error de sintaxis no resuelve nada (queda «faltante»).
+                let yaml = props
+                    .as_ref()
+                    .and_then(|parsed| parsed.as_ref().ok())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
+                let prepared = match &place {
+                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from, yaml),
+                    _ => reader::Prepared::new(&text, yaml),
+                };
                 (prepared, props)
             })
             .await;

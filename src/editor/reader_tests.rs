@@ -16,7 +16,7 @@ fn us5_tag_widgets_reader() {
         let got = chosen.clone();
         reader.set_on_link(move |url| *got.borrow_mut() = url.into());
         reader.render(
-            Prepared::new("😀 #Física y `#código` #123 #ff00ff"),
+            Prepared::new("😀 #Física y `#código` #123 #ff00ff", &[]),
             || None,
             None,
         );
@@ -72,7 +72,7 @@ Primer párrafo con un enlace a [[nota-b]] y otro [web](https://gnome.org).
 
 Texto de la sección de destino.
 ";
-        let prepared = Prepared::new(markdown);
+        let prepared = Prepared::new(markdown, &[]);
         reader.render(prepared, || None, None);
 
         // Esperar a que los bloques se vuelquen en el idle loop
@@ -117,7 +117,7 @@ fn us2_reader_missing_link_styling() {
         reader.set_is_missing(|url| url.contains("pendiente"));
 
         let markdown = "Enlace a [[nota-existente]] y a [[nota-pendiente]].";
-        let prepared = Prepared::new(markdown);
+        let prepared = Prepared::new(markdown, &[]);
         reader.render(prepared, || None, None);
 
         let mut iters = 0;
@@ -184,4 +184,46 @@ fn us2_missing_note_creation_and_config() {
     assert!(final_cfg.ask_create_missing_notes);
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 005 T009: la Lectura dibuja el valor interpolado y la casilla sigue mapeando al fuente.
+#[test]
+#[ignore = "requiere acceso GTK; tools/verificar-005-us1.sh"]
+fn us5_markers_reader_shows_value() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let text = "estado:: activo\n\n- [ ] Tarea [%estado] y rótulo [%ausente]\n";
+        let yaml = orbital_vault::props::yaml::parse_block("estado: activo").unwrap();
+        let reader = Reader::new();
+        reader.render(Prepared::new(text, &yaml), || None, None);
+        for _ in 0..100 {
+            if reader
+                .buffer()
+                .text(
+                    &reader.buffer().start_iter(),
+                    &reader.buffer().end_iter(),
+                    false,
+                )
+                .contains("activo")
+            {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = reader
+            .buffer()
+            .text(
+                &reader.buffer().start_iter(),
+                &reader.buffer().end_iter(),
+                false,
+            )
+            .to_string();
+        assert!(
+            visible.contains("Tarea activo y rótulo «faltante»"),
+            "{visible:?}"
+        );
+        assert!(!visible.contains("[%estado]"));
+        assert!(!visible.contains("[%ausente]"));
+    });
 }

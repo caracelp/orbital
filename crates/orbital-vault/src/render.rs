@@ -235,6 +235,86 @@ impl Ctx<'_> {
 
 /// Analiza una nota `.md` completa. El frontmatter y el BOM no forman parte del resultado.
 pub fn render_markdown(text: &str) -> RenderDoc {
+    parse_doc(text, &[])
+}
+
+/// Analiza una nota `.md` completa con los marcadores `[%clave]` sustituidos por su valor (005).
+/// Los rangos de bloque siguen apuntando al texto fuente: la sustitución cambia el contenido de
+/// los eventos de texto, no sus rangos.
+pub fn render_markdown_interpolated(
+    text: &str,
+    repl: &[(std::ops::Range<usize>, String)],
+) -> RenderDoc {
+    parse_doc(text, repl)
+}
+
+/// Sustituye los marcadores en las corridas de eventos de texto consecutivos (005).
+/// pulldown-cmark divide el texto en varios eventos (en `[`, `]`, escapes), así que un
+/// marcador puede abarcar varios: se reconstruye la corrida completa con el valor en el
+/// lugar del marcador. Los rangos siguen apuntando al texto fuente. Un marcador cortado por
+/// un nodo inline (negrita, código) no se sustituye: queda como fuente.
+fn substitute_runs<'a>(
+    mut events: Vec<Ev<'a>>,
+    base: usize,
+    repl: &[(std::ops::Range<usize>, String)],
+) -> Vec<Ev<'a>> {
+    let repl_rel: Vec<(std::ops::Range<usize>, &str)> = repl
+        .iter()
+        .map(|(range, value)| (range.start - base..range.end - base, value.as_str()))
+        .collect();
+    let mut out: Vec<Ev> = Vec::with_capacity(events.len());
+    let mut run: Vec<(pulldown_cmark::CowStr, std::ops::Range<usize>)> = Vec::new();
+    fn flush(
+        run: &mut Vec<(pulldown_cmark::CowStr, std::ops::Range<usize>)>,
+        out: &mut Vec<Ev>,
+        repl: &[(std::ops::Range<usize>, &str)],
+    ) {
+        if run.is_empty() {
+            return;
+        }
+        let run_start = run[0].1.start;
+        let run_end = run.last().expect("corrida no vacía").1.end;
+        let mut concat = String::new();
+        for (t, _) in run.iter() {
+            concat.push_str(t);
+        }
+        let mut at = 0usize;
+        for (range, value) in repl {
+            if range.start < run_start || range.end > run_end || range.start < run_start + at {
+                continue;
+            }
+            let s = range.start - run_start;
+            let e = range.end - run_start;
+            if at < s {
+                out.push((
+                    Event::Text(concat[at..s].to_owned().into()),
+                    run_start + at..run_start + s,
+                ));
+            }
+            out.push((Event::Text((*value).to_owned().into()), range.clone()));
+            at = e;
+        }
+        if at < concat.len() {
+            out.push((
+                Event::Text(concat[at..].to_owned().into()),
+                run_start + at..run_start + concat.len(),
+            ));
+        }
+        run.clear();
+    }
+    for (ev, range) in events.drain(..) {
+        if let Event::Text(t) = ev {
+            run.push((t, range));
+        } else {
+            flush(&mut run, &mut out, &repl_rel);
+            out.push((ev, range));
+        }
+    }
+    flush(&mut run, &mut out, &repl_rel);
+    out
+}
+
+fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc {
     let base = match markdown::locate(text) {
         Some(region) => {
             // Después de la línea `---` que cierra el bloque.
@@ -249,6 +329,11 @@ pub fn render_markdown(text: &str) -> RenderDoc {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     let events: Vec<Ev> = Parser::new_ext(body, opts).into_offset_iter().collect();
+    let events = if repl.is_empty() {
+        events
+    } else {
+        substitute_runs(events, base, repl)
+    };
     let mut line_starts = vec![0];
     line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
     let mut tags = crate::tags::extract_tags(text, false);

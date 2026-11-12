@@ -323,3 +323,85 @@ fn indice_sin_tag_y_toc_vacio_son_comunes_o_validos() {
     let doc = render_markdown("```rust\ntag: #x\n```\n");
     assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
 }
+
+// --- 005 T008: interpolación de marcadores en el render ---
+
+use orbital_vault::render::render_markdown_interpolated;
+
+#[test]
+fn interpolacion_reemplaza_el_marcador_y_conserva_los_rangos() {
+    let text = "estado:: activo\n\nEl estado es [%estado] y sigue la nota.\n\n# Sección\n\nOtro [%otro].\n";
+    let mut repl = orbital_vault::resolve_markers(text, &[]);
+    repl[1].1 = "valor yaml".to_owned();
+    let doc = render_markdown_interpolated(text, &repl);
+    // Los rangos de bloque siguen apuntando al fuente (con su salto de línea final).
+    assert_eq!(
+        &text[doc.blocks[1].source.clone()],
+        "El estado es [%estado] y sigue la nota.\n"
+    );
+    assert_eq!(&text[doc.blocks[3].source.clone()], "Otro [%otro].\n");
+    // El texto visible tiene el valor, no el marcador.
+    let visible = plain_text(match &doc.blocks[1].kind {
+        BlockKind::Paragraph(p) => p,
+        _ => panic!(),
+    });
+    assert_eq!(visible, "El estado es activo y sigue la nota.");
+    let visible2 = plain_text(match &doc.blocks[3].kind {
+        BlockKind::Paragraph(p) => p,
+        _ => panic!(),
+    });
+    assert_eq!(visible2, "Otro valor yaml.");
+    // El render sin interpolación no cambia.
+    let doc_plain = render_markdown(text);
+    assert!(
+        plain_text(match &doc_plain.blocks[1].kind {
+            BlockKind::Paragraph(p) => p,
+            _ => panic!(),
+        })
+        .contains("[%estado]")
+    );
+}
+
+#[test]
+fn interpolacion_dentro_de_negrita_y_encabezado() {
+    let text =
+        "# Título\nestado:: activo\n\n[%estado] en el encabezado\n\n**negrita [%estado] fina**\n";
+    let repl = orbital_vault::resolve_markers(text, &[]);
+    let doc = render_markdown_interpolated(text, &repl);
+    let visible = plain_text(match &doc.blocks[0].kind {
+        BlockKind::Heading { inlines, .. } => inlines,
+        _ => panic!(),
+    });
+    assert_eq!(visible, "Título");
+    let visible2 = plain_text(match &doc.blocks[2].kind {
+        BlockKind::Paragraph(p) => p,
+        _ => panic!(),
+    });
+    assert_eq!(visible2, "activo en el encabezado");
+    let visible3 = plain_text(match &doc.blocks[3].kind {
+        BlockKind::Paragraph(p) => p,
+        _ => panic!(),
+    });
+    assert_eq!(visible3, "negrita activo fina");
+}
+
+#[test]
+fn casilla_junto_a_marcador_sigue_mapeando_al_mismo_byte() {
+    let text = "estado:: activo\n\n- [ ] Tarea con [%estado] dentro\n";
+    let repl = orbital_vault::resolve_markers(text, &[]);
+    let doc = render_markdown_interpolated(text, &repl);
+    let BlockKind::List { items, .. } = &doc.blocks[1].kind else {
+        panic!()
+    };
+    let task = items[0].task.unwrap();
+    assert_eq!(&text[task.offset..task.offset + 1], " ");
+    // Marcar cambia un solo byte del fuente, aunque el texto visible tenga el valor interpolado.
+    let toggled = toggle_task(text, task.offset).unwrap();
+    assert_eq!(toggled.len(), text.len());
+    let visible = plain_text(match &items[0].blocks[0].kind {
+        BlockKind::Paragraph(p) => p,
+        _ => panic!(),
+    });
+    assert!(visible.contains("activo"));
+    assert!(!visible.contains("[%estado]"));
+}

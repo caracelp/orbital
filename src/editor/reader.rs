@@ -112,22 +112,29 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    pub fn new(text: &str) -> Self {
-        Self::build(text, None)
+    /// Con las propiedades del frontmatter para resolver los marcadores `[%clave]` (005).
+    pub fn new(text: &str, yaml: &[orbital_vault::props::PropEntry]) -> Self {
+        Self::build(text, None, yaml)
     }
 
     /// Como [`Prepared::new`], con las transclusiones expandidas (lee las notas incrustadas: va
-    /// en el hilo de fondo).
+    /// en el hilo de fondo) y los marcadores resueltos.
     pub fn with_vault(
         text: &str,
         vault: &orbital_vault::Vault,
         from: &orbital_vault::RelPath,
+        yaml: &[orbital_vault::props::PropEntry],
     ) -> Self {
-        Self::build(text, Some((vault, from)))
+        Self::build(text, Some((vault, from)), yaml)
     }
 
-    fn build(text: &str, vault: Option<(&orbital_vault::Vault, &orbital_vault::RelPath)>) -> Self {
-        let mut doc = orbital_vault::render::render_markdown(text);
+    fn build(
+        text: &str,
+        vault: Option<(&orbital_vault::Vault, &orbital_vault::RelPath)>,
+        yaml: &[orbital_vault::props::PropEntry],
+    ) -> Self {
+        let repl = orbital_vault::markers::resolve_markers(text, yaml);
+        let mut doc = orbital_vault::render::render_markdown_interpolated(text, &repl);
         let deps = vault.map_or_else(Vec::new, |(v, from)| v.expand_transclusions(from, &mut doc));
         // Un bloque con transclusiones cambia también si cambia lo incrustado: la huella entra en
         // su hash, y la actualización en el sitio reemplaza solo esa tarjeta.
