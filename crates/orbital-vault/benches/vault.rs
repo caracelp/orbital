@@ -359,3 +359,66 @@ fn render_markers_kib(bencher: divan::Bencher, kib: usize) {
     bencher
         .bench(|| divan::black_box(orbital_vault::resolve_markers(divan::black_box(&text), &[])));
 }
+
+/// Render puro de la nota con marcadores, para comparar contra el interpolado (SC-1 de la 005).
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn render_base_kib(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores(kib);
+    bencher.bench(|| {
+        divan::black_box(orbital_vault::render::render_markdown(divan::black_box(
+            &text,
+        )))
+    });
+}
+
+/// Render con los marcadores resueltos e interpolados (SC-1: regresión menor a 10 %).
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn render_interpolado_kib(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores(kib);
+    bencher.bench(|| {
+        let repl = orbital_vault::resolve_markers(divan::black_box(&text), &[]);
+        divan::black_box(orbital_vault::render::render_markdown_interpolated(
+            divan::black_box(&text),
+            &repl,
+        ))
+    });
+}
+
+/// Nota realista para SC-1: un marcador cada ~1 KiB (~100 marcadores en 100 KiB).
+fn texto_marcadores_esparso(kib: usize) -> String {
+    let parrafo = "Relleno del párrafo para acercarse a una nota real: listas, negritas y \
+                   enlaces al texto, sin marcadores dentro.\n\n";
+    let marcador = "El estado acá es [%estado] y sigue la nota.\n\n";
+    let mut out = String::with_capacity(kib * 1024);
+    while out.len() < kib * 1024 {
+        for _ in 0..6 {
+            out.push_str(parrafo);
+        }
+        out.push_str(marcador);
+    }
+    out
+}
+
+/// Render puro de la nota realista (SC-1 de la 005).
+#[divan::bench(args = [100], sample_count = 20)]
+fn render_base_realista(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores_esparso(kib);
+    bencher.bench(|| {
+        divan::black_box(orbital_vault::render::render_markdown(divan::black_box(
+            &text,
+        )))
+    });
+}
+
+/// Render interpolado de la nota realista (SC-1: regresión menor a 10 %).
+#[divan::bench(args = [100], sample_count = 20)]
+fn render_interpolado_realista(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores_esparso(kib);
+    bencher.bench(|| {
+        let repl = orbital_vault::resolve_markers(divan::black_box(&text), &[]);
+        divan::black_box(orbital_vault::render::render_markdown_interpolated(
+            divan::black_box(&text),
+            &repl,
+        ))
+    });
+}

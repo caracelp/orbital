@@ -253,6 +253,46 @@ pub fn render_markdown_interpolated(
 /// marcador puede abarcar varios: se reconstruye la corrida completa con el valor en el
 /// lugar del marcador. Los rangos siguen apuntando al texto fuente. Un marcador cortado por
 /// un nodo inline (negrita, código) no se sustituye: queda como fuente.
+/// Emite el segmento `[from, to)` repartido entre los eventos de la corrida: cada tramo que
+/// cae dentro de un evento sale como tajo *borrowed*; los tramos cruzados se realocan.
+fn emit_segment<'a>(
+    run: &[(pulldown_cmark::CowStr<'a>, std::ops::Range<usize>)],
+    out: &mut Vec<Ev<'a>>,
+    ev_ix: &mut usize,
+    from: usize,
+    to: usize,
+) {
+    let mut at = from;
+    while at < to && *ev_ix < run.len() {
+        let (t, r) = &run[*ev_ix];
+        if r.end <= at {
+            *ev_ix += 1;
+            continue;
+        }
+        let start = at.max(r.start);
+        let stop = to.min(r.end);
+        if start < stop {
+            // Tajo sin copiar cuando el evento es prestado (el caso común del parser).
+            let piece = match t {
+                pulldown_cmark::CowStr::Borrowed(s) => {
+                    let s: &'a str = s; // copia la referencia interna: no depende del préstamo
+                    pulldown_cmark::CowStr::Borrowed(&s[start - r.start..stop - r.start])
+                }
+                other => pulldown_cmark::CowStr::Boxed(
+                    other[start - r.start..stop - r.start]
+                        .to_string()
+                        .into_boxed_str(),
+                ),
+            };
+            out.push((Event::Text(piece), start..stop));
+        }
+        if stop == r.end {
+            *ev_ix += 1;
+        }
+        at = stop;
+    }
+}
+
 fn substitute_runs<'a>(
     mut events: Vec<Ev<'a>>,
     base: usize,
@@ -264,53 +304,59 @@ fn substitute_runs<'a>(
         .collect();
     let mut out: Vec<Ev> = Vec::with_capacity(events.len());
     let mut run: Vec<(pulldown_cmark::CowStr, std::ops::Range<usize>)> = Vec::new();
-    fn flush(
-        run: &mut Vec<(pulldown_cmark::CowStr, std::ops::Range<usize>)>,
-        out: &mut Vec<Ev>,
+    fn flush<'a>(
+        run: &mut Vec<(pulldown_cmark::CowStr<'a>, std::ops::Range<usize>)>,
+        out: &mut Vec<Ev<'a>>,
         repl: &[(std::ops::Range<usize>, &str)],
+        base: usize,
     ) {
         if run.is_empty() {
             return;
         }
         let run_start = run[0].1.start;
         let run_end = run.last().expect("corrida no vacía").1.end;
-        let mut concat = String::new();
-        for (t, _) in run.iter() {
-            concat.push_str(t);
+        // Corrida sin marcadores: los eventos originales pasan intactos, sin realocar.
+        let hay = repl.iter().any(|(r, _)| {
+            r.start.saturating_sub(base) < run_end && r.end.saturating_sub(base) > run_start
+        });
+        if !hay {
+            out.extend(run.drain(..).map(|(t, r)| (Event::Text(t), r)));
+            return;
         }
-        let mut at = 0usize;
+        // Con marcadores: los segmentos entre marcadores se emiten como tajos *borrowed* de los
+        // eventos originales cuando caen dentro de uno solo (el caso común); solo el valor es
+        // una cadena nueva.
+        let mut ev_ix = 0usize;
+        let mut at = run_start;
         for (range, value) in repl {
-            if range.start < run_start || range.end > run_end || range.start < run_start + at {
+            if range.start < at || range.end > run_end {
                 continue;
             }
-            let s = range.start - run_start;
-            let e = range.end - run_start;
-            if at < s {
-                out.push((
-                    Event::Text(concat[at..s].to_owned().into()),
-                    run_start + at..run_start + s,
-                ));
-            }
+            emit_segment(run, out, &mut ev_ix, at, range.start);
             out.push((Event::Text((*value).to_owned().into()), range.clone()));
-            at = e;
+            at = range.end;
         }
-        if at < concat.len() {
-            out.push((
-                Event::Text(concat[at..].to_owned().into()),
-                run_start + at..run_start + concat.len(),
-            ));
-        }
+        emit_segment(run, out, &mut ev_ix, at, run_end);
         run.clear();
     }
     for (ev, range) in events.drain(..) {
         if let Event::Text(t) = ev {
             run.push((t, range));
         } else {
-            flush(&mut run, &mut out, &repl_rel);
+            flush(&mut run, &mut out, &repl_rel, base);
             out.push((ev, range));
         }
     }
-    flush(&mut run, &mut out, &repl_rel);
+    flush(&mut run, &mut out, &repl_rel, base);
+    for (ev, range) in events.drain(..) {
+        if let Event::Text(t) = ev {
+            run.push((t, range));
+        } else {
+            flush(&mut run, &mut out, &repl_rel, base);
+            out.push((ev, range));
+        }
+    }
+    flush(&mut run, &mut out, &repl_rel, base);
     out
 }
 

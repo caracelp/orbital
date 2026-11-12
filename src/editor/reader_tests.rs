@@ -311,7 +311,8 @@ fn us5_indice_reader_lists_and_activates() {
     });
 }
 
-/// 005 T015 (TOC): los encabezados del doc se listan anidados y con enlaces al ancla.
+/// 005 T015/T020 (TOC): los encabezados del doc se listan anidados, con enlaces al ancla y
+/// activables: elegir una entrada manda la URL del ancla (el scroll lo hace `open_link`).
 #[test]
 #[ignore = "requiere acceso GTK; tools/verificar-005-us4.sh"]
 fn us5_toc_reader_lists_headings() {
@@ -328,6 +329,9 @@ fn us5_toc_reader_lists_headings() {
             Some(&path),
         ));
         let reader = Reader::new();
+        let elegida = Rc::new(RefCell::new(String::new()));
+        let got = elegida.clone();
+        reader.set_on_link(move |url| *got.borrow_mut() = url.into());
         reader.render(prepared, || None, None);
         for _ in 0..100 {
             let visible = reader
@@ -361,5 +365,55 @@ fn us5_toc_reader_lists_headings() {
             "{:?}",
             items.iter().map(|i| i.url.clone()).collect::<Vec<_>>()
         );
+
+        // T020: activar la entrada «Primera» del TOC manda la URL del ancla; el scroll a la
+        // sección lo hace Editor::scroll_to_heading vía window.open_link. La primera entrada
+        // de la lista es el propio «Principal» (nivel 1, dentro del rango por defecto).
+        let idx = items
+            .iter()
+            .position(|i| i.url == "/principal.md#Primera")
+            .expect("la entrada Primera no está en el TOC");
+        reader.set_focused_link(Some(idx));
+        assert!(reader.activate_focused_link());
+        assert_eq!(*elegida.borrow(), "/principal.md#Primera");
+
+        // Escenario 4.2: minLevel/maxLevel dejan fuera el nivel 1 de la lista; el encabezado
+        // de nivel 1 sigue visible en el cuerpo. (El escalar YAML «2» llega como Number.)
+        let texto_filtro =
+            "# Topo\n\n```toc\nminLevel: 2\nmaxLevel: 3\n```\n\n## Segundo\n\n### Profundo\n";
+        let mut filtro = Prepared::new(texto_filtro, &[]);
+        assert!(complete_generated(
+            &mut filtro.doc,
+            &mut filtro.hashes,
+            None,
+            Some(&path)
+        ));
+        let lector_filtro = Reader::new();
+        lector_filtro.render(filtro, || None, None);
+        for _ in 0..100 {
+            let visible = lector_filtro
+                .buffer()
+                .text(
+                    &lector_filtro.buffer().start_iter(),
+                    &lector_filtro.buffer().end_iter(),
+                    false,
+                )
+                .to_string();
+            if visible.contains("Profundo") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = lector_filtro
+            .buffer()
+            .text(
+                &lector_filtro.buffer().start_iter(),
+                &lector_filtro.buffer().end_iter(),
+                false,
+            )
+            .to_string();
+        assert_eq!(visible.matches("Topo").count(), 1, "{visible:?}");
+        assert_eq!(visible.matches("Segundo").count(), 2, "{visible:?}");
+        assert!(!visible.contains("```"), "{visible:?}");
     });
 }

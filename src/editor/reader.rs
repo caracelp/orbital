@@ -193,13 +193,22 @@ fn headings_flat(blocks: &[Block]) -> Vec<(u8, String)> {
     out
 }
 
-/// `minLevel` y `maxLevel` del codeblock `toc`; fuera de rango o inválido: sin límite.
+/// `minLevel` y `maxLevel` del codeblock `toc`; fuera de rango o inválido: sin límite. El
+/// escalar YAML de un número llega como `PropValue::Number` (no como texto), así que se
+/// aceptan ambos sin perder el texto original.
 fn niveles(params: &[orbital_vault::props::PropEntry]) -> (u8, u8) {
     let nivel = |key: &str, defecto: u8| -> u8 {
         params
             .iter()
             .find(|e| e.key == key)
-            .and_then(|e| e.value.as_text())
+            .and_then(|e| match &e.value {
+                orbital_vault::props::PropValue::Text(v)
+                | orbital_vault::props::PropValue::Number(v)
+                | orbital_vault::props::PropValue::Date(v)
+                | orbital_vault::props::PropValue::DateTime(v)
+                | orbital_vault::props::PropValue::Link(v) => Some(v.as_str()),
+                _ => None,
+            })
             .and_then(|v| v.trim().parse::<u8>().ok())
             .unwrap_or(defecto)
     };

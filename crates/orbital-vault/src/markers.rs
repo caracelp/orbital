@@ -6,8 +6,6 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Parser, Tag};
-
 use crate::props::{self, PropEntry};
 
 /// Un marcador `[%clave]` con su rango en bytes sobre el texto completo.
@@ -37,14 +35,57 @@ fn is_marker_key_char(c: char) -> bool {
 /// y sin contar los escapados con `\`. El cierre `]` debe estar en la misma línea. Es una sola
 /// pasada sobre el texto.
 pub fn find_markers(text: &str, is_html: bool) -> Vec<Marker> {
-    let mut excluded = crate::tags::excluded_ranges(text, is_html);
-    if is_html && let Some(region) = crate::props::html::scan(text).block {
+    if is_html {
+        return find_markers_html(text);
+    }
+    // Markdown: una pasada por línea con la máscara de etiquetas (código en línea, cercas,
+    // wikilinks, enlaces y URLs), que conserva los desplazamientos de bytes. Mucho más barato
+    // que re-parsear el documento (el render ya lo hace).
+    let (front_start, front_end) =
+        frontmatter_block(text).map_or((text.len(), 0), |f| (f.start, f.end));
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut at = 0;
+    for line in text.lines() {
+        let line_start = at;
+        at += line.len() + 1;
+        if line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || (line_start >= front_start && line_start < front_end) {
+            continue;
+        }
+        let masked = crate::tags::mask_markdown_line(line);
+        for (pos, _) in masked.match_indices("[%") {
+            let start = pos + 2;
+            let Some(close) = masked[start..].find(']') else {
+                continue;
+            };
+            let key = &masked[start..start + close];
+            if key.is_empty() || !key.chars().all(is_marker_key_char) {
+                continue;
+            }
+            let range = line_start + pos..line_start + start + close + 1;
+            if !crate::tags::escaped(text, range.start) {
+                out.push(Marker {
+                    key: key.to_owned(),
+                    range,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Marcadores en una nota `.html`: escaneo barato de exclusiones HTML (código, enlaces) más el
+/// bloque de props del `<head>`.
+fn find_markers_html(text: &str) -> Vec<Marker> {
+    let mut excluded = crate::tags::excluded_ranges(text, true);
+    if let Some(region) = crate::props::html::scan(text).block {
         excluded.push(region);
     }
-    if let Some(front) = frontmatter_block(text) {
-        excluded.push(front);
-        excluded.sort_unstable_by_key(|range| range.start);
-    }
+    excluded.sort_unstable_by_key(|range| range.start);
     let mut out = Vec::new();
     let mut at = 0;
     for (pos, _) in text.match_indices("[%") {
@@ -80,13 +121,31 @@ pub fn find_markers(text: &str, is_html: bool) -> Vec<Marker> {
 /// En una nota `.html` el cuerpo entero es una sola sección.
 pub fn section_ranges(text: &str) -> Vec<Range<usize>> {
     let body_start = frontmatter_block(text).map_or(0, |front| front.end);
-    let mut starts: Vec<usize> = Parser::new(text)
-        .into_offset_iter()
-        .filter_map(|(event, range)| {
-            matches!(event, Event::Start(Tag::Heading { .. })).then_some(range.start)
-        })
-        .filter(|&start| start >= body_start)
-        .collect();
+    // Encabezados ATX por línea, fuera de cercas: barato (sin re-parsear el Markdown; el render
+    // ya parsea una vez). Mismo criterio de cerca que `inline_fields`.
+    let mut starts: Vec<usize> = Vec::new();
+    let mut in_fence = false;
+    let mut at = 0;
+    for line in text.lines() {
+        let line_start = at;
+        at += line.len() + 1;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+        if (1..=6).contains(&hashes) {
+            let rest = &trimmed[hashes..];
+            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                starts.push(line_start + (line.len() - trimmed.len()));
+            }
+        }
+    }
+    starts.retain(|&start| start >= body_start);
     if starts.first().is_some_and(|&first| first > body_start) {
         starts.insert(0, body_start);
     }

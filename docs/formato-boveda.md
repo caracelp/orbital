@@ -180,3 +180,33 @@ repone tal como estaba.
 ## 11. Versionado
 
 Este contrato tiene `format_version: 1`. Un cambio incompatible sube la versión y trae una guía de migración.
+
+## 12. Contenido generado (005)
+
+Texto del archivo que la vista expande al leer: el disco siempre tiene el fuente, y la generación es
+solo de vista (no entra en la búsqueda ni en el grafo). En Lectura y Visual se muestra el contenido
+generado; en Código queda el texto plano.
+
+### Marcadores `[%clave]`
+
+- Sintaxis compatible con Obsidian. La clave usa el mismo criterio de los campos inline (sin
+  espacios, `:`, comillas ni delimitadores) y el cierre `]` va en la misma línea.
+- No cuentan los que están dentro de código (cercas, en línea, bloques), enlaces, imágenes,
+  frontmatter o escapados con `\`.
+- Resolución, en orden: campo inline `clave:: valor` de la **misma sección** (si la clave se repite
+  en la sección, gana el primero) → propiedad del frontmatter YAML → rótulo `«faltante»`.
+- Cada encabezado ATX (`#` a `######`) abre una sección hasta el siguiente; el texto previo al
+  primer encabezado es una sección propia.
+- En notas `.html`, el inline del texto visible gana sobre el YAML del `<script
+  type="application/yaml">`, y el bloque de props no genera marcadores.
+
+### Codeblocks generados
+
+- ` ```indice ` con `tag: #etiqueta` (comillas no necesarias aunque la etiqueta tenga `#`): lista las
+  notas con esa etiqueta y sus hijas, anidada por jerarquía y ordenada alfabéticamente. **Solo
+  vista**: nunca escribe enlaces en el disco y el grafo no la ve. Tag sin notas: aviso «sin notas
+  con #tag». Las filas son clicables: una nota se abre; una etiqueta abre la búsqueda `tag:`.
+- ` ```toc ` con `minLevel`/`maxLevel` opcionales (números, 0 = sin límite): índice de encabezados
+  de la nota, anidado por nivel; cada entrada lleva al encabezado. Sin encabezados: aviso discreto.
+- Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
+- El contenido de transclusiones incrustadas (`![[…]]`) no se genera: se ve el codeblock fuente.

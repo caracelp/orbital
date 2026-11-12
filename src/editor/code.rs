@@ -183,6 +183,110 @@ pub fn insert_tag_completion(buffer: &sourceview5::Buffer, start: i32, tag: &str
     buffer.end_user_action();
 }
 
+/// Verdadero si `c` puede ser parte de la clave de un marcador `[%clave]`: el mismo criterio del
+/// núcleo (`orbital_vault::markers`, sin espacios ni delimitadores de sintaxis).
+fn is_marker_key_char(c: char) -> bool {
+    !c.is_whitespace() && !matches!(c, ':' | '`' | '[' | ']' | '\\' | '"' | '\'' | '<' | '>')
+}
+
+/// Verifica si el cursor está dentro de un marcador `[%…` sin cerrar en la misma línea.
+/// Retorna `Some((query, start_offset))` donde `start_offset` es la posición de carácter del `[`,
+/// y `query` el prefijo de clave escrito hasta el cursor. Sin sugerir si el resto de la línea ya
+/// tiene `]`, ni dentro de código, enlaces o frontmatter: la misma exclusión del núcleo decide,
+/// cerrando el marcador de prueba y viendo si `find_markers` lo habría detectado.
+pub fn marker_query_at_cursor(
+    buffer: &sourceview5::Buffer,
+    is_html: bool,
+) -> Option<(String, i32)> {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_start = cursor;
+    line_start.set_line_offset(0);
+    let hasta_cursor = buffer.text(&line_start, &cursor, false);
+    let mut line_end = cursor;
+    if !line_end.ends_line() {
+        line_end.forward_to_line_end();
+    }
+    let line = buffer.text(&line_start, &line_end, false);
+
+    let bracket = hasta_cursor.rfind("[%")?;
+    let prefix = &hasta_cursor[bracket + 2..];
+    if !prefix.chars().all(is_marker_key_char) {
+        return None;
+    }
+    // Un `]` en el resto de la línea ya cierra el marcador: no se sugiere nada.
+    if line[bracket..].contains(']') {
+        return None;
+    }
+    // No sugerir dentro de enlaces todavía sin cerrar (igual que el completado de etiquetas).
+    if hasta_cursor[..bracket]
+        .rfind('[')
+        .is_some_and(|open| !hasta_cursor[open..bracket].contains(']'))
+        || hasta_cursor[..bracket]
+            .rfind("](")
+            .is_some_and(|open| !hasta_cursor[open + 2..bracket].contains(')'))
+    {
+        return None;
+    }
+    // Mientras se escribe, un backtick sin cerrar expresa intención de código aunque CommonMark
+    // todavía lo interprete como texto literal (igual que el completado de etiquetas).
+    if !is_html {
+        let mut chars = hasta_cursor[..bracket].chars().peekable();
+        let mut open_ticks = 0;
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else if c == '`' {
+                let mut width = 1;
+                while chars.peek() == Some(&'`') {
+                    chars.next();
+                    width += 1;
+                }
+                if open_ticks == 0 {
+                    open_ticks = width;
+                } else if open_ticks == width {
+                    open_ticks = 0;
+                }
+            }
+        }
+        if open_ticks != 0 {
+            return None;
+        }
+    }
+
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let line_bytes = buffer.text(&buffer.start_iter(), &line_start, false).len();
+    let at = line_bytes + bracket;
+    // Cerrar el marcador en la posición del cursor y dejar la línea como esté: la exclusión del
+    // núcleo (código, enlaces, frontmatter, escape) es una sola fuente de verdad. Con prefijo
+    // vacío el núcleo no detecta claves vacías: se cierra con una clave de prueba.
+    let key_prueba = if prefix.is_empty() { "k" } else { prefix };
+    let mut sample = String::with_capacity(text.len() + 2);
+    sample.push_str(&text[..at + 2]);
+    sample.push_str(key_prueba);
+    sample.push(']');
+    sample.push_str(&text[line_bytes + line.len()..]);
+    let detectado = orbital_vault::markers::find_markers(&sample, is_html)
+        .into_iter()
+        .any(|m| m.range.start == at);
+    if !detectado {
+        return None;
+    }
+    Some((prefix.to_owned(), text[..at].chars().count() as i32))
+}
+
+/// El reemplazo completo es una sola acción de deshacer: borra el prefijo escrito e inserta
+/// `[%clave]` cerrado, con el cursor después del `]`.
+pub fn insert_marker_completion(buffer: &sourceview5::Buffer, start: i32, key: &str) {
+    let mut end = buffer.iter_at_offset(buffer.cursor_position());
+    while is_marker_key_char(end.char()) && end.forward_char() {}
+    buffer.begin_user_action();
+    let mut at = buffer.iter_at_offset(start);
+    buffer.delete(&mut at, &mut end);
+    buffer.insert(&mut at, &format!("[%{key}]"));
+    buffer.place_cursor(&at);
+    buffer.end_user_action();
+}
+
 /// Rectángulo en coordenadas de ventana para anclar el popover de autocompletado al cursor.
 pub fn cursor_popup_rect(
     view: &sourceview5::View,
@@ -274,5 +378,119 @@ mod tests {
 
         // El cursor debe estar al final, justo después de ]]
         assert_eq!(buffer.cursor_position(), text.chars().count() as i32);
+    }
+
+    #[test]
+    #[ignore = "requiere acceso GTK; tools/verificar-005-us5.sh"]
+    fn marker_completion_context() {
+        let _ = gtk::init();
+        let (_, buffer) = new_view();
+
+        // Justo después de `[`
+        buffer.set_text("Hola [");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Justo después de `[%`: prefijo vacío, se sugieren todas
+        buffer.set_text("Hola [%");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(
+            marker_query_at_cursor(&buffer, false),
+            Some((String::new(), 5))
+        );
+
+        // Con prefijo de clave
+        buffer.set_text("Hola [%est");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(
+            marker_query_at_cursor(&buffer, false),
+            Some(("est".to_string(), 5))
+        );
+
+        // Sin marcador abierto
+        buffer.set_text("Hola mundo");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // El `[` de otro contexto no alcanza: hace falta `[%`
+        buffer.set_text("Hola [%x] y [");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Ya cerrado y el cursor al final de la línea
+        buffer.set_text("Hola [%estado] resto");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // El cursor antes del `]` que cierra
+        buffer.set_text("Hola [%estado] resto");
+        buffer.place_cursor(&buffer.iter_at_offset(11));
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Cerrado en la misma línea aunque el cursor esté antes
+        buffer.set_text("[%e]\nHola [%");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(
+            marker_query_at_cursor(&buffer, false),
+            Some((String::new(), 10))
+        );
+
+        // Código en línea cerrado: el cursor antes del backtick final
+        buffer.set_text("Código `[%e`");
+        buffer.place_cursor(&buffer.iter_at_offset(11));
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Cerca sin cerrar: CommonMark lo trata como código hasta el fin de línea
+        buffer.set_text("Código `[%e");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Codeblock con cercas
+        buffer.set_text("```\n[%e\n```");
+        buffer.place_cursor(&buffer.iter_at_offset(7));
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Dentro de un enlace Markdown
+        buffer.set_text("[texto](url[%e");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Frontmatter: fuera del bloque sí
+        buffer.set_text("---\n[%e\n---\ncuerpo");
+        buffer.place_cursor(&buffer.iter_at_offset(7));
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+        buffer.set_text("---\nclave: valor\n---\n[%e");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(
+            marker_query_at_cursor(&buffer, false),
+            Some(("e".to_string(), 21))
+        );
+
+        // Escapado con `\`
+        buffer.set_text("\\[%e");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(marker_query_at_cursor(&buffer, false), None);
+
+        // Unicode alrededor y en la clave
+        buffer.set_text("Café 😀 [%pría");
+        buffer.place_cursor(&buffer.end_iter());
+        assert_eq!(
+            marker_query_at_cursor(&buffer, false),
+            Some(("pría".to_string(), 7))
+        );
+
+        // Inserción: reemplaza el prefijo y cierra, en una acción de deshacer
+        buffer.set_text("Café 😀 [%pría");
+        buffer.place_cursor(&buffer.end_iter());
+        let (_, start) = marker_query_at_cursor(&buffer, false).unwrap();
+        insert_marker_completion(&buffer, start, "prioridad");
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        assert_eq!(text, "Café 😀 [%prioridad]");
+        assert_eq!(buffer.cursor_position(), text.chars().count() as i32);
+        buffer.undo();
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            "Café 😀 [%pría"
+        );
     }
 }

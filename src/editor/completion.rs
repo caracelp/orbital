@@ -143,6 +143,63 @@ pub fn filter_tags(candidates: &[TagCandidate], query: &str, limit: usize) -> Ve
         .collect()
 }
 
+/// Clave de marcador `[%clave]` para autocompletar (US5 de la 005).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkerCandidate {
+    name: String,
+    key: String,
+}
+
+impl MarkerCandidate {
+    pub fn new(name: String) -> Self {
+        let key = orbital_vault::fold(&name);
+        Self { name, key }
+    }
+}
+
+/// Filtra claves de marcadores por prefijo, sin distinguir mayúsculas ni tildes.
+pub fn filter_markers(candidates: &[MarkerCandidate], query: &str, limit: usize) -> Vec<String> {
+    let query = orbital_vault::fold(query);
+    candidates
+        .iter()
+        .filter(|c| c.key.starts_with(&query))
+        .take(limit)
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// Claves disponibles para autocompletar marcadores en la nota abierta: los campos inline
+/// `clave:: valor` de toda la nota (son los que ganan al resolver) y las claves del frontmatter
+/// (YAML Markdown o `<script>` de HTML). Una entrada por clave; inline primero.
+pub fn marker_candidates(text: &str, is_html: bool) -> Vec<MarkerCandidate> {
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |key: &str| {
+        if !key.is_empty() && !names.iter().any(|n| n == key) {
+            names.push(key.to_owned());
+        }
+    };
+    let inline = if is_html {
+        orbital_vault::html_text::html_text(text)
+    } else {
+        text.to_owned()
+    };
+    for (key, _) in orbital_vault::tags::inline_fields(&inline) {
+        push(&key);
+    }
+    let yaml = if is_html {
+        orbital_vault::props::html::scan(text)
+            .block
+            .and_then(|region| orbital_vault::props::yaml::parse_block(&text[region]).ok())
+    } else {
+        orbital_vault::props::markdown::locate(text)
+            .and_then(|region| orbital_vault::props::yaml::parse_block(&text[region]).ok())
+    };
+    for entry in yaml.unwrap_or_default() {
+        push(&entry.key);
+    }
+    names.into_iter().map(MarkerCandidate::new).collect()
+}
+
 type SelectedFn = Box<dyn Fn(String)>;
 
 struct Inner {
@@ -151,6 +208,7 @@ struct Inner {
     candidates: RefCell<Vec<CompletionCandidate>>,
     filtered: RefCell<Vec<Suggestion>>,
     tags: RefCell<Vec<TagCandidate>>,
+    markers: RefCell<Vec<MarkerCandidate>>,
     on_selected: RefCell<Option<SelectedFn>>,
 }
 
@@ -240,6 +298,7 @@ impl LinkCompletionPopover {
             candidates: RefCell::new(Vec::new()),
             filtered: RefCell::new(Vec::new()),
             tags: RefCell::new(Vec::new()),
+            markers: RefCell::new(Vec::new()),
             on_selected: RefCell::new(None),
         }));
 
@@ -334,6 +393,22 @@ impl LinkCompletionPopover {
             })
             .collect();
         self.show_suggestions(suggestions, "etiquetas")
+    }
+
+    pub fn set_markers(&self, markers: Vec<MarkerCandidate>) {
+        *self.0.markers.borrow_mut() = markers;
+    }
+
+    pub fn filter_marker_query(&self, query: &str) -> usize {
+        let suggestions = filter_markers(&self.0.markers.borrow(), query, 8)
+            .into_iter()
+            .map(|key| Suggestion {
+                label: format!("[%{key}]"),
+                detail: String::new(),
+                target: key,
+            })
+            .collect();
+        self.show_suggestions(suggestions, "marcadores")
     }
 
     fn show_suggestions(&self, matches: Vec<Suggestion>, kind: &str) -> usize {
@@ -488,6 +563,91 @@ mod tests {
         assert_eq!(filter_tags(&tags, "", 1), ["Física"]);
         assert!(filter_tags(&tags, "ausente", 8).is_empty());
         assert_eq!(filter_tags(&tags, "", 8).len(), 4);
+    }
+
+    #[test]
+    fn marker_keys_from_inline_and_yaml_dedup_and_fold() {
+        // Inline primero (es lo que gana al resolver); YAML después; una entrada por clave.
+        let text = "---\nprioridad: alta\nrepetida: yaml\n---\n\n# Nota\n\nestado:: activo\n- repetida:: inline\n";
+        let keys = marker_candidates(text, false);
+        let names: Vec<_> = keys.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, ["estado", "repetida", "prioridad"]);
+
+        // Prefijo sin mayúsculas ni tildes; límite.
+        assert_eq!(filter_markers(&keys, "PRI", 8), ["prioridad"]);
+        assert_eq!(filter_markers(&keys, "est", 8), ["estado"]);
+        assert!(filter_markers(&keys, "ausente", 8).is_empty());
+        assert_eq!(filter_markers(&keys, "", 2).len(), 2);
+        assert_eq!(filter_markers(&keys, "", 8).len(), 3);
+    }
+
+    #[test]
+    fn marker_keys_html_take_visible_text_and_script_yaml() {
+        let text = "<head><script type=\"application/yaml\">prioridad: alta\n</script></head>\n<body><p>estado:: activo</p><pre>fence:: no</pre></body>";
+        let keys = marker_candidates(text, true);
+        let names: Vec<_> = keys.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, ["estado", "prioridad"]);
+    }
+
+    #[test]
+    #[ignore = "requiere acceso GTK; tools/verificar-005-us5.sh"]
+    fn us5_marker_widgets_completion() {
+        gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+        let (view, buffer) = super::super::code::new_view();
+        let window = gtk::Window::builder().child(&view).build();
+        window.present();
+        let context = gtk::glib::MainContext::default();
+        context.block_on(gtk::glib::timeout_future(std::time::Duration::from_millis(
+            50,
+        )));
+        view.grab_focus();
+        let popover = LinkCompletionPopover::new(&view);
+        let nota = "---\nprioridad: alta\nrepetida: yaml\n---\n\n# Nota\n\nestado:: activo\n- repetida:: inline\n";
+        popover.set_markers(marker_candidates(nota, false));
+        let texto = format!("{nota}😀 [%est");
+        buffer.set_text(&texto);
+        buffer.place_cursor(&buffer.end_iter());
+        let (query, start) = super::super::code::marker_query_at_cursor(&buffer, false).unwrap();
+        assert_eq!(query, "est");
+        assert_eq!(start, nota.chars().count() as i32 + 2);
+        let for_insert = buffer.clone();
+        popover.connect_selected(move |target| {
+            super::super::code::insert_marker_completion(&for_insert, start, &target)
+        });
+        // Solo «estado» coincide con «est»; las claves del YAML las cubre el test unitario
+        // de filter_markers (refiltrar acá cambiaría la fila elegida).
+        assert_eq!(popover.filter_marker_query(&query), 1);
+        popover.popup_at(&gtk::gdk::Rectangle::new(0, 0, 1, 18));
+        context.block_on(gtk::glib::timeout_future(std::time::Duration::from_millis(
+            50,
+        )));
+        assert!(!popover.0.popover.is_autohide());
+        assert!(!popover.0.popover.can_focus());
+        // El foco dentro de la ventana no depende del compositor (que puede no activar una
+        // ventana de prueba); el popover no enfocable no tiene que cambiarlo.
+        assert!(
+            view.is_focus(),
+            "abrir sugerencias conserva foco en la nota"
+        );
+        if window.is_active() {
+            assert!(view.has_focus());
+        }
+        popover.select_next();
+        popover.select_prev();
+        popover.select_next();
+        assert!(popover.activate_selected());
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            format!("{nota}😀 [%estado]")
+        );
+        use sourceview5::prelude::*;
+        buffer.undo();
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            texto
+        );
+        popover.0.popover.unparent();
+        window.destroy();
     }
 
     #[test]

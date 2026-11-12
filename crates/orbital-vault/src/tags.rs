@@ -555,7 +555,7 @@ fn extract_markdown_body_tags(text: &str) -> Vec<TagOccurrence> {
     out
 }
 
-fn mask_markdown_line(line: &str) -> String {
+pub(crate) fn mask_markdown_line(line: &str) -> String {
     // Cada byte enmascarado ocupa un espacio: los rangos siguen apuntando al fuente UTF-8.
     let mut bytes = line.as_bytes().to_vec();
     let mut in_code = false;
