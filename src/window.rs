@@ -547,6 +547,7 @@ impl Window {
                 w.0.code_editor.undo();
             }),
             simple("quick-open", Window::open_switcher),
+            simple("command-palette", Window::open_command_palette),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -565,6 +566,7 @@ impl Window {
         app.set_accels_for_action("win.replace", &["<Control>h"]);
         app.set_accels_for_action("win.undo", &["<Control>z"]);
         app.set_accels_for_action("win.quick-open", &["<Control>p"]);
+        app.set_accels_for_action("win.command-palette", &["<Control><Shift>p"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
@@ -607,6 +609,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Saltar a una nota (selector rápido)",
             "<Control>p",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Paleta de comandos",
+            "<Control><Shift>p",
         ));
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
@@ -1586,6 +1592,105 @@ impl Window {
         crate::switcher::SwitcherDialog::present(&self.0.window, candidates, recent, move |path| {
             this.show_path(path.as_str());
         });
+    }
+
+    /// Registro de comandos de la paleta (US8): nombre visible, acción `win.*`
+    /// que corre, atajo mostrado y si requiere una nota abierta. El botón de
+    /// los banners («Completar tipo/estructura») y las acciones internas o con
+    /// parámetro quedan fuera: aparecen cuando toca, no en la paleta.
+    const COMMANDS: &[(&str, &str, Option<&str>, bool)] = &[
+        ("Nota nueva", "new-note", Some("Ctrl+N"), false),
+        ("Nota HTML nueva", "new-html", None, false),
+        ("Diario de hoy", "journal", Some("Ctrl+Alt+D"), false),
+        ("Archivar la nota", "archive", Some("Ctrl+Mayús+A"), true),
+        (
+            "Pegar imagen como adjunto",
+            "paste-image",
+            Some("Ctrl+Mayús+V"),
+            true,
+        ),
+        ("Renombrar o mover la nota", "rename", Some("F2"), true),
+        ("Mover la nota a la papelera", "trash", Some("Supr"), true),
+        ("Abrir la nota con otra app", "open-external", None, true),
+        ("Vista Código", "view-code", Some("Ctrl+1"), false),
+        ("Vista Lectura", "view-read", Some("Ctrl+2"), false),
+        ("Vista Dividida", "view-split", Some("Ctrl+3"), false),
+        (
+            "Buscar en toda la bóveda",
+            "search",
+            Some("Ctrl+Mayús+F"),
+            false,
+        ),
+        (
+            "Incluir u ocultar fuentes (raw/)",
+            "toggle-search-raw",
+            None,
+            false,
+        ),
+        ("Buscar en la nota abierta", "find", Some("Ctrl+F"), true),
+        (
+            "Reemplazar en la nota abierta",
+            "replace",
+            Some("Ctrl+H"),
+            true,
+        ),
+        ("Deshacer en la nota abierta", "undo", Some("Ctrl+Z"), true),
+        (
+            "Saltar a una nota (selector rápido)",
+            "quick-open",
+            Some("Ctrl+P"),
+            false,
+        ),
+        (
+            "Mostrar u ocultar los retroenlaces",
+            "backlinks",
+            Some("Ctrl+Mayús+B"),
+            false,
+        ),
+        ("Abrir carpeta…", "open", Some("Ctrl+O"), false),
+        (
+            "Abrir como bóveda de Orbital…",
+            "open-as",
+            Some("Ctrl+Mayús+O"),
+            false,
+        ),
+        (
+            "Preferencias de la bóveda",
+            "preferences",
+            Some("Ctrl+,"),
+            false,
+        ),
+        ("Atajos de teclado", "shortcuts", Some("Ctrl+?"), false),
+    ];
+
+    /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
+    /// estado actual: los comandos que requieren nota abierta se muestran
+    /// desactivados si no hay ninguna.
+    pub fn open_command_palette(&self) {
+        let has_note = self.0.current_entry.borrow().is_some();
+        let commands: Vec<crate::switcher::CommandEntry> = Self::COMMANDS
+            .iter()
+            .map(|(name, action, accel, needs_note)| {
+                crate::switcher::CommandEntry::new(
+                    (*name).to_owned(),
+                    (*action).to_owned(),
+                    accel.map(|a| a.to_owned()),
+                    !needs_note || has_note,
+                )
+            })
+            .collect();
+        let this = self.clone();
+        crate::switcher::SwitcherDialog::present_commands(
+            &self.0.window,
+            commands,
+            move |command| {
+                gtk::prelude::ActionGroupExt::activate_action(
+                    &this.0.window,
+                    &command.action,
+                    None,
+                );
+            },
+        );
     }
 
     fn collect_candidates_baseline(
