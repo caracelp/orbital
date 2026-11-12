@@ -130,6 +130,9 @@ struct Inner {
     switcher: adw::ToggleGroup,
     mode: Cell<View>,
     render_generation: Cell<u64>,
+    /// La nota en pantalla tiene codeblocks generados: al llegar un snapshot de tags hay que
+    /// volver a renderizar (005, T016).
+    doc_has_generated: Cell<bool>,
     base_dir: RefCell<Option<std::path::PathBuf>>,
     on_header: RefCell<Option<HeaderFn>>,
     on_link: RefCell<Option<LinkFn>>,
@@ -154,11 +157,14 @@ struct Inner {
     completion_dismissed_at: Cell<Option<i32>>,
     completion_active_start: Cell<Option<i32>>,
     completion_is_tag: Cell<bool>,
+    completion_is_marker: Cell<bool>,
     /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
     /// dirección no se reutiliza, así que comparar punteros es seguro.
     completion_vault: RefCell<std::sync::Weak<Vault>>,
     /// Notas que incrusta la nota abierta (US5).
     embed_deps: RefCell<Vec<RelPath>>,
+    /// Índice de búsqueda compartido con el panel, para los codeblocks `indice` (005).
+    search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
     container: gtk::Box,
     find_bar: find::FindBar,
     search_ctx: sourceview5::SearchContext,
@@ -267,6 +273,7 @@ impl Editor {
             switcher,
             mode: Cell::new(View::Codigo),
             render_generation: Cell::new(0),
+            doc_has_generated: Cell::new(false),
             base_dir: RefCell::new(None),
             on_header: RefCell::new(None),
             on_link: RefCell::new(None),
@@ -286,8 +293,10 @@ impl Editor {
             completion_dismissed_at: Cell::new(None),
             completion_active_start: Cell::new(None),
             completion_is_tag: Cell::new(false),
+            completion_is_marker: Cell::new(false),
             completion_vault: RefCell::new(std::sync::Weak::new()),
             embed_deps: RefCell::new(Vec::new()),
+            search_index: RefCell::new(None),
             container,
             find_bar,
             search_ctx,
@@ -473,10 +482,13 @@ impl Editor {
             if let Some(start_offset) = i.completion_active_start.get() {
                 // Cerrar el contexto antes de editar: los cambios del buffer disparan detección.
                 let is_tag = i.completion_is_tag.get();
+                let is_marker = i.completion_is_marker.get();
                 i.completion_active_start.set(None);
                 i.completion_dismissed_at.set(Some(start_offset));
                 if is_tag {
                     code::insert_tag_completion(&i.buffer, start_offset, &target);
+                } else if is_marker {
+                    code::insert_marker_completion(&i.buffer, start_offset, &target);
                 } else {
                     code::insert_link_completion(&i.buffer, &i.view, start_offset, &target);
                 }
@@ -1123,6 +1135,19 @@ impl Editor {
         *self.0.on_view.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Índice de búsqueda para los codeblocks `indice` (005); se pasa junto con el del panel.
+    pub fn set_search_index(
+        &self,
+        index: Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>,
+    ) {
+        *self.0.search_index.borrow_mut() = index;
+    }
+
+    /// La nota en pantalla tiene bloques generados (005).
+    pub fn has_generated(&self) -> bool {
+        self.0.doc_has_generated.get()
+    }
+
     /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
     pub fn render_now(&self) {
         let i = &self.0;
@@ -1137,25 +1162,43 @@ impl Editor {
             .to_string();
         let this = self.clone();
         let place = (i.vault.borrow().clone(), self.current_path());
+        let index = i.search_index.borrow().clone();
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
-                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
-                let prepared = match &place {
-                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from),
-                    _ => reader::Prepared::new(&text),
-                };
                 let props = orbital_vault::props::markdown::locate(&text)
                     .map(|r| orbital_vault::props::yaml::parse_block(&text[r]));
-                (prepared, props)
+                // El YAML resuelto alimenta los marcadores `[%clave]` (005); un frontmatter con
+                // error de sintaxis no resuelve nada (queda «faltante»).
+                let yaml = props
+                    .as_ref()
+                    .and_then(|parsed| parsed.as_ref().ok())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                // Con la bóveda se expanden las transclusiones `![[…]]` (lee las notas incrustadas).
+                let mut prepared = match &place {
+                    (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from, yaml),
+                    _ => reader::Prepared::new(&text, yaml),
+                };
+                // Los codeblocks generados (`indice`, `toc`) se completan con el índice y la ruta
+                // de la nota (005, T015/T019); los rangos y casillas quedan intactos.
+                let idx = index.as_deref().and_then(|i| i.read().ok());
+                let genero = reader::complete_generated(
+                    &mut prepared.doc,
+                    &mut prepared.hashes,
+                    idx.as_deref(),
+                    place.1.as_ref(),
+                );
+                (prepared, props, genero)
             })
             .await;
             let i = &this.0;
             if i.render_generation.get() != generation {
                 return;
             }
-            let Ok((prepared, props)) = parsed else {
+            let Ok((prepared, props, genero)) = parsed else {
                 return;
             };
+            i.doc_has_generated.set(genero);
             *i.embed_deps.borrow_mut() = prepared.deps.clone();
             let header = || {
                 let read_only = i.meta.borrow().as_ref().is_none_or(|m| m.read_only);
@@ -1447,6 +1490,30 @@ impl Editor {
         i.visual.load(&text, dir, vault.root());
         self.visual_header();
         self.visual_embeds();
+        self.visual_markers();
+    }
+
+    /// Resuelve los marcadores `[%clave]` de la nota `.html` en segundo plano y se los pasa a
+    /// la vista Visual (005, T010): cada marcador se muestra con su valor pero no es editable,
+    /// y `body()` los restituye al fuente al serializar.
+    fn visual_markers(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let head = orbital_vault::props::html::scan(&text);
+                let yaml = head
+                    .block
+                    .and_then(|region| orbital_vault::props::yaml::parse_block(&text[region]).ok())
+                    .unwrap_or_default();
+                orbital_vault::markers::resolve_markers_html(&text, &yaml)
+            })
+            .await;
+            let Ok(resolved) = result else { return };
+            this.0.visual.set_markers(&resolved);
+        });
     }
 
     /// Calcula en segundo plano las tarjetas de las transclusiones `![[…]]` de la nota `.html`
@@ -1616,10 +1683,19 @@ impl Editor {
         }
 
         let link_query = code::link_query_at_cursor(&i.buffer);
-        let is_tag = link_query.is_none();
-        let query_info = link_query
-            .or_else(|| code::tag_query_at_cursor(&i.buffer, i.format.get() == Format::Html));
+        let tag_query = link_query
+            .is_none()
+            .then(|| code::tag_query_at_cursor(&i.buffer, i.format.get() == Format::Html))
+            .flatten();
+        let is_tag = tag_query.is_some();
+        let marker_query = tag_query
+            .is_none()
+            .then(|| code::marker_query_at_cursor(&i.buffer, i.format.get() == Format::Html))
+            .flatten();
+        let is_marker = marker_query.is_some();
+        let query_info = link_query.or(tag_query).or(marker_query);
         i.completion_is_tag.set(is_tag);
+        i.completion_is_marker.set(is_marker);
         match query_info {
             Some((query, start_offset)) => {
                 if i.completion_dismissed_at.get() == Some(start_offset) {
@@ -1628,6 +1704,17 @@ impl Editor {
                 i.completion_active_start.set(Some(start_offset));
                 let matches = if is_tag {
                     i.completion.filter_tag_query(&query)
+                } else if is_marker {
+                    // Las claves salen de la nota abierta: inline de toda la nota y frontmatter.
+                    // Es un recorrido lineal del texto, chico al escribir.
+                    let text = i
+                        .buffer
+                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
+                    i.completion.set_markers(completion::marker_candidates(
+                        &text,
+                        i.format.get() == Format::Html,
+                    ));
+                    i.completion.filter_marker_query(&query)
                 } else {
                     i.completion.filter(&query)
                 };

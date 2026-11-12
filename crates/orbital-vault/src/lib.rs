@@ -17,6 +17,7 @@ pub mod html_edit;
 pub mod html_text;
 pub mod link_graph;
 pub mod links;
+pub mod markers;
 pub mod note;
 pub mod okf_files;
 pub mod ops;
@@ -47,6 +48,7 @@ pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
     parse_link_target, percent_decode,
 };
+pub use markers::{Marker, find_markers, resolve_markers, resolve_markers_html, section_ranges};
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
 pub use query::{Atom, Clause, Query, QueryError, parse_query};

@@ -56,9 +56,45 @@ pub enum BlockKind {
     Rule,
     /// HTML en bruto dentro del Markdown: se muestra como texto.
     Html(String),
+    /// Un codeblock `indice` o `toc` (005): el fuente queda en el disco y la app completa el
+    /// contenido en la vista. El rango apunta al codeblock completo, cercas incluidas.
+    Generated(Generated),
     /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
     /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
     Transclusion(Transclusion),
+}
+
+/// Clases de codeblock que la vista completa con contenido generado (005).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeneratedKind {
+    /// Lista de notas con una etiqueta (subárbol del árbol de etiquetas).
+    Indice,
+    /// Índice de encabezados de la nota, con opciones de nivel.
+    Toc,
+}
+
+impl GeneratedKind {
+    /// Clase por lenguaje del codeblock; otro lenguaje no es un bloque generado.
+    fn from_lang(lang: &str) -> Option<Self> {
+        match lang {
+            "indice" => Some(Self::Indice),
+            "toc" => Some(Self::Toc),
+            _ => None,
+        }
+    }
+}
+
+/// Un codeblock `indice` o `toc` con sus parámetros YAML. Si el cuerpo no parsea o al bloque
+/// `indice` le falta `tag`, queda como [`BlockKind::Code`] común.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Generated {
+    pub kind: GeneratedKind,
+    /// Parámetros del cuerpo, en el orden del archivo.
+    pub params: Vec<crate::props::PropEntry>,
+    /// Texto crudo del cuerpo del codeblock, para mostrarlo donde todavía no se completa.
+    pub raw: String,
+    /// Rango del codeblock completo (cercas incluidas) en el texto fuente.
+    pub source: Range<usize>,
 }
 
 /// Una transclusión `![[destino#ancla]]`.
@@ -199,6 +235,132 @@ impl Ctx<'_> {
 
 /// Analiza una nota `.md` completa. El frontmatter y el BOM no forman parte del resultado.
 pub fn render_markdown(text: &str) -> RenderDoc {
+    parse_doc(text, &[])
+}
+
+/// Analiza una nota `.md` completa con los marcadores `[%clave]` sustituidos por su valor (005).
+/// Los rangos de bloque siguen apuntando al texto fuente: la sustitución cambia el contenido de
+/// los eventos de texto, no sus rangos.
+pub fn render_markdown_interpolated(
+    text: &str,
+    repl: &[(std::ops::Range<usize>, String)],
+) -> RenderDoc {
+    parse_doc(text, repl)
+}
+
+/// Sustituye los marcadores en las corridas de eventos de texto consecutivos (005).
+/// pulldown-cmark divide el texto en varios eventos (en `[`, `]`, escapes), así que un
+/// marcador puede abarcar varios: se reconstruye la corrida completa con el valor en el
+/// lugar del marcador. Los rangos siguen apuntando al texto fuente. Un marcador cortado por
+/// un nodo inline (negrita, código) no se sustituye: queda como fuente.
+/// Emite el segmento `[from, to)` repartido entre los eventos de la corrida: cada tramo que
+/// cae dentro de un evento sale como tajo *borrowed*; los tramos cruzados se realocan.
+fn emit_segment<'a>(
+    run: &[(pulldown_cmark::CowStr<'a>, std::ops::Range<usize>)],
+    out: &mut Vec<Ev<'a>>,
+    ev_ix: &mut usize,
+    from: usize,
+    to: usize,
+) {
+    let mut at = from;
+    while at < to && *ev_ix < run.len() {
+        let (t, r) = &run[*ev_ix];
+        if r.end <= at {
+            *ev_ix += 1;
+            continue;
+        }
+        let start = at.max(r.start);
+        let stop = to.min(r.end);
+        if start < stop {
+            // Tajo sin copiar cuando el evento es prestado (el caso común del parser).
+            let piece = match t {
+                pulldown_cmark::CowStr::Borrowed(s) => {
+                    let s: &'a str = s; // copia la referencia interna: no depende del préstamo
+                    pulldown_cmark::CowStr::Borrowed(&s[start - r.start..stop - r.start])
+                }
+                other => pulldown_cmark::CowStr::Boxed(
+                    other[start - r.start..stop - r.start]
+                        .to_string()
+                        .into_boxed_str(),
+                ),
+            };
+            out.push((Event::Text(piece), start..stop));
+        }
+        if stop == r.end {
+            *ev_ix += 1;
+        }
+        at = stop;
+    }
+}
+
+fn substitute_runs<'a>(
+    mut events: Vec<Ev<'a>>,
+    base: usize,
+    repl: &[(std::ops::Range<usize>, String)],
+) -> Vec<Ev<'a>> {
+    let repl_rel: Vec<(std::ops::Range<usize>, &str)> = repl
+        .iter()
+        .map(|(range, value)| (range.start - base..range.end - base, value.as_str()))
+        .collect();
+    let mut out: Vec<Ev> = Vec::with_capacity(events.len());
+    let mut run: Vec<(pulldown_cmark::CowStr, std::ops::Range<usize>)> = Vec::new();
+    fn flush<'a>(
+        run: &mut Vec<(pulldown_cmark::CowStr<'a>, std::ops::Range<usize>)>,
+        out: &mut Vec<Ev<'a>>,
+        repl: &[(std::ops::Range<usize>, &str)],
+        base: usize,
+    ) {
+        if run.is_empty() {
+            return;
+        }
+        let run_start = run[0].1.start;
+        let run_end = run.last().expect("corrida no vacía").1.end;
+        // Corrida sin marcadores: los eventos originales pasan intactos, sin realocar.
+        let hay = repl.iter().any(|(r, _)| {
+            r.start.saturating_sub(base) < run_end && r.end.saturating_sub(base) > run_start
+        });
+        if !hay {
+            out.extend(run.drain(..).map(|(t, r)| (Event::Text(t), r)));
+            return;
+        }
+        // Con marcadores: los segmentos entre marcadores se emiten como tajos *borrowed* de los
+        // eventos originales cuando caen dentro de uno solo (el caso común); solo el valor es
+        // una cadena nueva.
+        let mut ev_ix = 0usize;
+        let mut at = run_start;
+        for (range, value) in repl {
+            if range.start < at || range.end > run_end {
+                continue;
+            }
+            emit_segment(run, out, &mut ev_ix, at, range.start);
+            out.push((Event::Text((*value).to_owned().into()), range.clone()));
+            at = range.end;
+        }
+        emit_segment(run, out, &mut ev_ix, at, run_end);
+        run.clear();
+    }
+    for (ev, range) in events.drain(..) {
+        if let Event::Text(t) = ev {
+            run.push((t, range));
+        } else {
+            flush(&mut run, &mut out, &repl_rel, base);
+            out.push((ev, range));
+        }
+    }
+    flush(&mut run, &mut out, &repl_rel, base);
+    for (ev, range) in events.drain(..) {
+        if let Event::Text(t) = ev {
+            run.push((t, range));
+        } else {
+            flush(&mut run, &mut out, &repl_rel, base);
+            out.push((ev, range));
+        }
+    }
+    flush(&mut run, &mut out, &repl_rel, base);
+    out
+}
+
+fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc {
     let base = match markdown::locate(text) {
         Some(region) => {
             // Después de la línea `---` que cierra el bloque.
@@ -213,6 +375,11 @@ pub fn render_markdown(text: &str) -> RenderDoc {
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     let events: Vec<Ev> = Parser::new_ext(body, opts).into_offset_iter().collect();
+    let events = if repl.is_empty() {
+        events
+    } else {
+        substitute_runs(events, base, repl)
+    };
     let mut line_starts = vec![0];
     line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
     let mut tags = crate::tags::extract_tags(text, false);
@@ -317,7 +484,16 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                     }
                     *i += 1;
                 }
-                BlockKind::Code { lang, text }
+                match GeneratedKind::from_lang(&lang).and_then(|kind| parse_generated(kind, &text))
+                {
+                    Some(params) => BlockKind::Generated(Generated {
+                        kind: GeneratedKind::from_lang(&lang).expect("lenguaje conocido"),
+                        params,
+                        raw: text.clone(),
+                        source: ctx.abs(range),
+                    }),
+                    None => BlockKind::Code { lang, text },
+                }
             }
             Event::Start(Tag::HtmlBlock) => {
                 let mut text = String::new();
@@ -449,6 +625,38 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
     }
     flush(&mut loose, &mut loose_start, &mut blocks);
     ListItem { task, blocks }
+}
+
+/// Valida y completa los parámetros de un codeblock generado. `None` = no es un bloque
+/// generado (el codeblock queda común): YAML inválido o un `indice` sin tag.
+fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
+    let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;
+    if kind == GeneratedKind::Indice {
+        let tag = crate::props::find(&params, "tag")
+            .and_then(|entry| entry.value.as_text().map(str::to_owned))
+            .or_else(|| raw_line_value(body, "tag"))?;
+        match params.iter_mut().find(|entry| entry.key == "tag") {
+            Some(entry) => entry.value = crate::props::PropValue::Text(tag),
+            None => {
+                params.push(crate::props::PropEntry {
+                    key: "tag".into(),
+                    value: crate::props::PropValue::Text(tag),
+                    lines: 0..0,
+                });
+            }
+        }
+    }
+    Some(params)
+}
+
+/// Valor crudo de `clave: valor` en el cuerpo del codeblock, sin reglas de comentario YAML:
+/// admite `tag: #fisica` sin comillas.
+fn raw_line_value(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix(key)?.strip_prefix(':')?;
+        let value = rest.trim();
+        (!value.is_empty()).then(|| value.trim_matches(['"', '\'']).to_owned())
+    })
 }
 
 /// Analiza exactamente un bloque empezando en `i`.

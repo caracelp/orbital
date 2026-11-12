@@ -320,6 +320,19 @@ impl SearchIndex {
     }
 
     /// Devuelve el árbol de etiquetas para el panel.
+    /// Rutas de las notas con exactamente esta etiqueta (plegada), ordenadas por ruta.
+    /// Las hijas se obtienen llamando por nodo del subárbol (ver `tags()`).
+    pub fn notes_with_tag(&self, tag: &str) -> Vec<RelPath> {
+        let mut out: Vec<RelPath> = self
+            .docs
+            .iter()
+            .filter(|(_, doc)| doc.tags.iter().any(|t| t == tag))
+            .map(|(path, _)| path.clone())
+            .collect();
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out
+    }
+
     pub fn tags(&self) -> TagTree {
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut segment_forms: HashMap<String, HashMap<String, usize>> = HashMap::new();

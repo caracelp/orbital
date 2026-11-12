@@ -6,6 +6,12 @@
   const RULES = __RULES__;
   const post = (msg) => window.webkit.messageHandlers.orbital.postMessage(msg);
   document.addEventListener('input', changed, true);
+  // Los marcadores recién escritos (o reinsertados) se envuelven con una pausa, para no
+  // pelearse con el cursor en cada tecla.
+  document.addEventListener('input', () => {
+    clearTimeout(markerTimer);
+    markerTimer = setTimeout(wrapPendingMarkers, 250);
+  }, true);
   document.execCommand('styleWithCSS', false, false);
 
   // Los controles GTK y sus popovers están fuera del documento. Conservamos el
@@ -177,6 +183,9 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script, iframe, object, embed, style, link, meta, form, input, button')
       .forEach((e) => e.remove());
+    // Un marcador pegado vuelve a su fuente: el span no sobrevive a la limpieza.
+    doc.querySelectorAll('[data-orbital-marker]').forEach((el) =>
+      el.replaceWith(doc.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
     const allowed = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL',
       'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'TABLE',
       'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'IMG', 'HR', 'BR', 'DIV', 'SPAN']);
@@ -240,16 +249,70 @@
     }
   }
 
-  // El cuerpo sin las tarjetas de transclusión.
+  // Marcadores [%clave] (005): cada uno se envuelve en un span no editable con el valor
+  // resuelto; body() los restituye a [%clave], así el disco siempre tiene el marcador.
+  let markerMap = {};
+  let markerTimer = null;
+
+  // Envuelve los literales [%clave] que quedaron como texto (texto nuevo, un pegado o una
+  // inserción). No toca los spans existentes: así el cursor no salta al escribir al lado.
+  function wrapPendingMarkers() {
+    const keys = Object.keys(markerMap);
+    if (!keys.length) return;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (t) =>
+        t.parentElement && t.parentElement.closest('[data-orbital-marker]')
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const hits = [];
+    let n;
+    while ((n = walker.nextNode())) {
+      for (const k of keys) {
+        const pat = '[%' + k + ']';
+        let at = 0;
+        for (;;) {
+          const found = n.data.indexOf(pat, at);
+          if (found < 0) break;
+          hits.push([n, found, k, pat.length]);
+          at = found + pat.length;
+        }
+      }
+    }
+    // De atrás hacia adelante dentro de cada nodo: reemplazar no invalida los offsets previos.
+    hits.sort((a, b) => b[1] - a[1]);
+    for (const [node, at, key, len] of hits) {
+      const tail = node.splitText(at); // texto desde el marcador
+      const rest = tail.splitText(len); // texto después del marcador
+      const span = document.createElement('span');
+      span.setAttribute('contenteditable', 'false');
+      span.setAttribute('data-orbital-marker', key);
+      span.textContent = markerMap[key];
+      tail.replaceWith(span);
+      span.after(rest);
+    }
+  }
+
+  function setMarkers(map) {
+    markerMap = map;
+    document.querySelectorAll('[data-orbital-marker]').forEach((el) =>
+      el.replaceWith(document.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
+    wrapPendingMarkers();
+  }
+
+  // El cuerpo sin las tarjetas de transclusión; los marcadores vuelven a su fuente.
   function body() {
     const copy = document.body.cloneNode(true);
     copy.querySelectorAll('[data-orbital-embed]').forEach((e) => e.remove());
+    copy.querySelectorAll('[data-orbital-marker]').forEach((el) =>
+      el.replaceWith(document.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
     return copy.innerHTML;
   }
 
   // Lo que llama Orbital desde la barra de formato.
   window.orbital = {
     setEmbeds,
+    setMarkers,
     body,
     rememberSelection() {
       rememberSelection();

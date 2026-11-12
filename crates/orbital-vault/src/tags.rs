@@ -127,11 +127,10 @@ fn rename_prop_tags(value: &PropValue, old: &str, new: &str) -> (PropValue, usiz
     }
 }
 
-fn editable_body_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
-    let mut tags: Vec<_> = extract_tags(text, is_html)
-        .into_iter()
-        .filter(|tag| !tag.from_prop)
-        .collect();
+/// Rangos del texto donde una etiqueta o un marcador no cuentan: código (cercas, en línea,
+/// bloques), enlaces e imágenes Markdown, y en HTML los elementos `a`, `code`, `pre`, `script`,
+/// `style`, `textarea` y `title`. Ordenados y sin solapamientos.
+pub(crate) fn excluded_ranges(text: &str, is_html: bool) -> Vec<Range<usize>> {
     let mut excluded: Vec<Range<usize>> = Vec::new();
     if is_html {
         let mut open: Vec<(String, usize)> = Vec::new();
@@ -175,19 +174,33 @@ fn editable_body_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
             merged.push(range);
         }
     }
+    merged
+}
+
+/// Verdadero si el byte en `start` está escapado por una cantidad impar de barras.
+pub(crate) fn escaped(text: &str, start: usize) -> bool {
+    text[..start]
+        .bytes()
+        .rev()
+        .take_while(|byte| *byte == b'\\')
+        .count()
+        % 2
+        == 1
+}
+
+fn editable_body_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
+    let mut tags: Vec<_> = extract_tags(text, is_html)
+        .into_iter()
+        .filter(|tag| !tag.from_prop)
+        .collect();
+    let merged = excluded_ranges(text, is_html);
     let mut index = 0;
     tags.retain(|tag| {
         while index < merged.len() && merged[index].end <= tag.byte_range.start {
             index += 1;
         }
         (index == merged.len() || merged[index].start >= tag.byte_range.end)
-            && text[..tag.byte_range.start]
-                .bytes()
-                .rev()
-                .take_while(|byte| *byte == b'\\')
-                .count()
-                % 2
-                == 0
+            && !escaped(text, tag.byte_range.start)
     });
     tags
 }
@@ -542,7 +555,7 @@ fn extract_markdown_body_tags(text: &str) -> Vec<TagOccurrence> {
     out
 }
 
-fn mask_markdown_line(line: &str) -> String {
+pub(crate) fn mask_markdown_line(line: &str) -> String {
     // Cada byte enmascarado ocupa un espacio: los rangos siguen apuntando al fuente UTF-8.
     let mut bytes = line.as_bytes().to_vec();
     let mut in_code = false;

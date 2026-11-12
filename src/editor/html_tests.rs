@@ -271,3 +271,81 @@ fn us5_webkit_embeds() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// 005 T010/T011: los marcadores `[%clave]` en Visual se ven con su valor pero no se editan,
+/// y al guardar el disco conserva `[%clave]` byte a byte. Ejecutar con
+/// `cargo test --bin orbital us5_webkit_markers -- --ignored --nocapture --test-threads=1`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn us5_webkit_markers() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-us5m-{}", std::process::id()));
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        let source = "<!doctype html><html><head>\n<script type=\"application/yaml\">\ntype: sintesis\nestado: pausado\n</script>\n</head><body><p>El estado es [%estado] y el otro es [%ausente].</p>\n<p>estado:: local</p>\n<p>[%estado] repetido.</p></body></html>";
+        fs::write(root.join("wiki/s.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/s.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .title("Orbital — prueba aislada US5 marcadores")
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let span = "document.querySelector('[data-orbital-marker]')";
+        for _ in 0..50 {
+            if eval(&web, &format!("!!{span}")).await == "true" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        // El inline del cuerpo (local) gana al YAML (pausado); la clave sin valor es faltante.
+        let first = eval(&web, &format!("{span}.textContent")).await;
+        assert_eq!(first, "local", "{first}");
+        assert_eq!(
+            eval(&web, &format!("{span}.dataset.orbitalMarker")).await,
+            "estado"
+        );
+        let spans = eval(&web, "document.querySelectorAll('[data-orbital-marker]').length").await;
+        assert_eq!(spans, "3", "{spans}");
+        let faltante = eval(&web,
+            "document.querySelectorAll('[data-orbital-marker]')[1].textContent")
+            .await;
+        assert_eq!(faltante, "«faltante»");
+        println!("OK: los marcadores se ven con su valor (inline gana; «faltante» si no hay)");
+
+        // El span no es editable: el valor no se puede cambiar escribiendo dentro.
+        assert_eq!(
+            eval(&web, &format!("{span}.contentEditable")).await,
+            "false"
+        );
+
+        // Editar alrededor: el texto nuevo entra, el marcador conserva su valor.
+        eval(&web,
+            "const p = document.querySelectorAll('body > p')[0]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'El estado es [%estado] y el otro es [%ausente], editado.')").await;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let spans2 = eval(&web, "document.querySelectorAll('[data-orbital-marker]').length").await;
+        assert_eq!(spans2, "3", "tras editar: {spans2}");
+        println!("OK: editar alrededor conserva los marcadores");
+
+        // Guardar: el disco conserva [%clave], nunca el valor ni los atributos del span.
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/s.html")).unwrap();
+        assert!(saved.contains("[%estado]"), "{saved}");
+        assert!(saved.contains("[%ausente]"), "{saved}");
+        assert!(saved.contains("editado."), "{saved}");
+        assert!(!saved.contains("«faltante»"), "{saved}");
+        assert!(!saved.contains("data-orbital-marker"), "{saved}");
+        assert_eq!(saved.split("<body>").next(), source.split("<body>").next());
+        println!("OK: el disco conserva los marcadores byte a byte (el <head> no cambia)");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

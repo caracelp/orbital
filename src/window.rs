@@ -865,6 +865,7 @@ impl Window {
         i.search_updating.set(false);
         *i.search_index.borrow_mut() = None;
         i.search_panel.set_search_index(None);
+        i.code_editor.set_search_index(None);
         i.tag_panel.set_tree(None);
         i.code_editor.set_tag_candidates(Vec::new());
 
@@ -1228,6 +1229,7 @@ impl Window {
         i.search_gen.set(generation);
         *i.search_index.borrow_mut() = None;
         i.search_panel.set_search_index(None);
+        i.code_editor.set_search_index(None);
 
         let measure_ticks = std::env::var_os("ORBITAL_MEDIR_INDICE").is_some();
         let tick_state = if measure_ticks {
@@ -1282,7 +1284,8 @@ impl Window {
             if let Some((index, snapshot)) = built {
                 let arc_idx = Some(Arc::new(std::sync::RwLock::new(index)));
                 *this.0.search_index.borrow_mut() = arc_idx.clone();
-                this.0.search_panel.set_search_index(arc_idx);
+                this.0.search_panel.set_search_index(arc_idx.clone());
+                this.0.code_editor.set_search_index(arc_idx);
                 this.apply_tag_snapshot(snapshot);
                 this.drain_search_updates();
             }
@@ -1343,6 +1346,9 @@ impl Window {
             this.0
                 .search_panel
                 .set_search_index(this.0.search_index.borrow().clone());
+            this.0
+                .code_editor
+                .set_search_index(this.0.search_index.borrow().clone());
             this.drain_search_updates();
         });
     }
@@ -1350,6 +1356,11 @@ impl Window {
     fn apply_tag_snapshot(&self, snapshot: crate::tag_panel::TagSnapshot) {
         self.0.code_editor.set_tag_candidates(snapshot.names);
         self.0.tag_panel.set_tree(Some(snapshot.tree));
+        // Los codeblocks `indice` se generan desde el árbol: si la nota en pantalla tiene
+        // alguno, la vista se regenera con el snapshot nuevo (005, T016).
+        if self.0.code_editor.has_generated() {
+            self.0.code_editor.render_now();
+        }
     }
 
     fn search_tag(&self, tag: &str) {
