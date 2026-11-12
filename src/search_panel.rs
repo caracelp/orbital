@@ -1,5 +1,7 @@
 //! Panel de búsqueda en toda la bóveda (US1 de la 004, research R9).
 
+mod saved;
+
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
@@ -68,6 +70,7 @@ pub type RawToggledFn = Box<dyn Fn(bool)>;
 
 struct Inner {
     root: gtk::Box,
+    saved: saved::SavedPanel,
     search_entry: gtk::SearchEntry,
     raw_check: gtk::CheckButton,
     status_stack: gtk::Stack,
@@ -399,13 +402,16 @@ impl SearchPanel {
 
         status_stack.add_named(&results_box, Some("results"));
 
+        let saved = saved::SavedPanel::new(&search_entry);
         root.append(&header_box);
         root.append(&raw_check);
+        root.append(saved.widget());
         root.append(&error_banner);
         root.append(&status_stack);
 
         let inner = Rc::new(Inner {
             root,
+            saved,
             search_entry,
             raw_check,
             status_stack,
@@ -489,7 +495,8 @@ impl SearchPanel {
         *self.0.on_raw_toggled.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn set_vault(&self, vault: Option<Arc<Vault>>) {
+    pub fn set_vault(&self, vault: Option<Arc<Vault>>, session: u64) {
+        self.0.saved.set_vault(vault.clone(), session);
         *self.0.vault.borrow_mut() = vault;
     }
 

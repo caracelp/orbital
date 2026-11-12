@@ -51,6 +51,7 @@ pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
 pub use query::{Atom, Clause, Query, QueryError, parse_query};
 pub use rename_links::{LinkChange, LinkUpdatePlan};
+pub use saved::{SavedSearch, SavedSearchSnapshot};
 pub use search::{Match, NoteHit, SearchIndex, SearchOptions, SearchResults};
 pub use tags::{TagNode, TagOccurrence, TagTree, extract_tags, inline_fields};
 pub use vault::{

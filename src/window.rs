@@ -852,7 +852,8 @@ impl Window {
         self.set_gone(false);
         let arc_vault = Arc::new(vault);
         *i.vault.borrow_mut() = Some(arc_vault.clone());
-        i.search_panel.set_vault(Some(arc_vault.clone()));
+        i.search_panel
+            .set_vault(Some(arc_vault.clone()), i.vault_session.get());
         i.search_gen.set(i.search_gen.get() + 1);
         i.search_updates.borrow_mut().clear();
         i.search_updating.set(false);
