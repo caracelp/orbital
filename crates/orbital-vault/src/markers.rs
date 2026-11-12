@@ -38,6 +38,9 @@ fn is_marker_key_char(c: char) -> bool {
 /// pasada sobre el texto.
 pub fn find_markers(text: &str, is_html: bool) -> Vec<Marker> {
     let mut excluded = crate::tags::excluded_ranges(text, is_html);
+    if is_html && let Some(region) = crate::props::html::scan(text).block {
+        excluded.push(region);
+    }
     if let Some(front) = frontmatter_block(text) {
         excluded.push(front);
         excluded.sort_unstable_by_key(|range| range.start);
@@ -109,16 +112,52 @@ pub fn resolve_markers(text: &str, yaml: &[PropEntry]) -> Vec<(Range<usize>, Str
         return Vec::new();
     }
     let sections = section_ranges(text);
+    resolve_values(text, &markers, &sections, yaml)
+        .into_iter()
+        .zip(markers)
+        .map(|(value, marker)| (marker.range, value))
+        .collect()
+}
+
+/// Resolución de una nota `.html` como pares `(clave, valor)` en orden de aparición: el DOM de la
+/// vista Visual vuelve a buscar `[%clave]`, así que lo que necesita son los valores por clave.
+/// La nota entera es una sola sección: inline gana sobre el YAML del `<script>` de props.
+pub fn resolve_markers_html(text: &str, yaml: &[PropEntry]) -> Vec<(String, String)> {
+    let markers = find_markers(text, true);
+    if markers.is_empty() {
+        return Vec::new();
+    }
+    let visible = crate::html_text::html_text(text);
+    let section = 0..visible.len();
+    let sections = std::slice::from_ref(&section);
+    let values = resolve_values(&visible, &markers, &sections, yaml);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (marker, value) in markers.into_iter().zip(values) {
+        if !out.iter().any(|(k, _)| *k == marker.key) {
+            out.push((marker.key, value));
+        }
+    }
+    out
+}
+
+/// Resuelve cada marcador contra su sección: inline primero (el primero si repite), YAML
+/// después, `«faltante»` si nadie define la clave.
+fn resolve_values(
+    text: &str,
+    markers: &[Marker],
+    sections: &[Range<usize>],
+    yaml: &[PropEntry],
+) -> Vec<String> {
     let whole = 0..text.len();
     let section_of = |pos: usize| -> &Range<usize> {
         sections
             .iter()
             .find(|section| section.contains(&pos))
-            .unwrap_or(&whole)
+            .unwrap_or(sections.first().unwrap_or(&whole))
     };
     let mut out = Vec::with_capacity(markers.len());
     let mut cached: Option<(usize, std::collections::HashMap<String, String>)> = None;
-    for marker in &markers {
+    for marker in markers {
         let section_start = section_of(marker.range.start).start;
         let inline = match &cached {
             Some((start, map)) if *start == section_start => map.clone(),
@@ -135,7 +174,7 @@ pub fn resolve_markers(text: &str, yaml: &[PropEntry]) -> Vec<(Range<usize>, Str
                 props::find(yaml, &marker.key).and_then(|e| e.value.as_text().map(str::to_owned))
             })
             .unwrap_or_else(|| "«faltante»".to_owned());
-        out.push((marker.range.clone(), value));
+        out.push(value);
     }
     out
 }

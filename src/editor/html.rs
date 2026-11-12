@@ -125,6 +125,8 @@ struct Inner {
     /// Tarjetas de transclusión (objeto de JavaScript `{"![[x]]": "<div…>"}`), para aplicarlas
     /// cuando termine de cargar la página.
     embeds: RefCell<String>,
+    /// Resolución de los marcadores `[%clave]` (005): objeto JS clave→valor.
+    markers: RefCell<String>,
     page_ready: Cell<bool>,
 }
 
@@ -163,6 +165,7 @@ impl Visual {
             on_find_found: RefCell::new(None),
             on_ready: RefCell::new(None),
             embeds: RefCell::new("{}".to_owned()),
+            markers: RefCell::new("{}".to_owned()),
             page_ready: Cell::new(false),
         }))
     }
@@ -286,6 +289,7 @@ impl Visual {
             {
                 i.page_ready.set(true);
                 Visual(i.clone()).apply_embeds();
+                Visual(i.clone()).apply_markers();
                 if let Some(f) = i.on_ready.borrow().as_ref() {
                     f();
                 }
@@ -358,6 +362,31 @@ impl Visual {
             return;
         };
         let script = format!("window.orbital.setEmbeds({})", self.0.embeds.borrow());
+        glib::spawn_future_local(async move {
+            let _ = web
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+        });
+    }
+
+    /// Resolución de los marcadores `[%clave]` (005): la vista envuelve cada marcador en un span
+    /// no editable con el valor; `body()` los restituye a `[%clave]` al serializar.
+    pub fn set_markers(&self, resolved: &[(String, String)]) {
+        let body: Vec<String> = resolved
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js_string(k), js_string(v)))
+            .collect();
+        *self.0.markers.borrow_mut() = format!("{{{}}}", body.join(", "));
+        if self.0.page_ready.get() {
+            self.apply_markers();
+        }
+    }
+
+    fn apply_markers(&self) {
+        let Some(web) = self.0.web.borrow().clone() else {
+            return;
+        };
+        let script = format!("window.orbital.setMarkers({})", self.0.markers.borrow());
         glib::spawn_future_local(async move {
             let _ = web
                 .evaluate_javascript_future(&script, Some(WORLD), None)

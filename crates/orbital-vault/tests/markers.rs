@@ -10,6 +10,13 @@ fn claves(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn claves_html(text: &str) -> Vec<String> {
+    find_markers(text, true)
+        .into_iter()
+        .map(|m| m.key)
+        .collect()
+}
+
 fn rangos(text: &str) -> Vec<Range<usize>> {
     find_markers(text, false)
         .into_iter()
@@ -129,4 +136,35 @@ fn yaml_no_pisa_al_inline_de_la_seccion() {
     let out = resolve_markers(text, &yaml);
     assert_eq!(out[0].1, "local");
     assert_eq!(out[1].1, "global");
+}
+
+// --- 005 T010: resolución en notas .html ---
+
+#[test]
+fn marcador_en_html_excluye_el_bloque_de_props() {
+    let text = "<html><head><script type=\"application/yaml\">\ntitulo: [%no]\n</script></head>\
+<body><p>[%si]</p></body></html>";
+    assert_eq!(claves_html(text), ["si"]);
+}
+
+#[test]
+fn resolucion_html_da_pares_clave_valor_sin_duplicar() {
+    let text = "<body><p>[%estado] y de nuevo [%estado], luego [%otro].</p></body>";
+    let yaml = orbital_vault::props::yaml::parse_block("estado: activo").unwrap();
+    let out = orbital_vault::resolve_markers_html(text, &yaml);
+    assert_eq!(
+        out,
+        [
+            ("estado".to_owned(), "activo".to_owned()),
+            ("otro".to_owned(), "«faltante»".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn resolucion_html_prefiere_el_inline_del_cuerpo() {
+    let text = "<body><p>estado:: local</p>\n<p>[%estado]</p></body>";
+    let yaml = orbital_vault::props::yaml::parse_block("estado: global").unwrap();
+    let out = orbital_vault::resolve_markers_html(text, &yaml);
+    assert_eq!(out, [("estado".to_owned(), "local".to_owned())]);
 }

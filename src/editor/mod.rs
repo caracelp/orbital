@@ -1454,6 +1454,30 @@ impl Editor {
         i.visual.load(&text, dir, vault.root());
         self.visual_header();
         self.visual_embeds();
+        self.visual_markers();
+    }
+
+    /// Resuelve los marcadores `[%clave]` de la nota `.html` en segundo plano y se los pasa a
+    /// la vista Visual (005, T010): cada marcador se muestra con su valor pero no es editable,
+    /// y `body()` los restituye al fuente al serializar.
+    fn visual_markers(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let head = orbital_vault::props::html::scan(&text);
+                let yaml = head
+                    .block
+                    .and_then(|region| orbital_vault::props::yaml::parse_block(&text[region]).ok())
+                    .unwrap_or_default();
+                orbital_vault::markers::resolve_markers_html(&text, &yaml)
+            })
+            .await;
+            let Ok(resolved) = result else { return };
+            this.0.visual.set_markers(&resolved);
+        });
     }
 
     /// Calcula en segundo plano las tarjetas de las transclusiones `![[…]]` de la nota `.html`
