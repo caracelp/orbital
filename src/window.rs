@@ -93,6 +93,10 @@ struct Inner {
     candidates: RefCell<Vec<crate::editor::completion::CompletionCandidate>>,
     /// Vistas WebKit de exportación a PDF en curso (007): mantenerlas vivas hasta terminar.
     exports_pendientes: RefCell<Vec<webkit6::WebView>>,
+    /// Datos y vista del grafo de enlaces (008).
+    grafo_datos: RefCell<Option<std::rc::Rc<crate::grafo::GrafoDatos>>>,
+    grafo_vista: crate::grafo::VistaGrafo,
+    grafo_cerrar: gtk::Button,
 }
 
 /// Ventana de Orbital.
@@ -185,6 +189,34 @@ impl Window {
             .child(&open_external)
             .build();
         content_stack.add_named(&external_page, Some("externo"));
+
+        // Grafo de enlaces (008): página a pantalla completa con el canvas propio.
+        let grafo_vista = crate::grafo::VistaGrafo::new();
+        let grafo_aviso = gtk::Label::builder()
+            .label("")
+            .xalign(0.0)
+            .margin_start(12)
+            .css_classes(["dim-label", "caption"])
+            .build();
+        let grafo_cerrar = gtk::Button::builder()
+            .icon_name("window-close-symbolic")
+            .tooltip_text("Cerrar el grafo (Esc)")
+            .css_classes(["flat"])
+            .build();
+        let grafo_barra = adw::HeaderBar::new();
+        grafo_barra.set_title_widget(Some(&adw::WindowTitle::new(
+            "Grafo de enlaces de la bóveda",
+            "",
+        )));
+        grafo_barra.pack_end(&grafo_cerrar);
+        grafo_barra.pack_start(&grafo_aviso);
+        let grafo_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        grafo_page.append(&grafo_barra);
+        grafo_page.append(&grafo_vista);
+        grafo_vista.set_vexpand(true);
+        content_stack.add_named(&grafo_page, Some("grafo"));
 
         let content_title = adw::WindowTitle::new("", "");
         let content_header = adw::HeaderBar::new();
@@ -385,6 +417,9 @@ impl Window {
             tag_disk_changes: RefCell::new(Vec::new()),
             candidates: RefCell::new(Vec::new()),
             exports_pendientes: RefCell::new(Vec::new()),
+            grafo_datos: RefCell::new(None),
+            grafo_vista,
+            grafo_cerrar,
             html_props,
             new_button,
             external_page,
@@ -431,6 +466,29 @@ impl Window {
                 });
             }
         });
+
+        // Grafo (008): clic abre la nota (cierra el grafo), Esc/botón vuelve, aviso de recorte.
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.grafo_vista.set_on_abrir(move |ruta| {
+                if let Some(i) = weak.upgrade() {
+                    i.content_stack.set_visible_child_name("codigo");
+                    Window(i).show_path(ruta);
+                }
+            });
+            let weak_cerrar = Rc::downgrade(&this.0);
+            this.0.grafo_vista.set_on_cerrar(move || {
+                if let Some(i) = weak_cerrar.upgrade() {
+                    i.content_stack.set_visible_child_name("codigo");
+                }
+            });
+            let weak_boton = Rc::downgrade(&this.0);
+            this.0.grafo_cerrar.connect_clicked(move |_| {
+                if let Some(i) = weak_boton.upgrade() {
+                    i.content_stack.set_visible_child_name("codigo");
+                }
+            });
+        }
 
         this.setup_actions(app);
         let content = this.0.content_stack.clone();
@@ -555,6 +613,8 @@ impl Window {
                 w.exportar(crate::export::Formato::Html)
             }),
             simple("exportar-pdf", |w| w.exportar(crate::export::Formato::Pdf)),
+            simple("ver-grafo", Window::ver_grafo),
+            simple("cerrar-grafo", Window::cerrar_grafo),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -1201,8 +1261,10 @@ impl Window {
             if this.0.graph_gen.get() != generation {
                 return;
             }
-            *this.0.graph.borrow_mut() = built.map(|g| Arc::new(std::sync::Mutex::new(g)));
+            let nuevo = built.map(|g| Arc::new(std::sync::Mutex::new(g)));
+            *this.0.graph.borrow_mut() = nuevo.clone();
             this.refresh_backlinks();
+            this.reconstruir_grafo_visual(nuevo.as_ref());
         });
     }
 
@@ -1700,6 +1762,7 @@ impl Window {
             true,
         ),
         ("Exportar nota como PDF", "exportar-pdf", None, true),
+        ("Ver el grafo de enlaces", "ver-grafo", None, false),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
@@ -1827,6 +1890,53 @@ impl Window {
             op.print();
         });
         self.0.exports_pendientes.borrow_mut().push(web);
+    }
+
+    /// Abre la página del grafo (008) y construye sus datos si no los tiene.
+    pub fn ver_grafo(&self) {
+        let i = &self.0;
+        if i.grafo_datos.borrow().is_none() {
+            let graph = i.graph.borrow().clone();
+            self.reconstruir_grafo_visual(graph.as_ref());
+        }
+        i.content_stack.set_visible_child_name("grafo");
+    }
+
+    /// Cierra el grafo y vuelve a la nota (Esc: SC-3, nada cambia).
+    pub fn cerrar_grafo(&self) {
+        self.0.content_stack.set_visible_child_name("codigo");
+    }
+
+    /// Arma los `GrafoDatos` del grafo actual en segundo plano (SC-1).
+    fn reconstruir_grafo_visual(
+        &self,
+        graph: Option<&Arc<std::sync::Mutex<orbital_vault::LinkGraph>>>,
+    ) {
+        let Some(graph) = graph else {
+            return;
+        };
+        let graph = graph.clone();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let built = gio::spawn_blocking(move || {
+                let guard = graph.lock().ok();
+                guard.map(|g| (g.notas(), g.enlaces_resueltos()))
+            })
+            .await
+            .ok();
+            let Some(Some((notas, enlaces))) = built else {
+                return;
+            };
+            let datos = std::rc::Rc::new(crate::grafo::GrafoDatos::desde(
+                notas.iter().map(|p| p.as_str().to_owned()).collect(),
+                enlaces
+                    .iter()
+                    .map(|(a, b)| (a.as_str().to_owned(), b.as_str().to_owned()))
+                    .collect(),
+            ));
+            *this.0.grafo_datos.borrow_mut() = Some(datos.clone());
+            this.0.grafo_vista.set_datos(datos);
+        });
     }
 
     fn collect_candidates_baseline(

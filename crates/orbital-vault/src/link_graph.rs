@@ -63,6 +63,31 @@ impl LinkGraph {
     }
 
     /// Cantidad de destinos distintos pendientes de resolución.
+    /// Pares de enlaces resueltos `(origen, destino)` sin duplicados, para el grafo (008).
+    /// El orden es determinista: origen y destino ordenados por ruta. Solo enlaces que
+    /// resolvieron a una nota existente (las claves de `backlinks`).
+    pub fn enlaces_resueltos(&self) -> Vec<(RelPath, RelPath)> {
+        let mut out: Vec<(RelPath, RelPath)> = self
+            .backlinks
+            .iter()
+            .flat_map(|(destino, refs)| refs.iter().map(|r| (r.from.clone(), destino.clone())))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Todas las notas del grafo, ordenadas por ruta (008).
+    pub fn notas(&self) -> Vec<RelPath> {
+        let mut out: Vec<RelPath> = self.outgoing.keys().cloned().collect();
+        for destinos in self.backlinks.keys() {
+            out.push(destinos.clone());
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn unresolved_count(&self) -> usize {
         self.unresolved.len()
     }
