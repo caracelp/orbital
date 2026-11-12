@@ -230,6 +230,30 @@ fn render_100k(bencher: divan::Bencher) {
     });
 }
 
+/// Barrido de exclusiones con miles de etiquetas/enlaces/código, sin patrón cuadrático.
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn render_tags_kib(bencher: divan::Bencher, kib: usize) {
+    let row = "#física [enlace](nota) `#ignorada` y **#ciencia/energía**.\n\n";
+    let text = row.repeat((kib * 1024).div_ceil(row.len()));
+    bencher.bench(|| orbital_vault::render::render_markdown(divan::black_box(&text)));
+}
+
+/// Incluye copiar 100 KiB y convertir el cursor de caracteres a bytes, como hace el editor.
+#[divan::bench(sample_count = 20)]
+fn tag_completion_100k(bencher: divan::Bencher) {
+    let row = "Párrafo con [enlace](nota), `código` y #física.\n\n";
+    let text = format!("{}Texto #fís", row.repeat((100 * 1024) / row.len()));
+    let cursor_chars = text.chars().count();
+    bencher.bench(|| {
+        let copy = divan::black_box(&text).clone();
+        let cursor = copy
+            .char_indices()
+            .nth(cursor_chars)
+            .map_or(copy.len(), |(at, _)| at);
+        assert!(orbital_vault::tags::completion_query(&copy, cursor, false).is_some());
+    });
+}
+
 /// Solo pulldown-cmark sobre el mismo texto (referencia para render_100k).
 #[divan::bench]
 fn cmark_only_100k(bencher: divan::Bencher) {
@@ -250,4 +274,65 @@ fn cmark_only_100k(bencher: divan::Bencher) {
             .into_offset_iter()
             .count()
     });
+}
+
+/// Construcción del índice de búsqueda de 5000 notas (SC-002: < 1 s en segundo plano).
+#[divan::bench(sample_count = 5)]
+fn search_index_5000(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    bencher.bench(|| orbital_vault::SearchIndex::build(divan::black_box(&vault)).len());
+}
+
+/// Búsqueda de una palabra en 5000 notas (SC-001: < 100 ms).
+#[divan::bench(sample_count = 20)]
+fn search_word_5000(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let index = orbital_vault::SearchIndex::build(&vault);
+    let query = orbital_vault::parse_query("entropia").unwrap();
+    let opts = orbital_vault::SearchOptions::default();
+    bencher.bench(|| {
+        index
+            .search(&vault, divan::black_box(&query), divan::black_box(&opts))
+            .total_notes
+    });
+}
+
+/// Búsqueda con tres términos y un filtro en 5000 notas (SC-001: < 100 ms).
+#[divan::bench(sample_count = 20)]
+fn search_three_terms_filter_5000(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let index = orbital_vault::SearchIndex::build(&vault);
+    let query = orbital_vault::parse_query("entropia fisica sistema tag:#ciencia").unwrap();
+    let opts = orbital_vault::SearchOptions::default();
+    bencher.bench(|| {
+        index
+            .search(&vault, divan::black_box(&query), divan::black_box(&opts))
+            .total_notes
+    });
+}
+
+/// Actualizar el índice de 5000 notas cuando se guarda una (SC-003: < 200 ms).
+#[divan::bench(sample_count = 50)]
+fn search_update_one(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let mut index = orbital_vault::SearchIndex::build(&vault);
+    let path = note_paths()[2500].clone();
+    let text = std::fs::read_to_string(path.to_path(vault.root())).unwrap();
+    bencher.bench_local(|| {
+        index.update_file(&vault, &path, divan::black_box(&text));
+    });
+}
+
+/// Memoria del índice con 5000 notas (SC-006: < 100 MB).
+#[divan::bench(sample_count = 1)]
+fn search_memory_5000(bencher: divan::Bencher) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let index = orbital_vault::SearchIndex::build(&vault);
+    let bytes = index.memory_bytes();
+    let mb = bytes as f64 / 1_048_576.0;
+    eprintln!(
+        "\n=== MEMORIA INDICE 5000 NOTAS: {:.2} MB ({bytes} bytes) ===\n",
+        mb
+    );
+    bencher.bench(|| index.memory_bytes());
 }

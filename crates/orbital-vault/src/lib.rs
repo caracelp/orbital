@@ -9,19 +9,26 @@
 pub mod aux_files;
 pub mod config;
 pub mod diff;
+pub mod edit_plan;
 pub mod entry;
 pub mod error;
+pub mod fold;
 pub mod html_edit;
+pub mod html_text;
 pub mod link_graph;
 pub mod links;
 pub mod note;
 pub mod okf_files;
 pub mod ops;
 pub mod props;
+pub mod query;
 pub mod rename_links;
 pub mod render;
+pub mod saved;
 pub mod scan;
+pub mod search;
 pub mod session;
+pub mod tags;
 pub mod template;
 pub mod transclusion;
 pub mod vault;
@@ -30,8 +37,11 @@ pub mod write;
 pub use aux_files::AuxFile;
 pub use config::{LinkStyle, VaultConfig};
 pub use diff::{DiffKind, DiffLine, diff_lines};
+pub use edit_plan::{EditPlan, FileEdit};
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
+pub use fold::fold;
+pub use html_text::html_text;
 pub use link_graph::LinkGraph;
 pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
@@ -39,7 +49,11 @@ pub use links::{
 };
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
+pub use query::{Atom, Clause, Query, QueryError, parse_query};
 pub use rename_links::{LinkChange, LinkUpdatePlan};
+pub use saved::{SavedSearch, SavedSearchSnapshot};
+pub use search::{Match, NoteHit, SearchIndex, SearchOptions, SearchResults};
+pub use tags::{TagNode, TagOccurrence, TagTree, extract_tags, inline_fields};
 pub use vault::{
     Creation, CreationKind, ExternalChange, Layout, OpenAsPlan, Presence, Vault, apply_open_as,
     open, plan_open_as,

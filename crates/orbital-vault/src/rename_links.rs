@@ -15,59 +15,9 @@ use crate::entry::{EntryKind, RelPath, Zone};
 use crate::error::VaultError;
 use crate::links::{LinkKind, LinkOccurrence, Resolution, extract_links};
 use crate::vault::Vault;
-use crate::write::{WriteCtx, WriteReceipt, hash, safe_write};
+use crate::write::{WriteCtx, WriteReceipt};
 
-/// Los cambios de un archivo.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinkChange {
-    /// El archivo, con su ruta **antes** del renombre.
-    pub path: RelPath,
-    /// Enlaces reescritos.
-    pub count: usize,
-    original: String,
-    updated: String,
-}
-
-impl LinkChange {
-    pub fn original(&self) -> &str {
-        &self.original
-    }
-    pub fn updated(&self) -> &str {
-        &self.updated
-    }
-}
-
-/// Lo que habría que cambiar al renombrar `old` a `new`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LinkUpdatePlan {
-    pub old: Option<RelPath>,
-    pub new: Option<RelPath>,
-    pub changes: Vec<LinkChange>,
-}
-
-impl LinkUpdatePlan {
-    /// Total de enlaces que se reescriben.
-    pub fn links(&self) -> usize {
-        self.changes.iter().map(|c| c.count).sum()
-    }
-
-    /// Archivos que cambian.
-    pub fn files(&self) -> usize {
-        self.changes.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
-    }
-
-    /// Dónde está el archivo después del renombre (la nota renombrada puede enlazarse a sí misma).
-    fn current(&self, path: &RelPath) -> RelPath {
-        match (&self.old, &self.new) {
-            (Some(old), Some(new)) if path == old => new.clone(),
-            _ => path.clone(),
-        }
-    }
-}
+pub use crate::edit_plan::{EditPlan as LinkUpdatePlan, FileEdit as LinkChange};
 
 impl Vault {
     /// Reescribe en `text` (el contenido de `from`) los enlaces que resuelven a `old` para que
@@ -149,6 +99,7 @@ impl Vault {
             old: Some(old.clone()),
             new: Some(new.clone()),
             changes,
+            ..Default::default()
         }
     }
 
@@ -159,7 +110,7 @@ impl Vault {
         plan: &LinkUpdatePlan,
         ctx: &WriteCtx,
     ) -> (WriteReceipt, Vec<(RelPath, VaultError)>) {
-        self.write_plan(plan, ctx, |c| (&c.original, &c.updated))
+        self.apply_edits(plan, ctx)
     }
 
     /// Deshace [`Vault::apply_link_updates`] (antes de volver a renombrar al nombre viejo).
@@ -168,32 +119,7 @@ impl Vault {
         plan: &LinkUpdatePlan,
         ctx: &WriteCtx,
     ) -> (WriteReceipt, Vec<(RelPath, VaultError)>) {
-        self.write_plan(plan, ctx, |c| (&c.updated, &c.original))
-    }
-
-    fn write_plan(
-        &self,
-        plan: &LinkUpdatePlan,
-        ctx: &WriteCtx,
-        pick: impl Fn(&LinkChange) -> (&String, &String),
-    ) -> (WriteReceipt, Vec<(RelPath, VaultError)>) {
-        let mut receipt = WriteReceipt::default();
-        let mut failed = Vec::new();
-        for c in &plan.changes {
-            let (expected, text) = pick(c);
-            let path = plan.current(&c.path);
-            match safe_write(
-                self.root(),
-                &path,
-                text.as_bytes(),
-                Some(hash(expected.as_bytes())),
-                ctx,
-            ) {
-                Ok(r) => receipt.written.extend(r.written),
-                Err(e) => failed.push((path, e)),
-            }
-        }
-        (receipt, failed)
+        self.revert_edits(plan, ctx)
     }
 
     /// El enlace resuelve hoy a `old`.

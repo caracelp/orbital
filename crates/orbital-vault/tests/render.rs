@@ -4,6 +4,43 @@ use orbital_vault::render::{
     Align, BlockKind, CalloutKind, Inline, plain_text, render_markdown, toggle_task,
 };
 
+#[test]
+fn tags_in_reading_are_links_with_source_spelling_and_safe_contexts() {
+    fn links(inlines: &[Inline], out: &mut Vec<String>) {
+        for inline in inlines {
+            match inline {
+                Inline::Link { url, children } => {
+                    out.push(url.clone());
+                    links(children, out);
+                }
+                Inline::Strong(children) | Inline::Emph(children) | Inline::Strike(children) => {
+                    links(children, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    let source = "---\ntags: [propiedad]\n---\n\n😀 **#Física** y #ciencia/física, #123 #ff00ff `#código` [#enlace](destino) [[nota#sección]] &amp; #energía\n\n```\n#bloque\n```\n\n    #indentado\n\n[#referencia][ref]\n\n[ref]: destino\n";
+    let document = render_markdown(source);
+    let mut found = Vec::new();
+    for block in &document.blocks {
+        if let BlockKind::Paragraph(inlines) = &block.kind {
+            links(inlines, &mut found);
+        }
+    }
+    assert_eq!(
+        found,
+        [
+            "orbital-tag:Física",
+            "orbital-tag:ciencia/física",
+            "destino",
+            "[[nota#sección]]",
+            "orbital-tag:energía",
+            "destino"
+        ]
+    );
+}
+
 const NOTA: &str = "\u{feff}---
 type: atomo
 title: Prueba

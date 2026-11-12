@@ -75,6 +75,22 @@ struct Inner {
     graph_gen: Cell<u64>,
     /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
     pending_line: Cell<Option<(RelPath, usize)>>,
+    /// Panel lateral izquierdo: stack de páginas (Archivos, Búsqueda, Etiquetas).
+    sidebar_stack: adw::ViewStack,
+    /// Panel de búsqueda en toda la bóveda (US1 de la 004).
+    search_panel: crate::search_panel::SearchPanel,
+    /// Índice de búsqueda en memoria; `None` mientras se arma en segundo plano.
+    search_index: RefCell<Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>>,
+    /// Generación del índice para descartar construcciones viejas.
+    search_gen: Cell<u64>,
+    tag_panel: crate::tag_panel::TagPanel,
+    search_updates: RefCell<HashMap<RelPath, bool>>,
+    search_updating: Cell<bool>,
+    tag_operation: Cell<bool>,
+    vault_session: Cell<u64>,
+    tag_disk_changes: RefCell<Vec<PathBuf>>,
+    /// Candidatos para el selector rápido de notas (US2 de la 004).
+    candidates: RefCell<Vec<crate::editor::completion::CompletionCandidate>>,
 }
 
 /// Ventana de Orbital.
@@ -242,6 +258,28 @@ impl Window {
             .vexpand(true)
             .build();
 
+        // --- Panel de búsqueda (US1) ---
+        let initial_search_raw = AppState::load().search_raw;
+        let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
+
+        let tag_panel = crate::tag_panel::TagPanel::new();
+        // --- ViewStack de la barra lateral izquierda (T014) ---
+        let sidebar_stack = adw::ViewStack::new();
+        let files_page = sidebar_stack.add_titled(&sidebar_scroll, Some("archivos"), "Archivos");
+        files_page.set_icon_name(Some("folder-symbolic"));
+
+        let search_page =
+            sidebar_stack.add_titled(search_panel.widget(), Some("busqueda"), "Búsqueda");
+        search_page.set_icon_name(Some("edit-find-symbolic"));
+        sidebar_stack
+            .add_titled(tag_panel.widget(), Some("etiquetas"), "Etiquetas")
+            .set_icon_name(Some("tag-symbolic"));
+
+        let sidebar_switcher = adw::ViewSwitcher::builder()
+            .stack(&sidebar_stack)
+            .policy(adw::ViewSwitcherPolicy::Narrow)
+            .build();
+
         let banner = adw::Banner::builder()
             .title("Estructura incompleta")
             .button_label("Completar…")
@@ -252,7 +290,7 @@ impl Window {
 
         let sidebar_title = adw::WindowTitle::new("Orbital", "");
         let sidebar_header = adw::HeaderBar::new();
-        sidebar_header.set_title_widget(Some(&sidebar_title));
+        sidebar_header.set_title_widget(Some(&sidebar_switcher));
         sidebar_header.pack_start(&open_menu_button());
         let new_button = menu_button("list-add-symbolic", "Nueva nota", &[]);
         sidebar_header.pack_end(&new_button);
@@ -265,7 +303,7 @@ impl Window {
             .visible(false)
             .build();
         sidebar_view.add_top_bar(&gone_banner);
-        sidebar_view.set_content(Some(&sidebar_scroll));
+        sidebar_view.set_content(Some(&sidebar_stack));
         let sidebar_page = adw::NavigationPage::builder()
             .title("Bóveda")
             .child(&sidebar_view)
@@ -333,6 +371,17 @@ impl Window {
             graph: RefCell::new(None),
             graph_gen: Cell::new(0),
             pending_line: Cell::new(None),
+            sidebar_stack,
+            search_panel: search_panel.clone(),
+            search_index: RefCell::new(None),
+            search_gen: Cell::new(0),
+            tag_panel,
+            search_updates: RefCell::new(HashMap::new()),
+            search_updating: Cell::new(false),
+            tag_operation: Cell::new(false),
+            vault_session: Cell::new(0),
+            tag_disk_changes: RefCell::new(Vec::new()),
+            candidates: RefCell::new(Vec::new()),
             html_props,
             new_button,
             external_page,
@@ -345,6 +394,41 @@ impl Window {
             gone: Cell::new(false),
             gone_banner,
         }));
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.tag_panel.connect_rename({
+            let weak = weak.clone();
+            move |tag| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).ask_tag_rename(tag.to_owned());
+                }
+            }
+        });
+        this.0.tag_panel.connect_selected(move |tag| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).search_tag(tag);
+            }
+        });
+        let weak = Rc::downgrade(&this.0);
+        this.0.search_panel.connect_open_match(move |path, line| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            w.0.pending_line.set(Some((path.clone(), line)));
+            w.show_path(path.as_str());
+        });
+
+        let weak = Rc::downgrade(&this.0);
+        this.0.search_panel.connect_raw_toggled(move |active| {
+            let Some(i) = weak.upgrade() else { return };
+            if i.persist.get() {
+                let mut s = AppState::load();
+                s.search_raw = active;
+                glib::spawn_future_local(async move {
+                    let _ = gio::spawn_blocking(move || s.save()).await;
+                });
+            }
+        });
+
         this.setup_actions(app);
         let content = this.0.content_stack.clone();
         this.setup_drop(&content);
@@ -455,6 +539,15 @@ impl Window {
                 let s = &w.0.right_split;
                 s.set_show_sidebar(!s.shows_sidebar());
             }),
+            simple("search", Window::focus_search),
+            simple("toggle-search-raw", Window::toggle_search_raw),
+            simple("find", |w| w.0.code_editor.open_find(false)),
+            simple("replace", |w| w.0.code_editor.open_find(true)),
+            simple("undo", |w| {
+                w.0.code_editor.undo();
+            }),
+            simple("quick-open", Window::open_switcher),
+            simple("command-palette", Window::open_command_palette),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -468,6 +561,12 @@ impl Window {
         app.set_accels_for_action("win.view-code", &["<Control>1"]);
         app.set_accels_for_action("win.view-read", &["<Control>2"]);
         app.set_accels_for_action("win.view-split", &["<Control>3"]);
+        app.set_accels_for_action("win.search", &["<Control><Shift>f"]);
+        app.set_accels_for_action("win.find", &["<Control>f"]);
+        app.set_accels_for_action("win.replace", &["<Control>h"]);
+        app.set_accels_for_action("win.undo", &["<Control>z"]);
+        app.set_accels_for_action("win.quick-open", &["<Control>p"]);
+        app.set_accels_for_action("win.command-palette", &["<Control><Shift>p"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
@@ -495,6 +594,26 @@ impl Window {
         section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
         section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
         section.add(adw::ShortcutsItem::new("Vista Dividida", "<Control>3"));
+        section.add(adw::ShortcutsItem::new(
+            "Buscar en toda la bóveda",
+            "<Control><Shift>f",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Buscar en la nota abierta",
+            "<Control>f",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Reemplazar en la nota abierta",
+            "<Control>h",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Saltar a una nota (selector rápido)",
+            "<Control>p",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Paleta de comandos",
+            "<Control><Shift>p",
+        ));
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
@@ -691,6 +810,15 @@ impl Window {
     }
 
     fn show_vault(&self, vault: Vault, tree: Tree, meta: NoteMeta) {
+        if self
+            .0
+            .vault
+            .borrow()
+            .as_ref()
+            .is_none_or(|current| current.root() != vault.root())
+        {
+            self.0.vault_session.set(self.0.vault_session.get() + 1);
+        }
         let i = &self.0;
         self.fill_new_menu(&meta.templates);
         let name = vault
@@ -728,8 +856,39 @@ impl Window {
                 },
             ));
         self.set_gone(false);
-        *i.vault.borrow_mut() = Some(Arc::new(vault));
+        let arc_vault = Arc::new(vault);
+        *i.vault.borrow_mut() = Some(arc_vault.clone());
+        i.search_panel
+            .set_vault(Some(arc_vault.clone()), i.vault_session.get());
+        i.search_gen.set(i.search_gen.get() + 1);
+        i.search_updates.borrow_mut().clear();
+        i.search_updating.set(false);
+        *i.search_index.borrow_mut() = None;
+        i.search_panel.set_search_index(None);
+        i.tag_panel.set_tree(None);
+        i.code_editor.set_tag_candidates(Vec::new());
+
+        let baseline = Self::collect_candidates_baseline(&arc_vault);
+        *i.candidates.borrow_mut() = baseline;
+        let vault_for_cand = arc_vault.clone();
+        let this_cand = self.clone();
+        glib::spawn_future_local(async move {
+            let full = gio::spawn_blocking(move || Self::collect_candidates_full(&vault_for_cand))
+                .await
+                .ok();
+            if let Some(full) = full {
+                *this_cand.0.candidates.borrow_mut() = full;
+            }
+        });
+
         self.rebuild_graph();
+        let this = self.clone();
+        let generation = i.search_gen.get();
+        self.after_next_frame(move || {
+            if this.0.search_gen.get() == generation {
+                this.rebuild_search_index();
+            }
+        });
 
         let root = children_model(&tree, "");
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -865,7 +1024,21 @@ impl Window {
             this.clear_note_view();
             let raw = entry.zone == orbital_vault::Zone::Raw;
             match loaded {
-                Ok(Some(note)) => this.show_note(note),
+                Ok(Some(note)) => {
+                    if this.0.persist.get() {
+                        let rel = note.path.as_str().to_string();
+                        let vroot = vault.root().to_path_buf();
+                        glib::spawn_future_local(async move {
+                            let _ = gio::spawn_blocking(move || {
+                                let mut s = AppState::load();
+                                s.note_opened(&vroot, &rel);
+                                s.save()
+                            })
+                            .await;
+                        });
+                    }
+                    this.show_note(note);
+                }
                 Ok(None) => i.content_stack.set_visible_child_name("nota"),
                 Err(_) => {
                     i.external_page.set_title(entry.path.file_name());
@@ -1045,6 +1218,544 @@ impl Window {
         });
     }
 
+    /// Construye el índice de búsqueda de la bóveda en segundo plano (US1 de la 004).
+    fn rebuild_search_index(&self) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let generation = i.search_gen.get() + 1;
+        i.search_gen.set(generation);
+        *i.search_index.borrow_mut() = None;
+        i.search_panel.set_search_index(None);
+
+        let measure_ticks = std::env::var_os("ORBITAL_MEDIR_INDICE").is_some();
+        let tick_state = if measure_ticks {
+            let last_tick: Rc<Cell<Option<std::time::Instant>>> = Rc::new(Cell::new(None));
+            let max_gap = Rc::new(Cell::new(std::time::Duration::ZERO));
+            let running = Rc::new(Cell::new(true));
+            let last = last_tick.clone();
+            let max = max_gap.clone();
+            let run = running.clone();
+            self.0.window.add_tick_callback(move |w, _| {
+                if !run.get() {
+                    return glib::ControlFlow::Break;
+                }
+                let now = std::time::Instant::now();
+                if let Some(prev) = last.get() {
+                    let dt = now.duration_since(prev);
+                    if dt > max.get() {
+                        max.set(dt);
+                    }
+                }
+                last.set(Some(now));
+                w.queue_draw();
+                glib::ControlFlow::Continue
+            });
+            Some((running, max_gap, std::time::Instant::now()))
+        } else {
+            None
+        };
+
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let built = gio::spawn_blocking(move || {
+                let index = orbital_vault::SearchIndex::build(&vault);
+                let snapshot = crate::tag_panel::TagSnapshot::from_index(&index);
+                (index, snapshot)
+            })
+            .await
+            .ok();
+            if let Some((run, max_gap, start)) = tick_state {
+                run.set(false);
+                let elapsed = start.elapsed();
+                let worst_ms = max_gap.get().as_secs_f64() * 1000.0;
+                println!(
+                    "ORBITAL_MEDIR_INDICE: armado en {:.2} ms, peor intervalo entre cuadros: {:.2} ms",
+                    elapsed.as_secs_f64() * 1000.0,
+                    worst_ms
+                );
+            }
+            if this.0.search_gen.get() != generation {
+                return;
+            }
+            if let Some((index, snapshot)) = built {
+                let arc_idx = Some(Arc::new(std::sync::RwLock::new(index)));
+                *this.0.search_index.borrow_mut() = arc_idx.clone();
+                this.0.search_panel.set_search_index(arc_idx);
+                this.apply_tag_snapshot(snapshot);
+                this.drain_search_updates();
+            }
+        });
+    }
+
+    /// Una sola tarea aplica cambios por vez: nunca publica una lectura vieja después de otra nueva.
+    /// Los eventos recibidos durante la construcción inicial quedan pendientes.
+    fn update_search_index(&self, path: RelPath, removed: bool) {
+        self.0.search_updates.borrow_mut().insert(path, removed);
+        self.drain_search_updates();
+    }
+
+    fn drain_search_updates(&self) {
+        let i = &self.0;
+        if i.search_updating.get() || i.search_updates.borrow().is_empty() {
+            return;
+        }
+        let (Some(index), Some(vault)) =
+            (i.search_index.borrow().clone(), i.vault.borrow().clone())
+        else {
+            return;
+        };
+        let updates = std::mem::take(&mut *i.search_updates.borrow_mut());
+        let generation = i.search_gen.get();
+        i.search_updating.set(true);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let snapshot = gio::spawn_blocking(move || {
+                let texts: Vec<_> = updates
+                    .into_iter()
+                    .map(|(path, removed)| {
+                        let text = (!removed)
+                            .then(|| std::fs::read_to_string(path.to_path(vault.root())).ok())
+                            .flatten();
+                        (path, text)
+                    })
+                    .collect();
+                let mut idx = index.write().ok()?;
+                for (path, text) in texts {
+                    match text {
+                        Some(t) => idx.update_file(&vault, &path, &t),
+                        None => idx.remove_file(&path),
+                    }
+                }
+                Some(crate::tag_panel::TagSnapshot::from_index(&idx))
+            })
+            .await
+            .ok()
+            .flatten();
+            if this.0.search_gen.get() != generation {
+                return;
+            }
+            this.0.search_updating.set(false);
+            if let Some(snapshot) = snapshot {
+                this.apply_tag_snapshot(snapshot);
+            }
+            this.0
+                .search_panel
+                .set_search_index(this.0.search_index.borrow().clone());
+            this.drain_search_updates();
+        });
+    }
+
+    fn apply_tag_snapshot(&self, snapshot: crate::tag_panel::TagSnapshot) {
+        self.0.code_editor.set_tag_candidates(snapshot.names);
+        self.0.tag_panel.set_tree(Some(snapshot.tree));
+    }
+
+    fn search_tag(&self, tag: &str) {
+        self.0
+            .search_panel
+            .set_search_query(&orbital_vault::query::tag_query(tag));
+        self.focus_search();
+    }
+
+    fn same_vault(&self, vault: &Arc<Vault>, session: u64) -> bool {
+        self.0.vault.borrow().as_ref().is_some_and(|current| {
+            current.root() == vault.root() && self.0.vault_session.get() == session
+        })
+    }
+
+    fn ask_tag_rename(&self, old: String) {
+        if self.0.tag_operation.get() {
+            return;
+        }
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let session = self.0.vault_session.get();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder()
+                .text(&old)
+                .activates_default(true)
+                .build();
+            field.update_property(&[gtk::accessible::Property::Label("Nombre nuevo de etiqueta")]);
+            let dialog = adw::AlertDialog::new(
+                Some("Renombrar etiqueta"),
+                Some("Usá / para etiquetas anidadas. También se renombrarán las hijas."),
+            );
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("plan", "Continuar");
+            dialog.set_default_response(Some("plan"));
+            dialog.set_close_response("cancel");
+            dialog.set_response_appearance("plan", adw::ResponseAppearance::Suggested);
+            let weak = dialog.downgrade();
+            field.connect_changed(move |entry| {
+                if let Some(dialog) = weak.upgrade() {
+                    dialog.set_response_enabled(
+                        "plan",
+                        orbital_vault::tags::valid_tag_name(
+                            entry.text().trim().trim_start_matches('#'),
+                        ),
+                    );
+                }
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "plan"
+                || !this.same_vault(&vault, session)
+            {
+                return;
+            }
+            let new = field.text().trim().trim_start_matches('#').to_owned();
+            if !orbital_vault::tags::valid_tag_name(&new) || new == old {
+                return;
+            }
+            this.0.code_editor.flush().await;
+            if !this.same_vault(&vault, session) || this.0.code_editor.has_pending() {
+                return this
+                    .toast("Guardá o resolvé los cambios pendientes antes de renombrar etiquetas");
+            }
+            let (v, from, to) = (vault.clone(), old.clone(), new.clone());
+            let index = this.0.search_index.borrow().clone();
+            let built = gio::spawn_blocking(move || {
+                let sources: Vec<_> = v
+                    .entries()
+                    .iter()
+                    .filter(|entry| {
+                        entry.zone == orbital_vault::Zone::Wiki
+                            && Format::from_name(entry.path.file_name()).is_some()
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                let plan = v.plan_tag_rename(&from, &to, &sources);
+                let merging = orbital_vault::fold(&from) != orbital_vault::fold(&to)
+                    && index
+                        .as_ref()
+                        .and_then(|index| index.read().ok())
+                        .is_some_and(|index| {
+                            index
+                                .tag_names()
+                                .iter()
+                                .any(|name| orbital_vault::fold(name) == orbital_vault::fold(&to))
+                        });
+                (plan, merging)
+            })
+            .await;
+            if !this.same_vault(&vault, session) {
+                return;
+            }
+            let Ok((plan, merging)) = built else {
+                return this.toast("No se pudo preparar el renombre");
+            };
+            if let Some((path, error)) = plan.errors.first() {
+                return this.toast(&format!(
+                    "No se aplicó el renombre: {} notas no pudieron revisarse. {path}: {error}",
+                    plan.errors.len()
+                ));
+            }
+            if plan.is_empty() {
+                return this.toast("No se encontraron notas para renombrar");
+            }
+            let confirm = adw::AlertDialog::new(
+                Some("¿Renombrar la etiqueta?"),
+                Some(&format!(
+                    "«#{old}» y sus hijas pasarán a «#{new}» en {} notas.{}",
+                    plan.files(),
+                    if merging {
+                        " El destino ya existe: las etiquetas se fusionarán."
+                    } else {
+                        ""
+                    }
+                )),
+            );
+            confirm.add_response("cancel", "Cancelar");
+            confirm.add_response("rename", "Renombrar");
+            confirm.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+            confirm.set_close_response("cancel");
+            if confirm.choose_future(Some(&this.0.window)).await != "rename"
+                || !this.same_vault(&vault, session)
+            {
+                return;
+            }
+            this.run_tag_edits(vault, session, Arc::new(plan), false)
+                .await;
+        });
+    }
+
+    async fn run_tag_edits(
+        &self,
+        vault: Arc<Vault>,
+        session: u64,
+        plan: Arc<orbital_vault::EditPlan>,
+        undo: bool,
+    ) {
+        if !self.same_vault(&vault, session) || self.0.tag_operation.get() {
+            return;
+        }
+        self.0.code_editor.flush().await;
+        if !self.same_vault(&vault, session)
+            || self.0.code_editor.has_pending()
+            || self.0.tag_operation.get()
+        {
+            return self.toast("Hay cambios pendientes: no se modificaron las etiquetas");
+        }
+        self.0.tag_operation.set(true);
+        self.0.window.set_sensitive(false);
+        let (v, p) = (vault.clone(), plan.clone());
+        let result = gio::spawn_blocking(move || {
+            let ctx = write_ctx::now(Some(v.config()));
+            if undo {
+                v.revert_edits(&p, &ctx)
+            } else {
+                v.apply_edits(&p, &ctx)
+            }
+        })
+        .await;
+        if self.same_vault(&vault, session) {
+            match result {
+                Ok((receipt, failed)) => {
+                    for (path, hash) in &receipt.written {
+                        self.0.own_writes.borrow_mut().insert(path.clone(), *hash);
+                        self.update_graph(path.clone(), false);
+                        self.update_search_index(path.clone(), false);
+                    }
+                    if let Some(open) =
+                        self.0.code_editor.current_path().filter(|path| {
+                            receipt.written.iter().any(|(written, _)| written == path)
+                        })
+                    {
+                        let (v, path) = (vault.clone(), open.clone());
+                        let note = gio::spawn_blocking(move || v.read_note(&path))
+                            .await
+                            .ok()
+                            .and_then(Result::ok);
+                        if self.same_vault(&vault, session)
+                            && self.0.code_editor.current_path().as_ref() == Some(&open)
+                            && !self.0.code_editor.has_pending()
+                            && let Some(note) = note
+                        {
+                            self.0.code_editor.load(vault.clone(), &note);
+                        }
+                    }
+                    let message = format!(
+                        "{} notas {}; {} sin modificar{}",
+                        receipt.written.len(),
+                        if undo { "restauradas" } else { "actualizadas" },
+                        failed.len(),
+                        if failed.is_empty() {
+                            ""
+                        } else {
+                            " (cambios externos o error de escritura)"
+                        }
+                    );
+                    let applied = Arc::new(plan.applied(&receipt));
+                    if !undo && !applied.is_empty() {
+                        let (this, captured) = (self.clone(), vault.clone());
+                        self.toast_undo(&message, move || {
+                            let (this, v, p) = (this.clone(), captured.clone(), applied.clone());
+                            glib::spawn_future_local(async move {
+                                this.run_tag_edits(v, session, p, true).await;
+                            });
+                        });
+                    } else {
+                        self.toast(&message);
+                    }
+                }
+                Err(_) => self.toast("No se pudo completar la edición de etiquetas"),
+            }
+        }
+        self.0.window.set_sensitive(true);
+        self.0.tag_operation.set(false);
+        let deferred = std::mem::take(&mut *self.0.tag_disk_changes.borrow_mut());
+        if !deferred.is_empty() {
+            self.on_disk_changes(deferred);
+        }
+    }
+
+    pub fn focus_search(&self) {
+        self.0.sidebar_stack.set_visible_child_name("busqueda");
+        self.0.search_panel.grab_focus();
+    }
+
+    pub fn toggle_search_raw(&self) {
+        self.0.search_panel.toggle_raw();
+    }
+
+    pub fn open_switcher(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let candidates = self.0.candidates.borrow().clone();
+        let state = AppState::load();
+        let recent = state.recent_notes_for(vault.root()).to_vec();
+        let this = self.clone();
+        crate::switcher::SwitcherDialog::present(&self.0.window, candidates, recent, move |path| {
+            this.show_path(path.as_str());
+        });
+    }
+
+    /// Registro de comandos de la paleta (US8): nombre visible, acción `win.*`
+    /// que corre, atajo mostrado y si requiere una nota abierta. El botón de
+    /// los banners («Completar tipo/estructura») y las acciones internas o con
+    /// parámetro quedan fuera: aparecen cuando toca, no en la paleta.
+    const COMMANDS: &[(&str, &str, Option<&str>, bool)] = &[
+        ("Nota nueva", "new-note", Some("Ctrl+N"), false),
+        ("Nota HTML nueva", "new-html", None, false),
+        ("Diario de hoy", "journal", Some("Ctrl+Alt+D"), false),
+        ("Archivar la nota", "archive", Some("Ctrl+Mayús+A"), true),
+        (
+            "Pegar imagen como adjunto",
+            "paste-image",
+            Some("Ctrl+Mayús+V"),
+            true,
+        ),
+        ("Renombrar o mover la nota", "rename", Some("F2"), true),
+        ("Mover la nota a la papelera", "trash", Some("Supr"), true),
+        ("Abrir la nota con otra app", "open-external", None, true),
+        ("Vista Código", "view-code", Some("Ctrl+1"), false),
+        ("Vista Lectura", "view-read", Some("Ctrl+2"), false),
+        ("Vista Dividida", "view-split", Some("Ctrl+3"), false),
+        (
+            "Buscar en toda la bóveda",
+            "search",
+            Some("Ctrl+Mayús+F"),
+            false,
+        ),
+        (
+            "Incluir u ocultar fuentes (raw/)",
+            "toggle-search-raw",
+            None,
+            false,
+        ),
+        ("Buscar en la nota abierta", "find", Some("Ctrl+F"), true),
+        (
+            "Reemplazar en la nota abierta",
+            "replace",
+            Some("Ctrl+H"),
+            true,
+        ),
+        ("Deshacer en la nota abierta", "undo", Some("Ctrl+Z"), true),
+        (
+            "Saltar a una nota (selector rápido)",
+            "quick-open",
+            Some("Ctrl+P"),
+            false,
+        ),
+        (
+            "Mostrar u ocultar los retroenlaces",
+            "backlinks",
+            Some("Ctrl+Mayús+B"),
+            false,
+        ),
+        ("Abrir carpeta…", "open", Some("Ctrl+O"), false),
+        (
+            "Abrir como bóveda de Orbital…",
+            "open-as",
+            Some("Ctrl+Mayús+O"),
+            false,
+        ),
+        (
+            "Preferencias de la bóveda",
+            "preferences",
+            Some("Ctrl+,"),
+            false,
+        ),
+        ("Atajos de teclado", "shortcuts", Some("Ctrl+?"), false),
+    ];
+
+    /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
+    /// estado actual: los comandos que requieren nota abierta se muestran
+    /// desactivados si no hay ninguna.
+    pub fn open_command_palette(&self) {
+        let has_note = self.0.current_entry.borrow().is_some();
+        let commands: Vec<crate::switcher::CommandEntry> = Self::COMMANDS
+            .iter()
+            .map(|(name, action, accel, needs_note)| {
+                crate::switcher::CommandEntry::new(
+                    (*name).to_owned(),
+                    (*action).to_owned(),
+                    accel.map(|a| a.to_owned()),
+                    !needs_note || has_note,
+                )
+            })
+            .collect();
+        let this = self.clone();
+        crate::switcher::SwitcherDialog::present_commands(
+            &self.0.window,
+            commands,
+            move |command| {
+                gtk::prelude::ActionGroupExt::activate_action(
+                    &this.0.window,
+                    &command.action,
+                    None,
+                );
+            },
+        );
+    }
+
+    fn collect_candidates_baseline(
+        vault: &Vault,
+    ) -> Vec<crate::editor::completion::CompletionCandidate> {
+        let mut list: Vec<_> = vault
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.zone == orbital_vault::Zone::Wiki
+                    && matches!(
+                        e.kind,
+                        orbital_vault::EntryKind::AtomNote
+                            | orbital_vault::EntryKind::SynthesisNote
+                    )
+            })
+            .map(|e| {
+                crate::editor::completion::CompletionCandidate::new(
+                    e.path.clone(),
+                    None,
+                    Vec::new(),
+                )
+            })
+            .collect();
+        crate::editor::completion::qualify_duplicates(&mut list);
+        list
+    }
+
+    fn collect_candidates_full(
+        vault: &Vault,
+    ) -> Vec<crate::editor::completion::CompletionCandidate> {
+        let mut list: Vec<_> = vault
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.zone == orbital_vault::Zone::Wiki
+                    && matches!(
+                        e.kind,
+                        orbital_vault::EntryKind::AtomNote
+                            | orbital_vault::EntryKind::SynthesisNote
+                    )
+            })
+            .map(|e| {
+                let props = vault.read_props(&e.path).ok().flatten();
+                let entries = props.as_ref().map_or(&[][..], |p| &p.entries[..]);
+                let title = orbital_vault::props::find(entries, "title")
+                    .and_then(|v| v.value.as_text())
+                    .map(str::to_owned);
+                let aliases = orbital_vault::props::find(entries, "aliases")
+                    .map(|v| match &v.value {
+                        orbital_vault::props::PropValue::List(l) => l
+                            .iter()
+                            .filter_map(|x| x.as_text().map(str::to_owned))
+                            .collect(),
+                        orbital_vault::props::PropValue::Text(t) => vec![t.clone()],
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                crate::editor::completion::CompletionCandidate::new(e.path.clone(), title, aliases)
+            })
+            .collect();
+        crate::editor::completion::qualify_duplicates(&mut list);
+        list
+    }
+
     /// Muestra en el panel los retroenlaces de la nota abierta (solo si el panel está a la vista).
     fn refresh_backlinks(&self) {
         use crate::editor::right_sidebar::Backlinks;
@@ -1159,7 +1870,8 @@ impl Window {
         self.0.code_editor.set_on_saved(move |path, hash| {
             if let Some(i) = weak.upgrade() {
                 i.own_writes.borrow_mut().insert(path.clone(), hash);
-                Window(i).update_graph(path.clone(), false);
+                Window(i.clone()).update_graph(path.clone(), false);
+                Window(i).update_search_index(path.clone(), false);
             }
         });
         let weak = Rc::downgrade(&self.0);
@@ -1757,9 +2469,14 @@ impl Window {
     /// abierta la misma nota (FR-030). Como todavía no hay editor, nunca hay cambios locales que
     /// se puedan perder.
     fn on_disk_changes(&self, paths: Vec<PathBuf>) {
+        if self.0.tag_operation.get() {
+            self.0.tag_disk_changes.borrow_mut().extend(paths);
+            return;
+        }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        let retry_paths = paths.clone();
         let this = self.clone();
         glib::spawn_future_local(async move {
             let v = vault.clone();
@@ -1785,6 +2502,10 @@ impl Window {
             })
             .await
             .unwrap_or_default();
+            if this.0.tag_operation.get() {
+                this.0.tag_disk_changes.borrow_mut().extend(retry_paths);
+                return;
+            }
             changes.retain(
                 |c| !matches!(c, orbital_vault::ExternalChange::Modified(p) if echoes.contains(p)),
             );
@@ -1792,9 +2513,13 @@ impl Window {
             for c in &changes {
                 match c {
                     orbital_vault::ExternalChange::Modified(p) => {
-                        this.update_graph(p.clone(), false)
+                        this.update_graph(p.clone(), false);
+                        this.update_search_index(p.clone(), false);
                     }
-                    orbital_vault::ExternalChange::Removed(p) => this.update_graph(p.clone(), true),
+                    orbital_vault::ExternalChange::Removed(p) => {
+                        this.update_graph(p.clone(), true);
+                        this.update_search_index(p.clone(), true);
+                    }
                     _ => {}
                 }
             }
@@ -2152,12 +2877,16 @@ impl Window {
             let ctx = write_ctx::now(Some(vault.config()));
             let renamed = vault.rename(&f, &t, &ctx)?;
             // Los enlaces se escriben después de renombrar (la nota puede enlazarse a sí misma).
-            let failed = p.map_or_else(Vec::new, |p| vault.apply_link_updates(&p, &ctx).1);
-            Ok::<_, orbital_vault::VaultError>((renamed, failed))
+            let (receipt, failed) = p.map_or_else(
+                || (orbital_vault::WriteReceipt::default(), Vec::new()),
+                |p| vault.apply_link_updates(&p, &ctx),
+            );
+            Ok::<_, orbital_vault::VaultError>((renamed, receipt, failed))
         })
         .await;
         match result {
-            Ok(Ok((_, failed))) => {
+            Ok(Ok((_, receipt, failed))) => {
+                let plan = plan.as_ref().map(|plan| Arc::new(plan.applied(&receipt)));
                 // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
                 self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
@@ -2400,6 +3129,10 @@ impl Window {
     /// Muestra una nota por su ruta relativa (para el modo de captura).
     /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
     pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
+        if let Some(tag) = url.strip_prefix("orbital-tag:") {
+            self.search_tag(tag);
+            return;
+        }
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
             gtk::UriLauncher::new(url).launch(
                 Some(&self.0.window),
@@ -2901,4 +3634,81 @@ enum LinkAnswer {
     Cancel,
     Skip,
     Update,
+}
+
+#[cfg(test)]
+mod tag_rename_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/verificar-004-us6.sh"]
+    fn us6_tag_rename_buffers() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.TagRenameTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-us6-{}", glib::uuid_string_random()));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(root.join("wiki")).unwrap();
+            let path = RelPath::new("wiki/nota.md").unwrap();
+            std::fs::write(path.to_path(&root), "#vieja\n").unwrap();
+            let vault = Arc::new(orbital_vault::open(&root).unwrap());
+            let window = Window::new(&app);
+            window.set_persist(false);
+            *window.0.vault.borrow_mut() = Some(vault.clone());
+            window.0.vault_session.set(1);
+            let editor = window.0.code_editor.clone();
+            editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+            let stale = vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path));
+            editor.replace_text("#vieja con mis cambios\n");
+            window
+                .run_tag_edits(vault.clone(), 1, Arc::new(stale), false)
+                .await;
+            assert_eq!(
+                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                "#vieja con mis cambios\n"
+            );
+            assert_eq!(editor.text(), "#vieja con mis cambios\n");
+
+            let plan =
+                Arc::new(vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path)));
+            window
+                .run_tag_edits(vault.clone(), 1, plan.clone(), false)
+                .await;
+            assert_eq!(editor.text(), "#nueva con mis cambios\n");
+            let receipt = orbital_vault::WriteReceipt {
+                written: window
+                    .0
+                    .own_writes
+                    .borrow()
+                    .iter()
+                    .map(|(path, hash)| (path.clone(), *hash))
+                    .collect(),
+            };
+            let applied = Arc::new(plan.applied(&receipt));
+            assert_eq!(applied.files(), 1);
+            editor.replace_text("#nueva con otros cambios\n");
+            window
+                .run_tag_edits(vault.clone(), 1, applied.clone(), true)
+                .await;
+            assert_eq!(
+                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                "#nueva con otros cambios\n"
+            );
+            assert_eq!(editor.text(), "#nueva con otros cambios\n");
+            // Una nueva sesión no puede consumir el Deshacer de la anterior.
+            window.0.vault_session.set(2);
+            window.run_tag_edits(vault, 1, applied, true).await;
+            assert_eq!(
+                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                "#nueva con otros cambios\n"
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
 }

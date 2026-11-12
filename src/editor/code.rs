@@ -41,6 +41,8 @@ pub fn scheme_xml() -> String {
   <style name="xml:tags" foreground="{accent}"/>
   <style name="xml:attribute-name" foreground="{type_col}"/>
   <style name="xml:element-name" foreground="{accent}"/>
+
+  <style name="search-match" background="{search_bg}" foreground="{search_fg}"/>
 </style-scheme>
 "##,
         text = crate::style::SYNTAX_TEXT.hex(),
@@ -49,6 +51,8 @@ pub fn scheme_xml() -> String {
         comment = crate::style::SYNTAX_COMMENT.hex(),
         string_col = crate::style::SYNTAX_STRING.hex(),
         type_col = crate::style::SYNTAX_TYPE.hex(),
+        search_bg = crate::style::SEARCH_MATCH_BG.hex(),
+        search_fg = crate::style::SEARCH_MATCH_FG.hex(),
     )
 }
 
@@ -139,6 +143,44 @@ pub fn link_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32
     let chars_before = line_text[..last_open].chars().count() as i32;
     let start_offset = line_start.offset() + chars_before;
     Some((after_open.to_string(), start_offset))
+}
+
+/// Busca primero el prefijo en la línea actual para no analizar la nota en cada movimiento.
+pub fn tag_query_at_cursor(buffer: &sourceview5::Buffer, is_html: bool) -> Option<(String, i32)> {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut start = cursor;
+    start.set_line_offset(0);
+    let line = buffer.text(&start, &cursor, false);
+    let hash = line.rfind('#')?;
+    if !line[hash + 1..]
+        .chars()
+        .all(|c| c.is_alphanumeric() || "_-/".contains(c))
+    {
+        return None;
+    }
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let byte_cursor = text
+        .char_indices()
+        .nth(cursor.offset() as usize)
+        .map_or(text.len(), |(at, _)| at);
+    let (query, at) = orbital_vault::tags::completion_query(&text, byte_cursor, is_html)?;
+    Some((query.to_owned(), text[..at].chars().count() as i32))
+}
+
+/// El reemplazo completo es una sola acción de deshacer; incluye el sufijo si se completa en medio.
+pub fn insert_tag_completion(buffer: &sourceview5::Buffer, start: i32, tag: &str) {
+    let mut end = buffer.iter_at_offset(buffer.cursor_position());
+    while end.char().is_alphanumeric() || "_-/".contains(end.char()) {
+        if !end.forward_char() {
+            break;
+        }
+    }
+    buffer.begin_user_action();
+    let mut at = buffer.iter_at_offset(start);
+    buffer.delete(&mut at, &mut end);
+    buffer.insert(&mut at, &format!("#{tag}"));
+    buffer.place_cursor(&at);
+    buffer.end_user_action();
 }
 
 /// Rectángulo en coordenadas de ventana para anclar el popover de autocompletado al cursor.

@@ -35,6 +35,7 @@ const ATTACH_BATCH: usize = 8;
 type ToggleFn = Box<dyn Fn(usize)>;
 type LinkFn = Box<dyn Fn(&str)>;
 type IsMissingFn = Rc<dyn Fn(&str) -> bool>;
+type RenderedFn = Box<dyn Fn()>;
 
 #[derive(Clone)]
 struct LinkItem {
@@ -87,6 +88,7 @@ struct Inner {
     on_toggle: RefCell<Option<ToggleFn>>,
     on_link: RefCell<Option<LinkFn>>,
     is_missing: RefCell<Option<IsMissingFn>>,
+    on_rendered: RefCell<Option<RenderedFn>>,
 }
 
 #[derive(Clone)]
@@ -191,6 +193,7 @@ impl Reader {
             on_toggle: RefCell::new(None),
             on_link: RefCell::new(None),
             is_missing: RefCell::new(None),
+            on_rendered: RefCell::new(None),
         }));
         this.create_tags();
         this.center();
@@ -272,6 +275,18 @@ impl Reader {
         &self.0.scroller
     }
 
+    /// La vista de texto del lector.
+    pub fn text_view(&self) -> &gtk::TextView {
+        &self.0.view
+    }
+
+    /// Limpia los resaltados de búsqueda en la vista formateada.
+    pub fn clear_find_highlights(&self) {
+        let b = self.buffer();
+        b.remove_tag_by_name("find-highlight", &b.start_iter(), &b.end_iter());
+        b.remove_tag_by_name("find-current", &b.start_iter(), &b.end_iter());
+    }
+
     /// Al marcar o desmarcar una casilla: el byte de la casilla en el texto fuente.
     pub fn set_on_toggle(&self, f: impl Fn(usize) + 'static) {
         *self.0.on_toggle.borrow_mut() = Some(Box::new(f));
@@ -285,6 +300,11 @@ impl Reader {
     /// Consulta si un enlace apunta a una nota pendiente o inexistente.
     pub fn set_is_missing(&self, f: impl Fn(&str) -> bool + 'static) {
         *self.0.is_missing.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// Avisa cuando termina de volcar el documento a la vista.
+    pub fn set_on_rendered(&self, f: impl Fn() + 'static) {
+        *self.0.on_rendered.borrow_mut() = Some(Box::new(f));
     }
 
     /// Olvida lo mostrado: el próximo volcado arma todo de nuevo (al cambiar de nota).
@@ -312,7 +332,7 @@ impl Reader {
         }
     }
 
-    fn buffer(&self) -> gtk::TextBuffer {
+    pub fn buffer(&self) -> gtk::TextBuffer {
         self.0.view.buffer()
     }
 
@@ -360,6 +380,16 @@ impl Reader {
             .name("link-focused")
             .background(crate::style::ACCENT_BG.hex())
             .foreground(crate::style::ACCENT_FG.hex())
+            .build());
+        add(gtk::TextTag::builder()
+            .name("find-highlight")
+            .background(crate::style::SEARCH_MATCH_BG.hex())
+            .foreground(crate::style::SEARCH_MATCH_FG.hex())
+            .build());
+        add(gtk::TextTag::builder()
+            .name("find-current")
+            .background(crate::style::SEARCH_CURRENT_BG.hex())
+            .foreground(crate::style::SEARCH_CURRENT_FG.hex())
             .build());
         add(gtk::TextTag::builder()
             .name("dim")
@@ -562,13 +592,8 @@ impl Reader {
             } else if (keyval == gtk::gdk::Key::Return
                 || keyval == gtk::gdk::Key::KP_Enter
                 || keyval == gtk::gdk::Key::space)
-                && let Some(idx) = i.focused_link.get()
-                && let Some(item) = items.get(idx)
+                && reader.activate_focused_link()
             {
-                let url = item.url.clone();
-                if let Some(f) = i.on_link.borrow().as_ref() {
-                    f(&url);
-                }
                 glib::Propagation::Stop
             } else if keyval == gtk::gdk::Key::Escape && i.focused_link.get().is_some() {
                 reader.set_focused_link(None);
@@ -578,6 +603,19 @@ impl Reader {
             }
         });
         self.0.view.add_controller(key);
+    }
+
+    fn activate_focused_link(&self) -> bool {
+        let Some(index) = self.0.focused_link.get() else {
+            return false;
+        };
+        let Some(item) = self.all_link_items().get(index).cloned() else {
+            return false;
+        };
+        if let Some(f) = self.0.on_link.borrow().as_ref() {
+            f(&item.url);
+        }
+        true
     }
 
     /// Vuelca un documento. `header` arma las propiedades (solo se llama si cambiaron);
@@ -712,6 +750,9 @@ impl Reader {
         if let Some(line) = i.pending_line.take() {
             self.scroll_to_line(line);
         }
+        if let Some(f) = i.on_rendered.borrow().as_ref() {
+            f();
+        }
     }
 
     /// Reemplaza en el sitio los bloques que cambiaron; el prefijo `p` y el sufijo `s` quedan.
@@ -810,6 +851,9 @@ impl Reader {
             i.header.set(Some(header_hash));
         }
         *i.blocks.borrow_mut() = blocks;
+        if let Some(f) = i.on_rendered.borrow().as_ref() {
+            f();
+        }
     }
 
     /// Desplaza la vista para mostrar el bloque que contiene la línea `line` del texto fuente.

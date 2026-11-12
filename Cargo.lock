@@ -583,6 +583,7 @@ name = "orbital-vault"
 version = "0.1.0"
 dependencies = [
  "divan",
+ "memchr",
  "pulldown-cmark",
  "saphyr-parser",
  "similar",

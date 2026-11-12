@@ -183,6 +183,7 @@ struct Ctx<'a> {
     text: &'a str,
     base: usize,
     line_starts: Vec<usize>,
+    tags: Vec<crate::tags::TagOccurrence>,
 }
 
 impl Ctx<'_> {
@@ -214,10 +215,43 @@ pub fn render_markdown(text: &str) -> RenderDoc {
     let events: Vec<Ev> = Parser::new_ext(body, opts).into_offset_iter().collect();
     let mut line_starts = vec![0];
     line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+    let mut tags = crate::tags::extract_tags(text, false);
+    tags.retain(|tag| !tag.from_prop);
+    // Rangos excluidos fusionados: un solo barrido, sin recorrer las etiquetas por evento.
+    let mut excluded: Vec<Range<usize>> = events
+        .iter()
+        .filter_map(|(event, range)| {
+            matches!(
+                event,
+                Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_))
+                    | Event::Code(_)
+            )
+            .then_some(base + range.start..base + range.end)
+        })
+        .collect();
+    excluded.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in excluded {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    let mut at = 0;
+    tags.retain(|tag| {
+        while at < merged.len() && merged[at].end <= tag.byte_range.start {
+            at += 1;
+        }
+        at == merged.len() || merged[at].start >= tag.byte_range.end
+    });
     let ctx = Ctx {
         text,
         base,
         line_starts,
+        tags,
     };
     let mut i = 0;
     let blocks = parse_blocks(&ctx, &events, &mut i, None);
@@ -239,7 +273,7 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
         *i += 1;
         let kind = match ev {
             Event::Start(Tag::Paragraph) => {
-                let inlines = parse_inlines(evs, i, TagEnd::Paragraph);
+                let inlines = parse_inlines(ctx, evs, i, TagEnd::Paragraph);
                 match transclusion(&ctx.text[abs.clone()]) {
                     Some(t) => BlockKind::Transclusion(t),
                     None => BlockKind::Paragraph(inlines),
@@ -257,7 +291,7 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                 });
                 BlockKind::Heading {
                     level,
-                    inlines: parse_inlines(evs, i, end),
+                    inlines: parse_inlines(ctx, evs, i, end),
                 }
             }
             Event::Start(Tag::BlockQuote(k)) => {
@@ -322,7 +356,7 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                     items,
                 }
             }
-            Event::Start(Tag::Table(align)) => parse_table(evs, i, align),
+            Event::Start(Tag::Table(align)) => parse_table(ctx, evs, i, align),
             Event::Rule => BlockKind::Rule,
             Event::Html(t) => BlockKind::Html(t.to_string()),
             // Cualquier otra apertura (notas al pie, definiciones…): se saltea su contenido.
@@ -409,7 +443,7 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
             _ => {
                 let abs = ctx.abs(range);
                 loose_start.get_or_insert(abs.clone()).end = abs.end;
-                loose.extend(parse_inline_many(evs, i));
+                loose.extend(parse_inline_many(ctx, evs, i));
             }
         }
     }
@@ -436,7 +470,7 @@ fn parse_blocks_one(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> Vec<Block> {
     blocks
 }
 
-fn parse_table(evs: &[Ev], i: &mut usize, align: &[Alignment]) -> BlockKind {
+fn parse_table(ctx: &Ctx, evs: &[Ev], i: &mut usize, align: &[Alignment]) -> BlockKind {
     let align = align
         .iter()
         .map(|a| match a {
@@ -469,7 +503,7 @@ fn parse_table(evs: &[Ev], i: &mut usize, align: &[Alignment]) -> BlockKind {
             }
             Event::Start(Tag::TableCell) => {
                 *i += 1;
-                let cell = parse_inlines(evs, i, TagEnd::TableCell);
+                let cell = parse_inlines(ctx, evs, i, TagEnd::TableCell);
                 if in_head {
                     header.push(cell);
                 } else if let Some(r) = rows.last_mut() {
@@ -486,7 +520,7 @@ fn parse_table(evs: &[Ev], i: &mut usize, align: &[Alignment]) -> BlockKind {
     }
 }
 
-fn parse_inlines(evs: &[Ev], i: &mut usize, until: TagEnd) -> Vec<Inline> {
+fn parse_inlines(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: TagEnd) -> Vec<Inline> {
     let mut raw = Vec::new();
     while *i < evs.len() {
         if let Event::End(e) = &evs[*i].0
@@ -495,7 +529,7 @@ fn parse_inlines(evs: &[Ev], i: &mut usize, until: TagEnd) -> Vec<Inline> {
             *i += 1;
             break;
         }
-        raw.extend(parse_inline_many(evs, i));
+        raw.extend(parse_inline_many(ctx, evs, i));
     }
     collapse_and_expand_inlines(raw)
 }
@@ -571,35 +605,78 @@ fn expand_text_wikilinks(text: &str) -> Vec<Inline> {
     out
 }
 
+/// Usa rangos del fuente; nunca busca nuevamente `#` en texto que el parser haya decodificado.
+fn text_with_tags(ctx: &Ctx, text: &str, range: &Range<usize>) -> Vec<Inline> {
+    if ctx.text.get(range.clone()) != Some(text) {
+        return vec![Inline::Text(text.to_owned())];
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    let first = ctx
+        .tags
+        .partition_point(|tag| tag.byte_range.start < range.start);
+    for tag in &ctx.tags[first..] {
+        if tag.byte_range.start >= range.end {
+            break;
+        }
+        if tag.byte_range.end > range.end {
+            continue;
+        }
+        let start = tag.byte_range.start - range.start;
+        let end = tag.byte_range.end - range.start;
+        if at < start {
+            out.push(Inline::Text(text[at..start].to_owned()));
+        }
+        out.push(Inline::Link {
+            url: format!("orbital-tag:{}", tag.tag),
+            children: vec![Inline::Text(text[start..end].to_owned())],
+        });
+        at = end;
+    }
+    if at < text.len() {
+        out.push(Inline::Text(text[at..].to_owned()));
+    }
+    out
+}
+
 /// Analiza un elemento en línea (con sus hijos) y avanza `i`.
-fn parse_inline_many(evs: &[Ev], i: &mut usize) -> Vec<Inline> {
-    let (ev, _) = &evs[*i];
+fn parse_inline_many(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> Vec<Inline> {
+    let (ev, range) = &evs[*i];
     *i += 1;
     match ev {
-        Event::Text(t) => vec![Inline::Text(t.to_string())],
+        Event::Text(t) => text_with_tags(ctx, t, &ctx.abs(range)),
         Event::Code(t) => vec![Inline::Code(t.to_string())],
         Event::InlineHtml(t) | Event::Html(t) => vec![Inline::Text(t.to_string())],
         Event::FootnoteReference(t) => vec![Inline::Text(format!("[^{t}]"))],
         Event::SoftBreak => vec![Inline::SoftBreak],
         Event::HardBreak => vec![Inline::HardBreak],
-        Event::Start(Tag::Emphasis) => vec![Inline::Emph(parse_inlines(evs, i, TagEnd::Emphasis))],
-        Event::Start(Tag::Strong) => vec![Inline::Strong(parse_inlines(evs, i, TagEnd::Strong))],
+        Event::Start(Tag::Emphasis) => {
+            vec![Inline::Emph(parse_inlines(ctx, evs, i, TagEnd::Emphasis))]
+        }
+        Event::Start(Tag::Strong) => {
+            vec![Inline::Strong(parse_inlines(ctx, evs, i, TagEnd::Strong))]
+        }
         Event::Start(Tag::Strikethrough) => {
-            vec![Inline::Strike(parse_inlines(evs, i, TagEnd::Strikethrough))]
+            vec![Inline::Strike(parse_inlines(
+                ctx,
+                evs,
+                i,
+                TagEnd::Strikethrough,
+            ))]
         }
         Event::Start(Tag::Link { dest_url, .. }) => vec![Inline::Link {
             url: dest_url.to_string(),
-            children: parse_inlines(evs, i, TagEnd::Link),
+            children: parse_inlines(ctx, evs, i, TagEnd::Link),
         }],
         Event::Start(Tag::Image { dest_url, .. }) => {
-            let alt = plain_text(&parse_inlines(evs, i, TagEnd::Image));
+            let alt = plain_text(&parse_inlines(ctx, evs, i, TagEnd::Image));
             vec![Inline::Image {
                 url: dest_url.to_string(),
                 alt,
             }]
         }
         Event::Start(tag) => {
-            let inner = parse_inlines(evs, i, tag.to_end());
+            let inner = parse_inlines(ctx, evs, i, tag.to_end());
             vec![Inline::Text(plain_text(&inner))]
         }
         _ => Vec::new(),
