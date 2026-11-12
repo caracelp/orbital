@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use crate::props::{self, PropValue, html, markdown, yaml};
+use crate::{EditPlan, FileEdit, RelPath, Vault, VaultError};
 
 /// Ocurrencia de una etiqueta en un documento.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +35,251 @@ pub struct TagNode {
     pub notes: usize,
     /// Nodos hijos.
     pub children: Vec<TagNode>,
+}
+
+/// Nombres nuevos de etiquetas inline: todos los tramos deben poder escribirse tras `#`.
+pub fn valid_tag_name(name: &str) -> bool {
+    is_valid_tag(name)
+        && name.chars().all(is_valid_tag_char)
+        && name.split('/').all(|part| !part.is_empty())
+}
+
+fn renamed_tag(tag: &str, old: &str, new: &str) -> Option<String> {
+    let folded = crate::fold(tag);
+    if folded == old {
+        return Some(new.to_owned());
+    }
+    if folded
+        .strip_prefix(old)
+        .is_some_and(|rest| rest.starts_with('/'))
+    {
+        // fold conserva caracteres, pero no bytes: calcular el sufijo sobre separadores originales.
+        let boundary = tag.match_indices('/').nth(old.split('/').count() - 1)?.0;
+        return Some(format!("{new}{}", &tag[boundary..]));
+    }
+    None
+}
+
+fn rename_prop_tags(value: &PropValue, old: &str, new: &str) -> (PropValue, usize) {
+    fn merge(values: Vec<(PropValue, bool)>) -> (Vec<PropValue>, usize) {
+        let affected: std::collections::HashSet<_> = values
+            .iter()
+            .filter(|(_, changed)| *changed)
+            .filter_map(|(value, _)| {
+                value
+                    .as_text()
+                    .map(|text| crate::fold(text.trim_start_matches('#')))
+            })
+            .collect();
+        let count = values.iter().filter(|(_, changed)| *changed).count();
+        let mut seen = std::collections::HashSet::new();
+        let values = values
+            .into_iter()
+            .filter(|(value, _)| {
+                value.as_text().is_none_or(|text| {
+                    let key = crate::fold(text.trim_start_matches('#'));
+                    !affected.contains(&key) || seen.insert(key)
+                })
+            })
+            .map(|(value, _)| value)
+            .collect();
+        (values, count)
+    }
+    let rename = |value: &PropValue| {
+        let changed = value.as_text().and_then(|text| {
+            let raw = text.trim().trim_start_matches('#').trim();
+            renamed_tag(raw, old, new).map(|name| {
+                if text.trim().starts_with('#') {
+                    format!("#{name}")
+                } else {
+                    name
+                }
+            })
+        });
+        match changed {
+            Some(name) => (PropValue::Text(name), true),
+            None => (value.clone(), false),
+        }
+    };
+    match value {
+        PropValue::Text(text) => {
+            let (values, count) = merge(
+                text.split([',', ';'])
+                    .map(|part| rename(&PropValue::Text(part.trim().to_owned())))
+                    .collect(),
+            );
+            (
+                PropValue::Text(
+                    values
+                        .iter()
+                        .filter_map(PropValue::as_text)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                count,
+            )
+        }
+        PropValue::List(values) => {
+            let (values, count) = merge(values.iter().map(rename).collect());
+            (PropValue::List(values), count)
+        }
+        other => (other.clone(), 0),
+    }
+}
+
+fn editable_body_tags(text: &str, is_html: bool) -> Vec<TagOccurrence> {
+    let mut tags: Vec<_> = extract_tags(text, is_html)
+        .into_iter()
+        .filter(|tag| !tag.from_prop)
+        .collect();
+    let mut excluded: Vec<Range<usize>> = Vec::new();
+    if is_html {
+        let mut open: Vec<(String, usize)> = Vec::new();
+        for tag in crate::html_edit::tags(text, 0) {
+            if matches!(
+                tag.name.as_str(),
+                "a" | "code" | "pre" | "script" | "style" | "textarea" | "title"
+            ) {
+                open.push((tag.name, tag.range.start));
+            } else if let Some(name) = tag.name.strip_prefix('/')
+                && let Some(position) = open.iter().rposition(|(current, _)| current == name)
+            {
+                let (_, start) = open.remove(position);
+                excluded.push(start..tag.range.end);
+            }
+        }
+        excluded.extend(open.into_iter().map(|(_, start)| start..text.len()));
+    } else {
+        use pulldown_cmark::{Event, Parser, Tag};
+        excluded.extend(
+            Parser::new(text)
+                .into_offset_iter()
+                .filter_map(|(event, range)| {
+                    matches!(
+                        event,
+                        Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_))
+                            | Event::Code(_)
+                    )
+                    .then_some(range)
+                }),
+        );
+    }
+    excluded.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in excluded {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    let mut index = 0;
+    tags.retain(|tag| {
+        while index < merged.len() && merged[index].end <= tag.byte_range.start {
+            index += 1;
+        }
+        (index == merged.len() || merged[index].start >= tag.byte_range.end)
+            && text[..tag.byte_range.start]
+                .bytes()
+                .rev()
+                .take_while(|byte| *byte == b'\\')
+                .count()
+                % 2
+                == 0
+    });
+    tags
+}
+
+impl Vault {
+    /// Planifica sin escribir; cada fuente debe ser una nota wiki conocida y contenida en la bóveda.
+    /// Las omisiones se exponen en `errors`; la interfaz debe mostrarlas antes de pedir confirmación.
+    pub fn plan_tag_rename(&self, old: &str, new: &str, sources: &[RelPath]) -> EditPlan {
+        let old = crate::fold(old.trim().trim_start_matches('#'));
+        let new = new.trim().trim_start_matches('#');
+        let mut plan = EditPlan {
+            root: self.root().canonicalize().ok(),
+            ..Default::default()
+        };
+        if old.is_empty() || !valid_tag_name(new) {
+            plan.errors.push((
+                sources
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| RelPath::from_static("wiki")),
+                "El nombre de etiqueta no es válido".into(),
+            ));
+            return plan;
+        }
+        let entries: std::collections::HashMap<_, _> = self
+            .entries()
+            .iter()
+            .map(|entry| (&entry.path, entry))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for path in sources {
+            if !seen.insert(path) {
+                continue;
+            }
+            let change = (|| -> Result<Option<FileEdit>, VaultError> {
+                let entry = entries
+                    .get(path)
+                    .ok_or_else(|| VaultError::InvalidPath(path.to_string()))?;
+                if entry.zone != crate::Zone::Wiki
+                    || entry.read_only
+                    || crate::Format::from_name(path.file_name()).is_none()
+                {
+                    return Err(VaultError::ReadOnly(path.clone()));
+                }
+                crate::edit_plan::checked_path(self.root(), path)?;
+                let note = self.read_note(path)?;
+                if note.read_only {
+                    return Err(VaultError::ReadOnly(path.clone()));
+                }
+                if let Some(error) = note.props.as_ref().and_then(|props| props.error.as_ref()) {
+                    return Err(VaultError::InvalidProps {
+                        path: path.clone(),
+                        line: error.line,
+                        message: error.message.clone(),
+                    });
+                }
+                let mut count = 0;
+                let mut updated = String::with_capacity(note.source.len());
+                let mut at = 0;
+                for tag in editable_body_tags(&note.source, note.format == crate::Format::Html) {
+                    if let Some(name) = renamed_tag(&tag.tag, &old, new) {
+                        updated.push_str(&note.source[at..tag.byte_range.start]);
+                        updated.push('#');
+                        updated.push_str(&name);
+                        at = tag.byte_range.end;
+                        count += 1;
+                    }
+                }
+                updated.push_str(&note.source[at..]);
+                if let Some(tags) = note.prop("tags") {
+                    let (value, changed) = rename_prop_tags(tags, &old, new);
+                    if changed > 0 {
+                        updated = note.reparse(updated)?.with_prop("tags", &value)?;
+                        count += changed;
+                    }
+                }
+                Ok((count > 0 && updated != note.source).then_some(FileEdit {
+                    path: path.clone(),
+                    count,
+                    original: note.source,
+                    updated,
+                }))
+            })();
+            match change {
+                Ok(Some(change)) => plan.changes.push(change),
+                Ok(None) => {}
+                Err(error) => plan.errors.push((path.clone(), error.to_string())),
+            }
+        }
+        plan.changes.sort_by(|a, b| a.path.cmp(&b.path));
+        plan
+    }
 }
 
 /// Extrae todas las etiquetas de un documento (.md o .html).

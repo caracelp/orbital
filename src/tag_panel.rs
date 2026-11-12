@@ -42,6 +42,7 @@ struct Inner {
     status: gtk::Label,
     list: gtk::ListView,
     on_selected: RefCell<Option<SelectedFn>>,
+    on_rename: Rc<RefCell<Option<SelectedFn>>>,
 }
 
 #[derive(Clone)]
@@ -66,6 +67,8 @@ impl TagPanel {
             .margin_bottom(8)
             .build();
         root.append(&status);
+        let on_rename: Rc<RefCell<Option<SelectedFn>>> = Rc::new(RefCell::new(None));
+        let rename_callback = on_rename.clone();
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(move |_, item| {
             let item = item.downcast_ref::<gtk::ListItem>().unwrap();
@@ -74,6 +77,28 @@ impl TagPanel {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             expander.set_hexpand(true);
             row.append(&expander);
+            let rename = gtk::Button::builder()
+                .icon_name("document-edit-symbolic")
+                .tooltip_text("Renombrar etiqueta…")
+                .css_classes(["flat"])
+                .build();
+            let weak_item = item.downgrade();
+            let callback = rename_callback.clone();
+            rename.connect_clicked(move |_| {
+                let Some(item) = weak_item.upgrade() else {
+                    return;
+                };
+                let Some(row) = item.item().and_downcast::<gtk::TreeListRow>() else {
+                    return;
+                };
+                let Some(object) = row.item().and_downcast::<glib::BoxedAnyObject>() else {
+                    return;
+                };
+                if let Some(f) = callback.borrow().as_ref() {
+                    f(&object.borrow::<TagNode>().path);
+                }
+            });
+            row.append(&rename);
             item.set_child(Some(&row));
         });
         factory.connect_bind(|_, item| {
@@ -129,6 +154,7 @@ impl TagPanel {
             status,
             list,
             on_selected: RefCell::new(None),
+            on_rename,
         }));
         let weak = Rc::downgrade(&this.0);
         this.0.list.connect_activate(move |list, pos| {
@@ -158,6 +184,9 @@ impl TagPanel {
         *self.0.on_selected.borrow_mut() = Some(Box::new(f));
     }
 
+    pub fn connect_rename(&self, f: impl Fn(&str) + 'static) {
+        *self.0.on_rename.borrow_mut() = Some(Box::new(f));
+    }
 
     pub fn set_tree(&self, tree: Option<TagTree>) {
         let mut expanded = std::collections::HashSet::new();
