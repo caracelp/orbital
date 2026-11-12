@@ -272,3 +272,54 @@ fn no_frontmatter_and_empty() {
     assert_eq!(d.blocks.len(), 1);
     assert_eq!(d.blocks[0].line, 0);
 }
+
+// --- 005 T006: codeblocks generados `indice` y `toc` ---
+
+#[test]
+fn indice_codeblock_becomes_generated_with_tag() {
+    let text = "Antes.\n\n```indice\ntag: #fisica\n```\n\nDespués.\n";
+    let doc = render_markdown(text);
+    assert_eq!(doc.blocks.len(), 3);
+    match &doc.blocks[1].kind {
+        BlockKind::Generated(g) => {
+            assert_eq!(g.kind, orbital_vault::render::GeneratedKind::Indice);
+            let tag = g
+                .params
+                .iter()
+                .find(|e| e.key == "tag")
+                .and_then(|e| e.value.as_text());
+            assert_eq!(tag, Some("#fisica"));
+            assert_eq!(&text[g.source.clone()], "```indice\ntag: #fisica\n```");
+        }
+        other => panic!("esperaba Generated, era {other:?}"),
+    }
+}
+
+#[test]
+fn toc_codeblock_becomes_generated_and_accepts_params() {
+    let text = "```toc\nminLevel: 2\nmaxLevel: 3\n```\n";
+    let doc = render_markdown(text);
+    match &doc.blocks[0].kind {
+        BlockKind::Generated(g) => {
+            assert_eq!(g.kind, orbital_vault::render::GeneratedKind::Toc);
+            assert!(g.params.iter().any(|e| e.key == "minLevel"));
+        }
+        other => panic!("esperaba Generated, era {other:?}"),
+    }
+}
+
+#[test]
+fn indice_sin_tag_y_toc_vacio_son_comunes_o_validos() {
+    // indice sin tag: codeblock común.
+    let doc = render_markdown("```indice\nsin tag\n```\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
+    // indice con yaml inválido: codeblock común.
+    let doc = render_markdown("```indice\ntag: [\n```\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
+    // toc sin parámetros: bloque generado válido (todo por defecto).
+    let doc = render_markdown("```toc\n```\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Generated(_)));
+    // otro lenguaje: nunca es generado.
+    let doc = render_markdown("```rust\ntag: #x\n```\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
+}

@@ -1015,6 +1015,21 @@ impl Reader {
                 buf.insert_with_tags(end, body, &refs);
                 buf.insert(end, "\n");
             }
+            // Hasta que la vista complete el contenido (T015/T019), el bloque generado se ve
+            // como su codeblock fuente.
+            BlockKind::Generated(g) => self.block(
+                s,
+                end,
+                &Block {
+                    kind: BlockKind::Code {
+                        lang: String::new(),
+                        text: g.raw.clone(),
+                    },
+                    source: g.source.clone(),
+                    line: b.line,
+                },
+                depth,
+            ),
             BlockKind::Table {
                 align,
                 header,

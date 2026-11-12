@@ -298,6 +298,12 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                 out.push_str(&escape(text));
                 out.push_str("</code></pre>");
             }
+            // En una transclusión el contenido generado no se expande: se ve el codeblock.
+            BlockKind::Generated(g) => {
+                out.push_str("<pre><code>");
+                out.push_str(&escape(&g.raw));
+                out.push_str("</code></pre>");
+            }
             BlockKind::Table {
                 align,
                 header,

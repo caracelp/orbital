@@ -336,3 +336,26 @@ fn search_memory_5000(bencher: divan::Bencher) {
     );
     bencher.bench(|| index.memory_bytes());
 }
+
+/// Nota densa en marcadores para medir el análisis de la 005 (SC-1: un marcador cada ~200 bytes).
+fn texto_marcadores(kib: usize) -> String {
+    let row = "Relleno del párrafo para separar los marcadores en la medición del análisis de \
+               notas largas y densas.\n\nEl estado de esta entrada es [%estado] y su prioridad \
+               [%prioridad].\n\n";
+    row.repeat((kib * 1024).div_ceil(row.len()))
+}
+
+/// Escaneo de marcadores `[%clave]` sobre nota densa (005, T007).
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn markers_scan_kib(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores(kib);
+    bencher.bench(|| divan::black_box(orbital_vault::find_markers(divan::black_box(&text), false)));
+}
+
+/// Escaneo más resolución por sección, como los va a encadenar el render (005, T007).
+#[divan::bench(args = [100, 200], sample_count = 20)]
+fn render_markers_kib(bencher: divan::Bencher, kib: usize) {
+    let text = texto_marcadores(kib);
+    bencher
+        .bench(|| divan::black_box(orbital_vault::resolve_markers(divan::black_box(&text), &[])));
+}

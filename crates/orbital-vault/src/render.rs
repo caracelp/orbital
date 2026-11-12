@@ -56,9 +56,45 @@ pub enum BlockKind {
     Rule,
     /// HTML en bruto dentro del Markdown: se muestra como texto.
     Html(String),
+    /// Un codeblock `indice` o `toc` (005): el fuente queda en el disco y la app completa el
+    /// contenido en la vista. El rango apunta al codeblock completo, cercas incluidas.
+    Generated(Generated),
     /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
     /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
     Transclusion(Transclusion),
+}
+
+/// Clases de codeblock que la vista completa con contenido generado (005).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeneratedKind {
+    /// Lista de notas con una etiqueta (subárbol del árbol de etiquetas).
+    Indice,
+    /// Índice de encabezados de la nota, con opciones de nivel.
+    Toc,
+}
+
+impl GeneratedKind {
+    /// Clase por lenguaje del codeblock; otro lenguaje no es un bloque generado.
+    fn from_lang(lang: &str) -> Option<Self> {
+        match lang {
+            "indice" => Some(Self::Indice),
+            "toc" => Some(Self::Toc),
+            _ => None,
+        }
+    }
+}
+
+/// Un codeblock `indice` o `toc` con sus parámetros YAML. Si el cuerpo no parsea o al bloque
+/// `indice` le falta `tag`, queda como [`BlockKind::Code`] común.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Generated {
+    pub kind: GeneratedKind,
+    /// Parámetros del cuerpo, en el orden del archivo.
+    pub params: Vec<crate::props::PropEntry>,
+    /// Texto crudo del cuerpo del codeblock, para mostrarlo donde todavía no se completa.
+    pub raw: String,
+    /// Rango del codeblock completo (cercas incluidas) en el texto fuente.
+    pub source: Range<usize>,
 }
 
 /// Una transclusión `![[destino#ancla]]`.
@@ -317,7 +353,16 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                     }
                     *i += 1;
                 }
-                BlockKind::Code { lang, text }
+                match GeneratedKind::from_lang(&lang).and_then(|kind| parse_generated(kind, &text))
+                {
+                    Some(params) => BlockKind::Generated(Generated {
+                        kind: GeneratedKind::from_lang(&lang).expect("lenguaje conocido"),
+                        params,
+                        raw: text.clone(),
+                        source: ctx.abs(range),
+                    }),
+                    None => BlockKind::Code { lang, text },
+                }
             }
             Event::Start(Tag::HtmlBlock) => {
                 let mut text = String::new();
@@ -449,6 +494,38 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
     }
     flush(&mut loose, &mut loose_start, &mut blocks);
     ListItem { task, blocks }
+}
+
+/// Valida y completa los parámetros de un codeblock generado. `None` = no es un bloque
+/// generado (el codeblock queda común): YAML inválido o un `indice` sin tag.
+fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
+    let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;
+    if kind == GeneratedKind::Indice {
+        let tag = crate::props::find(&params, "tag")
+            .and_then(|entry| entry.value.as_text().map(str::to_owned))
+            .or_else(|| raw_line_value(body, "tag"))?;
+        match params.iter_mut().find(|entry| entry.key == "tag") {
+            Some(entry) => entry.value = crate::props::PropValue::Text(tag),
+            None => {
+                params.push(crate::props::PropEntry {
+                    key: "tag".into(),
+                    value: crate::props::PropValue::Text(tag),
+                    lines: 0..0,
+                });
+            }
+        }
+    }
+    Some(params)
+}
+
+/// Valor crudo de `clave: valor` en el cuerpo del codeblock, sin reglas de comentario YAML:
+/// admite `tag: #fisica` sin comillas.
+fn raw_line_value(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix(key)?.strip_prefix(':')?;
+        let value = rest.trim();
+        (!value.is_empty()).then(|| value.trim_matches(['"', '\'']).to_owned())
+    })
 }
 
 /// Analiza exactamente un bloque empezando en `i`.
