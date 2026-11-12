@@ -1,4 +1,5 @@
 mod editor;
+mod export;
 mod html_view;
 mod open_dialog;
 mod preferences;
