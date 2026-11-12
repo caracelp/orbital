@@ -91,6 +91,8 @@ struct Inner {
     tag_disk_changes: RefCell<Vec<PathBuf>>,
     /// Candidatos para el selector rápido de notas (US2 de la 004).
     candidates: RefCell<Vec<crate::editor::completion::CompletionCandidate>>,
+    /// Vistas WebKit de exportación a PDF en curso (007): mantenerlas vivas hasta terminar.
+    exports_pendientes: RefCell<Vec<webkit6::WebView>>,
 }
 
 /// Ventana de Orbital.
@@ -382,6 +384,7 @@ impl Window {
             vault_session: Cell::new(0),
             tag_disk_changes: RefCell::new(Vec::new()),
             candidates: RefCell::new(Vec::new()),
+            exports_pendientes: RefCell::new(Vec::new()),
             html_props,
             new_button,
             external_page,
@@ -548,6 +551,10 @@ impl Window {
             }),
             simple("quick-open", Window::open_switcher),
             simple("command-palette", Window::open_command_palette),
+            simple("exportar-html", |w| {
+                w.exportar(crate::export::Formato::Html)
+            }),
+            simple("exportar-pdf", |w| w.exportar(crate::export::Formato::Pdf)),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -567,6 +574,7 @@ impl Window {
         app.set_accels_for_action("win.undo", &["<Control>z"]);
         app.set_accels_for_action("win.quick-open", &["<Control>p"]);
         app.set_accels_for_action("win.command-palette", &["<Control><Shift>p"]);
+        app.set_accels_for_action("win.exportar-html", &["<Control><Shift>e"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
@@ -623,6 +631,10 @@ impl Window {
             "<Control><Alt>Up",
         ));
         section.add(adw::ShortcutsItem::new("Volver a un solo cursor", "Escape"));
+        section.add(adw::ShortcutsItem::new(
+            "Exportar la nota como HTML",
+            "<Control><Shift>e",
+        ));
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
@@ -1681,6 +1693,13 @@ impl Window {
             false,
         ),
         ("Atajos de teclado", "shortcuts", Some("Ctrl+?"), false),
+        (
+            "Exportar nota como HTML",
+            "exportar-html",
+            Some("Ctrl+Mayús+E"),
+            true,
+        ),
+        ("Exportar nota como PDF", "exportar-pdf", None, true),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
@@ -1711,6 +1730,103 @@ impl Window {
                 );
             },
         );
+    }
+
+    /// Exporta la nota abierta (007): HTML autónomo o PDF vía impresión de WebKit. Lee el texto
+    /// del editor (lo que se ve, con ediciones sin guardar); sin nota abierta, aviso sin diálogo.
+    pub fn exportar(&self, formato: crate::export::Formato) {
+        let i = &self.0;
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            self.toast("Abrí una nota antes de exportar");
+            return;
+        };
+        let text = i.code_editor.text();
+        let nombre = entry.path.file_name().to_owned();
+        let stem = nombre
+            .strip_suffix(".md")
+            .or_else(|| nombre.strip_suffix(".html"))
+            .unwrap_or(&nombre)
+            .to_owned();
+        let (titulo, defecto) = match formato {
+            crate::export::Formato::Html => ("Exportar nota como HTML", format!("{stem}.html")),
+            crate::export::Formato::Pdf => ("Exportar nota como PDF", format!("{stem}.pdf")),
+        };
+        let dialog = gtk::FileDialog::builder()
+            .title(titulo)
+            .initial_name(&defecto)
+            .build();
+        let this = self.clone();
+        dialog.save(
+            Some(&i.window),
+            None::<&gio::Cancellable>,
+            move |resultado| {
+                let Ok(file) = resultado else {
+                    return; // cancelado (SC-3: no se escribe nada)
+                };
+                let Some(destino) = file.path() else {
+                    return;
+                };
+                let this = this.clone();
+                let text = text.clone();
+                let formato = formato;
+                glib::spawn_future_local(async move {
+                    match formato {
+                        crate::export::Formato::Html => {
+                            let es_html = text.trim_start().starts_with("<!doctype html>")
+                                || text.trim_start().starts_with("<!DOCTYPE html>")
+                                || text.trim_start().starts_with("<html");
+                            let out = if es_html {
+                                crate::export::html_passthrough(&text)
+                            } else {
+                                crate::export::html_md(&text, &destino.to_string_lossy())
+                            };
+                            let out_clon = out.clone();
+                            let destino_clon = destino.clone();
+                            let escritura = gio::spawn_blocking(move || {
+                                std::fs::write(&destino_clon, out_clon)
+                            })
+                            .await;
+                            match escritura {
+                                Ok(Ok(())) => {
+                                    this.toast(&format!("Nota exportada: {}", destino.display()))
+                                }
+                                _ => this.toast("No se pudo escribir el archivo exportado"),
+                            }
+                        }
+                        crate::export::Formato::Pdf => this.exportar_pdf(&text, &destino),
+                    }
+                });
+            },
+        );
+    }
+
+    /// PDF vía impresión de WebKit del mismo HTML autónomo: el diálogo de impresión aparece
+    /// preconfigurado con «Salida a archivo» y el destino elegido (WebKit no permite exportación
+    /// silenciosa). La vista vive en `exports_pendientes` hasta que la impresión termina.
+    fn exportar_pdf(&self, text: &str, destino: &std::path::Path) {
+        let es_html = text.trim_start().starts_with("<!doctype html>")
+            || text.trim_start().starts_with("<!DOCTYPE html>")
+            || text.trim_start().starts_with("<html");
+        let html = if es_html {
+            crate::export::html_passthrough(text)
+        } else {
+            crate::export::html_md(text, &destino.to_string_lossy())
+        };
+        let web = webkit6::WebView::new();
+        web.load_html(&html, None);
+        let destino = destino.to_path_buf();
+        web.connect_load_changed(move |web, ev| {
+            if ev != webkit6::LoadEvent::Finished {
+                return;
+            }
+            let op = webkit6::PrintOperation::new(web);
+            let settings = gtk::PrintSettings::new();
+            settings.set("output-uri", Some(&format!("file://{}", destino.display())));
+            settings.set("output-file-format", Some("pdf"));
+            op.set_print_settings(&settings);
+            op.print();
+        });
+        self.0.exports_pendientes.borrow_mut().push(web);
     }
 
     fn collect_candidates_baseline(
