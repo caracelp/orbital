@@ -9,6 +9,7 @@ pub mod completion;
 pub mod conflict;
 pub mod find;
 pub mod html;
+pub mod multi_cursor;
 pub mod props;
 pub mod reader;
 pub mod right_sidebar;
@@ -111,6 +112,11 @@ struct Inner {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
     code_scroller: gtk::ScrolledWindow,
+    /// Cursores extra del multi-cursor (006): el principal sigue siendo la selección nativa.
+    extra: RefCell<multi_cursor::ExtraCursors>,
+    /// Selección nativa guardada durante un Alt+clic para reponerla al soltar.
+    extra_base: Cell<Option<(i32, i32)>>,
+    caren: multi_cursor::CarenOverlay,
     reader: reader::Reader,
     root: gtk::Paned,
     /// `texto` (código y vista formateada) o `visual` (notas `.html`).
@@ -191,9 +197,13 @@ impl Editor {
         // El editor va directo en la ventana con desplazamiento: así GTK solo calcula la parte
         // visible del texto. Dentro de un adw::Clamp calculaba todo el documento en cada tecla
         // (30 ms por tecla con 100 KB). El ancho de la columna se limita con márgenes.
+        let caren = multi_cursor::CarenOverlay::new();
+        let capa_cursor = gtk::Overlay::new();
+        capa_cursor.set_child(Some(&view));
+        capa_cursor.add_overlay(&caren);
         let code_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&view)
+            .child(&capa_cursor)
             .build();
         code::center_column(&code_scroller, &view, 860);
         let reader = reader::Reader::new();
@@ -259,6 +269,9 @@ impl Editor {
             view,
             buffer,
             code_scroller,
+            extra: RefCell::new(multi_cursor::ExtraCursors::new()),
+            extra_base: Cell::new(None),
+            caren,
             reader,
             root,
             stack,
@@ -575,8 +588,172 @@ impl Editor {
                     }
                 }
             });
+        this.setup_multi_cursor();
         this.apply_mode(View::Codigo);
         this
+    }
+
+    /// Multi-cursor (006): gestos con Alt, teclas en fase captura y el redibujado del overlay.
+    /// Sin cursores extra, nada de esto cambia el comportamiento (FR-7).
+    fn setup_multi_cursor(&self) {
+        let i = &self.0;
+
+        // Redibujado: scroll del lienzo y cambios del texto.
+        let this = self.clone();
+        i.code_scroller
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                this.actualizar_carenes();
+            });
+        let this = self.clone();
+        i.code_scroller
+            .hadjustment()
+            .connect_value_changed(move |_| {
+                this.actualizar_carenes();
+            });
+        let this = self.clone();
+        i.buffer.connect_changed(move |_| {
+            this.actualizar_carenes();
+        });
+
+        // Alt+clic / Alt+arrastre con un GestureDrag (la distancia decide clic vs selección).
+        let drag = gtk::GestureDrag::new();
+        drag.set_button(1);
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        drag.connect_drag_begin(move |g, _x, _y| {
+            let mods = g.current_event_state();
+            if !mods.contains(gtk::gdk::ModifierType::ALT_MASK) {
+                return;
+            }
+            let inner = &this.0;
+            // Alt+presionar no mueve el cursor principal: se guarda y se repone al soltar.
+            let ins = inner.buffer.iter_at_mark(&inner.buffer.get_insert());
+            let bound = inner.buffer.iter_at_mark(&inner.buffer.selection_bound());
+            inner.extra_base.set(Some((ins.offset(), bound.offset())));
+        });
+        let this = self.clone();
+        drag.connect_drag_end(move |g, dx, dy| {
+            let inner = &this.0;
+            let Some((ins_off, bound_off)) = inner.extra_base.take() else {
+                return; // sin Alt: nada que hacer
+            };
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let (x0, y0) = {
+                let (sx, sy) = g.start_point().unwrap_or((0.0, 0.0));
+                (sx, sy)
+            };
+            let (x1, y1) = (x0 + dx, y0 + dy);
+            let arrastre = ((x1 - x0) as i32).abs() + ((y1 - y0) as i32).abs() > 4;
+            let mut extra = inner.extra.borrow_mut();
+            if arrastre {
+                let Some(a) = inner.view.iter_at_location(x0 as i32, y0 as i32) else {
+                    return;
+                };
+                let Some(b) = inner.view.iter_at_location(x1 as i32, y1 as i32) else {
+                    return;
+                };
+                extra.add_selection(&inner.buffer, &a, &b);
+            } else {
+                let Some(it) = inner.view.iter_at_location(x0 as i32, y0 as i32) else {
+                    return;
+                };
+                if !extra.remove_at(&inner.buffer, &it) {
+                    extra.add_cursor(&inner.buffer, &it);
+                }
+            }
+            drop(extra);
+            // El cursor principal queda donde estaba antes del Alt+clic.
+            let ins = inner.buffer.iter_at_offset(ins_off);
+            let bound = inner.buffer.iter_at_offset(bound_off);
+            inner.buffer.select_range(&ins, &bound);
+            this.actualizar_carenes();
+        });
+        i.view.add_controller(drag);
+
+        // Teclas en captura: solo con cursores extra (FR-7). Esc, columnas y ediciones.
+        let teclas = gtk::EventControllerKey::new();
+        teclas.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        teclas.connect_key_pressed(move |_, keyval, _code, state| {
+            let inner = &this.0;
+            if inner.extra.borrow().is_empty() {
+                return glib::Propagation::Proceed;
+            }
+            let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
+            let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if ctrl && alt && !shift {
+                let delta = match keyval {
+                    gtk::gdk::Key::Up => -1,
+                    gtk::gdk::Key::Down => 1,
+                    _ => return glib::Propagation::Proceed,
+                };
+                let base = multi_cursor::base_columna(&inner.buffer, &inner.extra.borrow(), delta);
+                if let Some(it) = multi_cursor::iter_columna_adyacente(&inner.buffer, &base, delta)
+                {
+                    inner.extra.borrow_mut().add_cursor(&inner.buffer, &it);
+                    this.actualizar_carenes();
+                    return glib::Propagation::Stop;
+                }
+                return glib::Propagation::Stop;
+            }
+            if alt {
+                return glib::Propagation::Proceed;
+            }
+            if keyval == gtk::gdk::Key::Escape {
+                inner.extra.borrow_mut().clear(&inner.buffer);
+                this.actualizar_carenes();
+                return glib::Propagation::Stop;
+            }
+            // Con el popover de completado visible, sus teclas ganan (US3: solo cursor principal).
+            if inner.completion.is_visible() {
+                return glib::Propagation::Proceed;
+            }
+            let edit = if state
+                .intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK)
+            {
+                return glib::Propagation::Proceed;
+            } else {
+                match keyval {
+                    gtk::gdk::Key::BackSpace => Some(multi_cursor::EditKind::Backspace),
+                    gtk::gdk::Key::Delete => Some(multi_cursor::EditKind::Delete),
+                    gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter => {
+                        Some(multi_cursor::EditKind::Insert("\n".into()))
+                    }
+                    gtk::gdk::Key::Tab | gtk::gdk::Key::KP_Tab => {
+                        Some(multi_cursor::EditKind::Insert("\t".into()))
+                    }
+                    _ => keyval
+                        .to_unicode()
+                        .filter(|c| !c.is_control())
+                        .map(|c| multi_cursor::EditKind::Insert(c.to_string())),
+                }
+            };
+            let Some(edit) = edit else {
+                return glib::Propagation::Proceed;
+            };
+            let _ = multi_cursor::editar_tanda(&inner.buffer, &inner.extra.borrow(), &edit);
+            this.actualizar_carenes();
+            glib::Propagation::Stop
+        });
+        i.view.add_controller(teclas);
+    }
+
+    /// Recalcula los rectángulos de los cursores extra para el overlay (research R2).
+    fn actualizar_carenes(&self) {
+        let i = &self.0;
+        if i.mode.get() != View::Codigo && i.mode.get() != View::Dividida {
+            i.caren.limpiar();
+            return;
+        }
+        let extra = i.extra.borrow();
+        if extra.is_empty() {
+            i.caren.limpiar();
+            return;
+        }
+        let rects = std::rc::Rc::new(multi_cursor::rects_para_dibujar(&i.view, &i.buffer, &extra));
+        i.caren.set_rects(rects);
     }
 
     /// El widget del editor: barra de búsqueda arriba y el contenido abajo.
@@ -1056,6 +1233,10 @@ impl Editor {
         let i = &self.0;
         let old_v = i.mode.get();
         i.mode.set(v);
+        if i.mode.get() != v && !matches!(v, View::Codigo | View::Dividida) {
+            i.extra.borrow_mut().clear(&i.buffer);
+            i.caren.limpiar();
+        }
         i.stack
             .set_visible_child_name(if v == View::Visual { "visual" } else { "texto" });
         i.code_scroller.set_visible(v != View::Lectura);
@@ -1297,6 +1478,8 @@ impl Editor {
     pub fn load(&self, vault: Arc<Vault>, note: &Note) {
         let (session, text) = EditSession::open(note);
         let i = &self.0;
+        i.extra.borrow_mut().clear(&i.buffer);
+        i.caren.limpiar();
         i.reader.reset();
         i.visual.forget();
         i.visual_pending.set(false);
@@ -1666,6 +1849,8 @@ impl Editor {
 
     /// Cierra la nota sin guardar (después de un `flush`, o para recargarla).
     pub fn close(&self) {
+        self.0.extra.borrow_mut().clear(&self.0.buffer);
+        self.0.caren.limpiar();
         self.0.completion.popdown();
         self.0.generation.set(self.0.generation.get() + 1);
         self.0.reader.reset();

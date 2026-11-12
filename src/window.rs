@@ -615,6 +615,15 @@ impl Window {
             "<Control><Shift>p",
         ));
         section.add(adw::ShortcutsItem::new(
+            "Cursor extra con Alt+clic o Alt+arrastre",
+            "<Alt>click",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Cursor por columnas",
+            "<Control><Alt>Up",
+        ));
+        section.add(adw::ShortcutsItem::new("Volver a un solo cursor", "Escape"));
+        section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
         ));
