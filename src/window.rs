@@ -97,6 +97,13 @@ struct Inner {
     grafo_datos: RefCell<Option<std::rc::Rc<crate::grafo::GrafoDatos>>>,
     grafo_vista: crate::grafo::VistaGrafo,
     grafo_cerrar: gtk::Button,
+    /// Archivos externos por URL (009): vista del archivo y webview de la URL asociada.
+    externo_ruta: RefCell<Option<RelPath>>,
+    asociar_url: gtk::Button,
+    quitar_url: gtk::Button,
+    url_web: webkit6::WebView,
+    url_abrir: gtk::Button,
+    url_ver_archivo: gtk::Button,
 }
 
 /// Ventana de Orbital.
@@ -184,11 +191,54 @@ impl Window {
             .css_classes(["pill"])
             .halign(gtk::Align::Center)
             .build();
+        let asociar_url = gtk::Button::builder()
+            .label("Asociar URL…")
+            .action_name("win.asociar-url")
+            .css_classes(["pill", "suggested-action"])
+            .halign(gtk::Align::Center)
+            .build();
+        let quitar_url = gtk::Button::builder()
+            .label("Quitar URL")
+            .action_name("win.quitar-url")
+            .css_classes(["pill"])
+            .halign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        let externo_botones = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .valign(gtk::Align::Center)
+            .build();
+        externo_botones.append(&open_external);
+        externo_botones.append(&asociar_url);
+        externo_botones.append(&quitar_url);
         let external_page = adw::StatusPage::builder()
             .icon_name("document-open-symbolic")
-            .child(&open_external)
+            .child(&externo_botones)
             .build();
         content_stack.add_named(&external_page, Some("externo"));
+
+        // Webview embebido de la URL asociada (009), con botón para volver al archivo.
+        let url_web = webkit6::WebView::new();
+        let url_header = adw::HeaderBar::new();
+        let url_ver_archivo = gtk::Button::builder()
+            .label("Ver el archivo")
+            .css_classes(["flat"])
+            .build();
+        let url_abrir = gtk::Button::builder()
+            .icon_name("external-link-symbolic")
+            .tooltip_text("Abrir en el navegador")
+            .css_classes(["flat"])
+            .build();
+        url_header.pack_start(&url_ver_archivo);
+        url_header.pack_end(&url_abrir);
+        let url_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        url_page.append(&url_header);
+        url_page.append(&url_web);
+        url_web.set_vexpand(true);
+        content_stack.add_named(&url_page, Some("url-webview"));
 
         // Grafo de enlaces (008): página a pantalla completa con el canvas propio.
         let grafo_vista = crate::grafo::VistaGrafo::new();
@@ -420,6 +470,12 @@ impl Window {
             grafo_datos: RefCell::new(None),
             grafo_vista,
             grafo_cerrar,
+            externo_ruta: RefCell::new(None),
+            asociar_url,
+            quitar_url,
+            url_web,
+            url_abrir,
+            url_ver_archivo,
             html_props,
             new_button,
             external_page,
@@ -466,6 +522,71 @@ impl Window {
                 });
             }
         });
+
+        // Archivos externos por URL (009): asociar/quitar/abrir y volver al archivo.
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.asociar_url.connect_clicked(move |_| {
+                let Some(i) = weak.upgrade() else { return };
+                let Some(ruta) = i.externo_ruta.borrow().clone() else {
+                    return;
+                };
+                let w = Window(i);
+                w.asociar_url_dialog(&ruta);
+            });
+            let weak = Rc::downgrade(&this.0);
+            this.0.quitar_url.connect_clicked(move |_| {
+                let Some(i) = weak.upgrade() else { return };
+                let Some(ruta) = i.externo_ruta.borrow().clone() else {
+                    return;
+                };
+                let w = Window(i.clone());
+                let Some(vault) = i.vault.borrow().clone() else {
+                    return;
+                };
+                glib::spawn_future_local(async move {
+                    let (v, r) = (vault, ruta.clone());
+                    let resultado =
+                        gio::spawn_blocking(move || v.quitar_url(&r, &write_ctx::now(None))).await;
+                    match resultado {
+                        Ok(Ok(())) => {
+                            i.content_stack.set_visible_child_name("externo");
+                        }
+                        _ => w.toast("No se pudo quitar la URL"),
+                    }
+                });
+            });
+            let weak = Rc::downgrade(&this.0);
+            this.0.url_ver_archivo.connect_clicked(move |_| {
+                if let Some(i) = weak.upgrade() {
+                    i.content_stack.set_visible_child_name("externo");
+                }
+            });
+            let weak = Rc::downgrade(&this.0);
+            this.0.url_abrir.connect_clicked(move |_| {
+                let Some(i) = weak.upgrade() else { return };
+                let Some(ruta) = i.externo_ruta.borrow().clone() else {
+                    return;
+                };
+                let w = Window(i.clone());
+                let Some(vault) = i.vault.borrow().clone() else {
+                    return;
+                };
+                glib::spawn_future_local(async move {
+                    let url = gio::spawn_blocking(move || vault.url_de(&ruta))
+                        .await
+                        .ok()
+                        .flatten();
+                    if let Some(url) = url {
+                        gtk::UriLauncher::new(&url).launch(
+                            None::<&gtk::Window>,
+                            None::<&gio::Cancellable>,
+                            |_| {},
+                        );
+                    }
+                });
+            });
+        }
 
         // Grafo (008): clic abre la nota (cierra el grafo), Esc/botón vuelve, aviso de recorte.
         {
@@ -615,6 +736,34 @@ impl Window {
             simple("exportar-pdf", |w| w.exportar(crate::export::Formato::Pdf)),
             simple("ver-grafo", Window::ver_grafo),
             simple("cerrar-grafo", Window::cerrar_grafo),
+            simple("asociar-url", |w| {
+                let Some(ruta) = w.0.externo_ruta.borrow().clone() else {
+                    w.toast("Abrí un archivo de raw/ antes de asociar una URL");
+                    return;
+                };
+                w.asociar_url_dialog(&ruta);
+            }),
+            simple("quitar-url", |w| {
+                let Some(ruta) = w.0.externo_ruta.borrow().clone() else {
+                    return;
+                };
+                let w = w.clone();
+                let i = w.0.clone();
+                let Some(v) = i.vault.borrow().clone() else {
+                    return;
+                };
+                glib::spawn_future_local(async move {
+                    let r = ruta.clone();
+                    let resultado =
+                        gio::spawn_blocking(move || v.quitar_url(&r, &write_ctx::now(None))).await;
+                    match resultado {
+                        Ok(Ok(())) => {
+                            i.content_stack.set_visible_child_name("externo");
+                        }
+                        _ => w.toast("No se pudo quitar la URL"),
+                    }
+                });
+            }),
             simple("new-note", |w| w.ask_new_note(NewKind::Md)),
             simple("new-html", |w| w.ask_new_note(NewKind::Html)),
             simple("journal", Window::open_journal),
@@ -1084,8 +1233,9 @@ impl Window {
                 }
             } else {
                 // Cualquier otro archivo: si es texto UTF-8 se muestra; si no, se ofrece abrirlo afuera.
+                // Los NUL interiores panean `set_text`: se recortan.
                 let abs = entry.path.to_path(vault.root());
-                gio::spawn_blocking(move || read_text(&abs))
+                gio::spawn_blocking(move || read_text(&abs).map(|t| t.replace('\0', "")))
                     .await
                     .unwrap_or_else(|_| Err("No se pudo leer el archivo".into()))
                     .map(|t| {
@@ -1129,7 +1279,25 @@ impl Window {
                     } else {
                         "Este archivo no es una nota de texto."
                     }));
-                    i.content_stack.set_visible_child_name("externo");
+                    let url = if raw {
+                        let v = vault.clone();
+                        let p = entry.path.clone();
+                        gio::spawn_blocking(move || v.url_de(&p))
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    *i.externo_ruta.borrow_mut() = Some(entry.path.clone());
+                    i.quitar_url.set_visible(url.is_some());
+                    match url {
+                        Some(url) => {
+                            i.url_web.load_uri(url.as_str());
+                            i.content_stack.set_visible_child_name("url-webview");
+                        }
+                        None => i.content_stack.set_visible_child_name("externo"),
+                    }
                 }
             }
             if raw {
@@ -1793,6 +1961,64 @@ impl Window {
                 );
             },
         );
+    }
+
+    /// Pide la URL y la asocia al archivo (009, US1): precargada si ya tiene (FR-1.3).
+    pub fn asociar_url_dialog(&self, ruta: &RelPath) {
+        let i = &self.0;
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        let ruta = ruta.clone();
+        glib::spawn_future_local(async move {
+            let actual = gio::spawn_blocking({
+                let ruta = ruta.clone();
+                move || vault.url_de(&ruta)
+            })
+            .await
+            .ok()
+            .flatten();
+            let campo = gtk::Entry::builder()
+                .text(&actual.unwrap_or_default())
+                .activates_default(true)
+                .build();
+            campo.update_property(&[gtk::accessible::Property::Label("URL del archivo")]);
+            let dialog = adw::AlertDialog::new(
+                Some("Asociar URL al archivo"),
+                Some("Solo http y https. Queda en .orbital/enlaces.yaml."),
+            );
+            dialog.set_extra_child(Some(&campo));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("asociar", "Asociar");
+            dialog.set_default_response(Some("asociar"));
+            dialog.set_response_appearance("asociar", adw::ResponseAppearance::Suggested);
+            dialog.set_close_response("cancel");
+            let weak = dialog.downgrade();
+            campo.connect_changed(move |e| {
+                if let Some(d) = weak.upgrade() {
+                    let ok = e.text().trim().starts_with("http://")
+                        || e.text().trim().starts_with("https://");
+                    d.set_response_enabled("asociar", ok);
+                }
+            });
+            dialog.set_response_enabled("asociar", false);
+            if dialog.choose_future(Some(&this.0.window)).await != "asociar" {
+                return;
+            }
+            let url = campo.text().trim().to_owned();
+            let Some(v) = this.0.vault.borrow().clone() else {
+                return;
+            };
+            let r = ruta.clone();
+            let resultado =
+                gio::spawn_blocking(move || v.asociar_url(&r, &url, &write_ctx::now(None))).await;
+            match resultado {
+                Ok(Ok(())) => this.reload(None).await,
+                Ok(Err(error)) => this.toast(&format!("No se pudo asociar la URL: {error}")),
+                Err(_) => this.toast("No se pudo asociar la URL"),
+            }
+        });
     }
 
     /// Exporta la nota abierta (007): HTML autónomo o PDF vía impresión de WebKit. Lee el texto
@@ -3127,15 +3353,20 @@ impl Window {
                 || (orbital_vault::WriteReceipt::default(), Vec::new()),
                 |p| vault.apply_link_updates(&p, &ctx),
             );
-            Ok::<_, orbital_vault::VaultError>((renamed, receipt, failed))
+            // La URL asociada migra con el archivo (009, FR-3); los errores van junto a los demás.
+            let enlaces_err = vault.migrar_enlace(&f, &t, &ctx).err();
+            Ok::<_, orbital_vault::VaultError>((renamed, receipt, failed, enlaces_err))
         })
         .await;
         match result {
-            Ok(Ok((_, receipt, failed))) => {
+            Ok(Ok((_, receipt, failed, enlaces_err))) => {
                 let plan = plan.as_ref().map(|plan| Arc::new(plan.applied(&receipt)));
                 // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
                 self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
+                if let Some(error) = enlaces_err {
+                    self.toast(&format!("No se pudo migrar la URL asociada: {error}"));
+                }
                 if !failed.is_empty() {
                     let names: Vec<&str> = failed.iter().map(|(p, _)| p.file_name()).collect();
                     self.toast(&format!(
@@ -3880,6 +4111,88 @@ enum LinkAnswer {
     Cancel,
     Skip,
     Update,
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    fn app_de_prueba(nombre: &str) -> adw::Application {
+        adw::init().expect("se necesita acceso GTK");
+        adw::Application::builder()
+            .application_id(format!("io.github.caracelp.Orbital.UrlTest.{nombre}"))
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build()
+    }
+
+    /// 009 US1/US2: abrir un archivo de raw/ asociado muestra el webview de la URL; sin
+    /// asociación, la página de solo lectura con «Asociar URL…».
+    #[test]
+    #[ignore = "requiere GTK/DBus; los archivos de raw/ no son activables por AT-SPI"]
+    fn us9_url_pages_for_raw_files() {
+        let app = app_de_prueba("Url");
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-us9-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            // Un archivo binario (como un PDF real): read_note falla y va a la página externo.
+            std::fs::write(root.join("raw/x.pdf"), b"%PDF-1.4\xff\xfe\x01binario").unwrap();
+            std::fs::create_dir_all(root.join(".orbital")).unwrap();
+            std::fs::write(
+                root.join(".orbital/enlaces.yaml"),
+                "- ruta: raw/x.pdf\n  url: https://ejemplo.local/x\n",
+            )
+            .unwrap();
+            let vault = Arc::new(orbital_vault::open(&root).unwrap());
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.show_vault(
+                orbital_vault::open(&root).unwrap(),
+                Tree::default(),
+                orbital_vault::NoteMeta::default(),
+            );
+            // Abrir el archivo de raw/ por show_entry.
+            let entry = Arc::new(
+                vault
+                    .entries()
+                    .iter()
+                    .find(|e| e.path.as_str() == "raw/x.pdf")
+                    .cloned()
+                    .expect("el archivo de raw/ existe"),
+            );
+            window.show_entry(entry);
+            for _ in 0..100 {
+                if window.0.content_stack.visible_child_name().as_deref() == Some("url-webview") {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("url-webview"),
+                "el archivo asociado debe abrir el webview de la URL"
+            );
+            // «Ver el archivo» vuelve a la vista de solo lectura.
+            window.0.url_ver_archivo.emit_clicked();
+            for _ in 0..50 {
+                if window.0.content_stack.visible_child_name().as_deref() == Some("externo") {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("externo")
+            );
+            // Sin asociación: «Quitar URL» oculto y la página de solo lectura.
+            *window.0.externo_ruta.borrow_mut() = None;
+            window.0.quitar_url.set_visible(false);
+            assert!(!window.0.quitar_url.is_visible());
+            window.0.window.destroy();
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
 }
 
 #[cfg(test)]
