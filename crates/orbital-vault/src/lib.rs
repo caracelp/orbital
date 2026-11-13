@@ -14,6 +14,7 @@ pub mod enlaces;
 pub mod entry;
 pub mod error;
 pub mod fold;
+pub mod historial;
 pub mod html_edit;
 pub mod html_text;
 pub mod link_graph;
@@ -44,6 +45,7 @@ pub use enlaces::Enlace;
 pub use entry::{Entry, EntryKind, RelPath, ReservedKind, Zone};
 pub use error::VaultError;
 pub use fold::fold;
+pub use historial::{leer_version, versiones as versiones_historial};
 pub use html_text::html_text;
 pub use link_graph::LinkGraph;
 pub use links::{

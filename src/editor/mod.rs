@@ -2088,6 +2088,30 @@ impl Editor {
         self.emit(&Status::Saving);
         let ctx = write_ctx::now(Some(vault.config()));
         let at = ctx.time;
+        // Historial de versiones (010): el contenido que se está reemplazando queda en
+        // .orbital/historial/. Solo notas; los errores son avisos discretos (SC-1: una escritura
+        // atómica extra).
+        if let Some(path) = self.current_path() {
+            let (v, p) = (vault.clone(), path.clone());
+            let guardado = gio::spawn_blocking(move || {
+                let abs = p.to_path(v.root());
+                match std::fs::read(&abs) {
+                    Ok(bytes) => match String::from_utf8(bytes) {
+                        Ok(previo) => {
+                            orbital_vault::historial::guardar_version(&v, &p, &previo, "")
+                        }
+                        Err(_) => Ok(false),
+                    },
+                    Err(_) => Ok(false), // primera versión: nada que historiar
+                }
+            })
+            .await;
+            if let Ok(Err(error)) = guardado {
+                self.error(&format!(
+                    "No se pudo guardar la versión en el historial: {error}"
+                ));
+            }
+        }
         let result = gio::spawn_blocking(move || job.run(&vault, &ctx)).await;
         i.saving.set(false);
         let Ok(result) = result else {
@@ -2153,8 +2177,8 @@ impl Editor {
         self.0.format.get()
     }
 
-    /// Reemplaza el texto del editor marcando el cambio como editado (para pruebas).
-    #[cfg(test)]
+    /// Reemplaza el texto del editor marcando el cambio como editado (historial 010, restaurar;
+    /// también para pruebas).
     pub fn replace_text(&self, new: &str) {
         let b = &self.0.buffer;
         let text = self.text();
