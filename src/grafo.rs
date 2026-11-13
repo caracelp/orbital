@@ -85,12 +85,15 @@ pub(crate) struct Vista {
 
 /// Estado del arrastre en curso: fondo (paneo) o nodo (reposicionar).
 #[derive(Default)]
-enum Arrastre {
+pub(crate) enum Arrastre {
     #[default]
     Ninguno,
     Fondo(f64, f64, f64, f64),
     Nodo(usize, f64, f64),
 }
+
+/// Callback al hacer clic en un nodo del grafo (recibe la ruta de la nota).
+type CallbackAbrir = Box<dyn Fn(&str)>;
 
 mod imp {
     use super::*;
@@ -100,13 +103,13 @@ mod imp {
         pub datos: RefCell<Option<Rc<GrafoDatos>>>,
         /// Posiciones efímeras por índice (el arrastre las mueve; cerrar las olvida).
         pub posiciones: RefCell<Vec<(f64, f64)>>,
-        pub vista: Cell<Vista>,
+        pub(crate) vista: Cell<Vista>,
         pub hover: Cell<Option<usize>>,
         pub seleccion: Cell<Option<usize>>,
         /// Callback al hacer clic en un nodo (abre la nota).
-        pub on_abrir: RefCell<Option<Box<dyn Fn(&str)>>>,
+        pub on_abrir: RefCell<Option<CallbackAbrir>>,
         pub on_cerrar: RefCell<Option<Box<dyn Fn()>>>,
-        pub arrastre: RefCell<Arrastre>,
+        pub(crate) arrastre: RefCell<Arrastre>,
     }
 
     #[glib::object_subclass]
@@ -168,7 +171,7 @@ mod imp {
                     continue;
                 }
                 snapshot.append_color(
-                    &if resaltar { rosa.clone() } else { gris.clone() },
+                    &if resaltar { rosa } else { gris },
                     &gtk::graphene::Rect::new(
                         x0.min(x1) as f32,
                         y0.min(y1) as f32,
@@ -185,12 +188,12 @@ mod imp {
                     continue;
                 }
                 let resaltar = hovered.is_some_and(|h| h == n || vecinos.contains(&n));
-                let mut color = gris.clone();
+                let mut color = gris;
                 if hovered.is_some() && !resaltar {
                     continue; // atenuar el resto
                 }
                 if resaltar {
-                    color = rosa.clone();
+                    color = rosa;
                 }
                 let r = (RADIO * v.zoom).max(2.0);
                 snapshot.append_color(
@@ -203,14 +206,13 @@ mod imp {
                     ),
                 );
                 // Etiqueta: con zoom suficiente o en el nodo/hover.
-                if v.zoom > 0.5 || hovered == Some(n) {
-                    if let Some(nombre) = datos.rutas.get(n) {
-                        let etiqueta = nombre.rsplit_once('/').map(|(_, f)| f).unwrap_or(nombre);
-                        let widget = self.obj();
-                        let layout = pango_label(widget.upcast_ref::<gtk::Widget>(), etiqueta);
-                        let (lw, _lh) = (layout.0, layout.1);
-                        snapshot.append_layout(&layout.2, &color);
-                    }
+                if (v.zoom > 0.5 || hovered == Some(n))
+                    && let Some(nombre) = datos.rutas.get(n)
+                {
+                    let etiqueta = nombre.rsplit_once('/').map(|(_, f)| f).unwrap_or(nombre);
+                    let widget = self.obj();
+                    let layout = pango_label(widget.upcast_ref::<gtk::Widget>(), etiqueta);
+                    snapshot.append_layout(&layout.2, &color);
                 }
             }
         }
@@ -436,11 +438,6 @@ impl VistaGrafo {
         });
         self.add_controller(teclas);
     }
-}
-
-/// Recorte de etiqueta: la parte final de la ruta.
-pub fn nombre_corto(ruta: &str) -> &str {
-    ruta.rsplit_once('/').map_or(ruta, |(_, f)| f)
 }
 
 #[cfg(test)]

@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
-use sourceview5::prelude::*;
 
 type SearchFn = Box<dyn Fn(&str)>;
 type ActionFn = Box<dyn Fn()>;

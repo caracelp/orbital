@@ -568,7 +568,6 @@ impl Window {
                 let Some(ruta) = i.externo_ruta.borrow().clone() else {
                     return;
                 };
-                let w = Window(i.clone());
                 let Some(vault) = i.vault.borrow().clone() else {
                     return;
                 };
@@ -1982,7 +1981,7 @@ impl Window {
             .ok()
             .flatten();
             let campo = gtk::Entry::builder()
-                .text(&actual.unwrap_or_default())
+                .text(actual.unwrap_or_default())
                 .activates_default(true)
                 .build();
             campo.update_property(&[gtk::accessible::Property::Label("URL del archivo")]);
@@ -2054,102 +2053,111 @@ impl Window {
                 this.toast("Esta nota todavía no tiene versiones en el historial");
                 return;
             }
-            let dialog = adw::Dialog::builder()
-                .title("Historial de versiones")
-                .content_width(720)
-                .content_height(560)
-                .build();
-            let root = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(0)
-                .build();
-            let header = adw::HeaderBar::new();
-            header.set_title_widget(Some(&adw::WindowTitle::new(
-                &format!("Historial: {}", path.file_name()),
-                "",
-            )));
-            let restaurar = gtk::Button::builder()
-                .label("Restaurar")
-                .sensitive(false)
-                .css_classes(["suggested-action"])
-                .build();
-            header.pack_end(&restaurar);
-            root.append(&header);
-            let lista = gtk::ListBox::builder()
-                .selection_mode(gtk::SelectionMode::Single)
-                .css_classes(["navigation-sidebar"])
-                .build();
-            lista.update_property(&[gtk::accessible::Property::Label("Versiones del historial")]);
-            for (nombre, _contenido) in &versiones {
-                let fila = gtk::Box::builder()
-                    .orientation(gtk::Orientation::Horizontal)
-                    .spacing(8)
-                    .margin_start(12)
-                    .margin_end(12)
-                    .margin_top(6)
-                    .margin_bottom(6)
-                    .build();
-                let etiqueta = gtk::Label::builder()
-                    .label(&Self::nombre_version_legible(&nombre))
-                    .xalign(0.0)
-                    .hexpand(true)
-                    .build();
-                fila.append(&etiqueta);
-                lista.append(&fila);
-            }
-            let scroll = gtk::ScrolledWindow::builder()
-                .child(&lista)
-                .vexpand(true)
-                .height_request(200)
-                .build();
-            let diff_view = editor::find::vista_diff();
-            let diff_scroll = gtk::ScrolledWindow::builder()
-                .child(&diff_view)
-                .vexpand(true)
-                .build();
-            let separador = gtk::Separator::new(gtk::Orientation::Horizontal);
-            root.append(&separador);
-            root.append(&scroll);
-            root.append(&diff_scroll);
-            dialog.set_child(Some(&root));
-            Window(this.0.clone()).cargar_diff_historial(&path, &versiones[0].0, &diff_view);
-            {
-                let this = this.clone();
-                let path = path.clone();
-                let versiones = versiones.clone();
-                let diff_view = diff_view.clone();
-                restaurar.set_sensitive(true);
-                lista.connect_row_selected(move |_, fila| {
-                    let Some(fila) = fila else { return };
-                    let indice = fila.index();
-                    if indice < 0 {
-                        return;
-                    }
-                    let (nombre, _contenido) = &versiones[indice as usize];
-                    Window(this.0.clone()).cargar_diff_historial(&path, nombre, &diff_view);
-                });
-            }
-            {
-                let this = this.clone();
-                let dialog = dialog.clone();
-                restaurar.connect_clicked(move |_| {
-                    let Some(fila) = lista.selected_row() else {
-                        return;
-                    };
-                    let indice = fila.index().max(0) as usize;
-                    if let Some((nombre, contenido)) = versiones.get(indice) {
-                        let _ = nombre;
-                        this.0.code_editor.replace_text(contenido);
-                        this.toast(&format!(
-                            "Versión restaurada como edición ({} caracteres); guardá normalmente",
-                            contenido.len()
-                        ));
-                        dialog.close();
-                    }
-                });
-            }
+            let dialog = this.dialogo_historial(&path, &versiones);
             dialog.present(Some(&this.0.window));
         });
+    }
+
+    /// Construye el diálogo de historial (010, US2). Separado de `historial()` para poder
+    /// probarlo dentro de un proceso GTK sin presentación.
+    fn dialogo_historial(&self, path: &RelPath, versiones: &[(String, String)]) -> adw::Dialog {
+        let dialog = adw::Dialog::builder()
+            .title("Historial de versiones")
+            .content_width(720)
+            .content_height(560)
+            .build();
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(0)
+            .build();
+        let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&adw::WindowTitle::new(
+            &format!("Historial: {}", path.file_name()),
+            "",
+        )));
+        let restaurar = gtk::Button::builder()
+            .label("Restaurar")
+            .sensitive(false)
+            .css_classes(["suggested-action"])
+            .build();
+        header.pack_end(&restaurar);
+        root.append(&header);
+        let lista = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["navigation-sidebar"])
+            .build();
+        lista.update_property(&[gtk::accessible::Property::Label("Versiones del historial")]);
+        for (nombre, _contenido) in versiones {
+            let fila = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .margin_start(12)
+                .margin_end(12)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build();
+            let etiqueta = gtk::Label::builder()
+                .label(Self::nombre_version_legible(nombre))
+                .xalign(0.0)
+                .hexpand(true)
+                .build();
+            fila.append(&etiqueta);
+            lista.append(&fila);
+        }
+        let scroll = gtk::ScrolledWindow::builder()
+            .child(&lista)
+            .vexpand(true)
+            .height_request(200)
+            .build();
+        let diff_view = editor::find::vista_diff();
+        let diff_scroll = gtk::ScrolledWindow::builder()
+            .child(&diff_view)
+            .vexpand(true)
+            .build();
+        let separador = gtk::Separator::new(gtk::Orientation::Horizontal);
+        root.append(&separador);
+        root.append(&scroll);
+        root.append(&diff_scroll);
+        dialog.set_child(Some(&root));
+        self.cargar_diff_historial(path, &versiones[0].0, &diff_view);
+        {
+            let ventana = self.clone();
+            let path = path.clone();
+            let versiones = versiones.to_vec();
+            let diff_view = diff_view.clone();
+            let restaurar = restaurar.clone();
+            lista.connect_row_selected(move |_, fila| {
+                restaurar.set_sensitive(fila.is_some());
+                let Some(fila) = fila else { return };
+                let indice = fila.index();
+                if indice < 0 {
+                    return;
+                }
+                let (nombre, _contenido) = &versiones[indice as usize];
+                ventana.cargar_diff_historial(&path, nombre, &diff_view);
+            });
+        }
+        {
+            let this = self.clone();
+            let dialog = dialog.clone();
+            let lista = lista.clone();
+            let versiones = versiones.to_vec();
+            restaurar.connect_clicked(move |_| {
+                let Some(fila) = lista.selected_row() else {
+                    return;
+                };
+                let indice = fila.index().max(0) as usize;
+                if let Some((_nombre, contenido)) = versiones.get(indice) {
+                    this.0.code_editor.replace_text(contenido);
+                    this.toast(&format!(
+                        "Versión restaurada como edición ({} caracteres); guardá normalmente",
+                        contenido.len()
+                    ));
+                    dialog.close();
+                }
+            });
+        }
+        dialog
     }
 
     /// Fecha legible desde el nombre de archivo `AAAA-MM-DD_HH-MM-SS-mmm.txt`.
@@ -4378,6 +4386,105 @@ mod url_tests {
             assert!(!window.0.quitar_url.is_visible());
             window.0.window.destroy();
             let _ = std::fs::remove_dir_all(root);
+        });
+    }
+}
+
+#[cfg(test)]
+mod historial_tests {
+    use super::*;
+
+    /// Recorre el árbol de widgets del diálogo buscando la lista de versiones y el
+    /// botón «Restaurar» (que cuelga de la cabecera, fuera del contenedor de la lista).
+    fn encontrar_lista_y_boton(widget: &gtk::Widget) -> Option<(gtk::ListBox, gtk::Button)> {
+        fn buscar(
+            widget: &gtk::Widget,
+            lista: &mut Option<gtk::ListBox>,
+            boton: &mut Option<gtk::Button>,
+        ) {
+            if lista.is_none()
+                && let Some(l) = widget.downcast_ref::<gtk::ListBox>()
+            {
+                *lista = Some(l.clone());
+            }
+            if boton.is_none()
+                && let Some(b) = widget.downcast_ref::<gtk::Button>()
+                && b.label().as_deref() == Some("Restaurar")
+            {
+                *boton = Some(b.clone());
+            }
+            let mut hijo = widget.first_child();
+            while let Some(w) = hijo {
+                buscar(&w, lista, boton);
+                hijo = w.next_sibling();
+            }
+        }
+        let mut lista = None;
+        let mut boton = None;
+        buscar(widget, &mut lista, &mut boton);
+        Some((lista?, boton?))
+    }
+
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/verificar-010-us1.sh"]
+    fn us2_historial_dialogo() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.HistorialTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("orbital-us2-010-{}", glib::uuid_string_random()));
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(root.join("wiki")).unwrap();
+            let path = RelPath::new("wiki/nota.md").unwrap();
+            std::fs::write(path.to_path(&root), "Versión tres\n").unwrap();
+            let vault = Arc::new(orbital_vault::open(&root).unwrap());
+            let window = Window::new(&app);
+            window.set_persist(false);
+            *window.0.vault.borrow_mut() = Some(vault.clone());
+            window.0.vault_session.set(1);
+            let editor = window.0.code_editor.clone();
+            editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+
+            // Dos versiones guardadas (la más reciente por último en disco).
+            orbital_vault::historial::guardar_version(&vault, &path, "Versión inicial\n", "")
+                .unwrap();
+            glib::timeout_future(std::time::Duration::from_millis(5)).await;
+            orbital_vault::historial::guardar_version(&vault, &path, "Versión dos\n", "").unwrap();
+            let versiones = orbital_vault::versiones_historial(&vault, &path).unwrap();
+            assert_eq!(versiones.len(), 2);
+            assert_eq!(versiones[0].1, "Versión dos\n", "la más reciente primero");
+            assert_eq!(versiones[1].1, "Versión inicial\n");
+
+            let dialog = window.dialogo_historial(&path, &versiones);
+            dialog.present(Some(&window.0.window));
+            glib::timeout_future(std::time::Duration::from_millis(50)).await;
+            let raiz = dialog.child().expect("el diálogo tiene contenido");
+            let (lista, restaurar) =
+                encontrar_lista_y_boton(&raiz).expect("el diálogo expone lista y botón Restaurar");
+            assert!(
+                !restaurar.is_sensitive(),
+                "Restaurar sin selección está desactivado"
+            );
+            assert_eq!(lista.row_at_index(0).map(|r| r.index()), Some(0));
+            assert_eq!(lista.observe_children().n_items(), 2);
+
+            // Seleccionar la fila más vieja y restaurar: el texto del editor cambia, el
+            // archivo en disco no (restaurar deja una edición pendiente, como al escribir).
+            lista.select_row(Some(&lista.row_at_index(1).unwrap()));
+            assert!(restaurar.is_sensitive());
+            restaurar.emit_clicked();
+            assert_eq!(editor.text(), "Versión inicial\n");
+            assert_eq!(
+                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                "Versión tres\n"
+            );
+
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
         });
     }
 }
