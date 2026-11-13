@@ -59,6 +59,12 @@ pub enum BlockKind {
     /// Un codeblock `indice` o `toc` (005): el fuente queda en el disco y la app completa el
     /// contenido en la vista. El rango apunta al codeblock completo, cercas incluidas.
     Generated(Generated),
+    /// Una definición de nota al pie `[^nombre]: contenido` (012): la Lectura no la muestra
+    /// como párrafo; guarda el contenido para el tooltip de la referencia.
+    FootnoteDefinition {
+        nombre: String,
+        inlines: Vec<Inline>,
+    },
     /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
     /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
     Transclusion(Transclusion),
@@ -154,12 +160,21 @@ pub struct TaskMark {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Inline {
     Text(String),
+    /// Una referencia de nota al pie `[^nombre]` (005/012): la Lectura la muestra como
+    /// superíndice con tooltip del contenido de la definición.
+    FootnoteRef(String),
     Strong(Vec<Inline>),
     Emph(Vec<Inline>),
     Strike(Vec<Inline>),
     Code(String),
-    Link { url: String, children: Vec<Inline> },
-    Image { url: String, alt: String },
+    Link {
+        url: String,
+        children: Vec<Inline>,
+    },
+    Image {
+        url: String,
+        alt: String,
+    },
     SoftBreak,
     HardBreak,
 }
@@ -374,6 +389,7 @@ fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_FOOTNOTES);
     let events: Vec<Ev> = Parser::new_ext(body, opts).into_offset_iter().collect();
     let events = if repl.is_empty() {
         events
@@ -493,6 +509,13 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                         source: ctx.abs(range),
                     }),
                     None => BlockKind::Code { lang, text },
+                }
+            }
+            Event::Start(Tag::FootnoteDefinition(nombre)) => {
+                let inlines = parse_inlines(ctx, evs, i, TagEnd::FootnoteDefinition);
+                BlockKind::FootnoteDefinition {
+                    nombre: nombre.to_string(),
+                    inlines,
                 }
             }
             Event::Start(Tag::HtmlBlock) => {
@@ -855,7 +878,7 @@ fn parse_inline_many(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> Vec<Inline> {
         Event::Text(t) => text_with_tags(ctx, t, &ctx.abs(range)),
         Event::Code(t) => vec![Inline::Code(t.to_string())],
         Event::InlineHtml(t) | Event::Html(t) => vec![Inline::Text(t.to_string())],
-        Event::FootnoteReference(t) => vec![Inline::Text(format!("[^{t}]"))],
+        Event::FootnoteReference(t) => vec![Inline::FootnoteRef(t.to_string())],
         Event::SoftBreak => vec![Inline::SoftBreak],
         Event::HardBreak => vec![Inline::HardBreak],
         Event::Start(Tag::Emphasis) => {
@@ -897,6 +920,7 @@ pub fn plain_text(inlines: &[Inline]) -> String {
     for i in inlines {
         match i {
             Inline::Text(t) | Inline::Code(t) => s.push_str(t),
+            Inline::FootnoteRef(nombre) => s.push_str(&format!("[^{nombre}]")),
             Inline::Strong(c)
             | Inline::Emph(c)
             | Inline::Strike(c)

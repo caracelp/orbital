@@ -10,6 +10,7 @@ pub mod conflict;
 pub mod find;
 pub mod html;
 pub mod multi_cursor;
+pub mod notas_al_pie;
 pub mod outliner;
 pub mod props;
 pub mod reader;

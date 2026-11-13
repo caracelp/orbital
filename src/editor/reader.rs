@@ -66,6 +66,8 @@ struct BlockInfo {
 struct Inner {
     view: gtk::TextView,
     scroller: gtk::ScrolledWindow,
+    /// Contenido de las definiciones de notas al pie para los tooltips (012).
+    fn_defs: RefCell<HashMap<String, String>>,
     /// Cada volcado nuevo cancela el anterior.
     generation: Cell<u64>,
     blocks: RefCell<Vec<BlockInfo>>,
@@ -447,6 +449,7 @@ impl Reader {
         let this = Self(Rc::new(Inner {
             view,
             scroller,
+            fn_defs: RefCell::new(HashMap::new()),
             generation: Cell::new(0),
             blocks: RefCell::new(Vec::new()),
             header: Cell::new(None),
@@ -465,6 +468,38 @@ impl Reader {
             on_rendered: RefCell::new(None),
         }));
         this.create_tags();
+        // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
+        // el contenido de la definición. Las coordenadas del mouse (en px del widget) se pasan
+        // por `window_to_buffer_coords` antes de buscar el tag bajo el cursor.
+        {
+            let weak = Rc::downgrade(&this.0);
+            let vista = this.0.view.clone();
+            let vista_closure = vista.clone();
+            vista.set_has_tooltip(true);
+            vista.connect_query_tooltip(move |_, x, y, _keyboard, tooltip| {
+                let Some(i) = weak.upgrade() else {
+                    return false;
+                };
+                let (tx, ty) =
+                    vista_closure.window_to_buffer_coords(gtk::TextWindowType::Widget, x, y);
+                let Some(inicio) = vista_closure.iter_at_location(tx, ty) else {
+                    return false;
+                };
+                for tag in inicio.tags() {
+                    let Some(nombre) = tag
+                        .name()
+                        .and_then(|n| n.strip_prefix("fnref-").map(str::to_owned))
+                    else {
+                        continue;
+                    };
+                    if let Some(contenido) = i.fn_defs.borrow().get(&nombre) {
+                        tooltip.set_text(Some(contenido));
+                        return true;
+                    }
+                }
+                false
+            });
+        }
         this.center();
         this.setup_links();
         let weak = Rc::downgrade(&this.0);
@@ -1210,9 +1245,20 @@ impl Reader {
     fn block(&self, s: &RenderState, end: &mut gtk::TextIter, b: &Block, depth: i32) {
         let buf = &s.buffer;
         let table = buf.tag_table();
+        // US1 (012): las definiciones de notas al pie no se muestran como párrafo; su contenido
+        // queda en el Reader para el tooltip de la referencia.
+        if let BlockKind::FootnoteDefinition { nombre, inlines } = &b.kind {
+            self.0
+                .fn_defs
+                .borrow_mut()
+                .insert(nombre.clone(), plain_text(inlines));
+            return;
+        }
         let indent = (depth > 0).then(|| self.indent_tag(depth * 24));
         let base: Vec<gtk::TextTag> = indent.into_iter().collect();
         match &b.kind {
+            // FootnoteDefinition nunca llega acá (el early return de arriba la procesa).
+            BlockKind::FootnoteDefinition { .. } => {}
             BlockKind::Heading { level, inlines } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup(&format!("h{level}")));
@@ -1643,6 +1689,25 @@ impl Reader {
                 Inline::Text(t) => {
                     let refs: Vec<&gtk::TextTag> = tags.iter().collect();
                     buf.insert_with_tags(end, t, &refs);
+                }
+                Inline::FootnoteRef(nombre) => {
+                    // Superíndice con tooltip del contenido (012, US1).
+                    let tag_name = format!("fnref-{nombre}");
+                    if table.lookup(&tag_name).is_none() {
+                        let tag = gtk::TextTag::builder()
+                            .name(&tag_name)
+                            .rise(-8192)
+                            .scale(0.75)
+                            .foreground(crate::style::LINK_FG.hex())
+                            .build();
+                        table.add(&tag);
+                    }
+                    let mut more = tags.to_vec();
+                    if let Some(tag) = table.lookup(&tag_name) {
+                        more.push(tag);
+                    }
+                    let refs: Vec<&gtk::TextTag> = more.iter().collect();
+                    buf.insert_with_tags(end, &format!("[^{nombre}]"), &refs);
                 }
                 Inline::Code(t) => {
                     let mut more = tags.to_vec();
