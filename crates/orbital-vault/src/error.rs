@@ -32,6 +32,8 @@ pub enum VaultError {
     Hidden(String),
     /// La ruta no es válida dentro de la bóveda.
     InvalidPath(String),
+    /// La conversión del archivo a Markdown falló (015).
+    Importar(String),
 }
 
 impl fmt::Display for VaultError {
@@ -65,6 +67,7 @@ impl fmt::Display for VaultError {
             ),
             Self::Hidden(p) => write!(f, "«{p}» es un elemento oculto"),
             Self::InvalidPath(p) => write!(f, "«{p}» no es una ruta válida dentro de la bóveda"),
+            Self::Importar(d) => write!(f, "No se pudo importar a Markdown: {d}"),
         }
     }
 }

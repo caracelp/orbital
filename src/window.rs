@@ -103,6 +103,8 @@ struct Inner {
     externo_ruta: RefCell<Option<RelPath>>,
     asociar_url: gtk::Button,
     quitar_url: gtk::Button,
+    /// Importar a Markdown (015): sensible solo para extensiones soportadas.
+    importar_md: gtk::Button,
     url_web: webkit6::WebView,
     url_abrir: gtk::Button,
     url_ver_archivo: gtk::Button,
@@ -206,6 +208,13 @@ impl Window {
             .halign(gtk::Align::Center)
             .visible(false)
             .build();
+        let importar_md = gtk::Button::builder()
+            .label("Importar a Markdown")
+            .action_name("win.importar-md")
+            .css_classes(["pill"])
+            .halign(gtk::Align::Center)
+            .tooltip_text("Crea una nota Markdown en wiki/ (PDF, DOCX o HTML)")
+            .build();
         let externo_botones = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
@@ -214,6 +223,7 @@ impl Window {
         externo_botones.append(&open_external);
         externo_botones.append(&asociar_url);
         externo_botones.append(&quitar_url);
+        externo_botones.append(&importar_md);
         let external_page = adw::StatusPage::builder()
             .icon_name("document-open-symbolic")
             .child(&externo_botones)
@@ -480,6 +490,7 @@ impl Window {
             externo_ruta: RefCell::new(None),
             asociar_url,
             quitar_url,
+            importar_md,
             url_web,
             url_abrir,
             url_ver_archivo,
@@ -745,6 +756,7 @@ impl Window {
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
+            simple("importar-md", Window::importar_md),
             simple("renumerar-notas-al-pie", |w| {
                 if w.0.code_editor.current_path().is_none() {
                     w.toast("Abrí una nota antes de renumerar");
@@ -1277,6 +1289,11 @@ impl Window {
             *i.subtitle_base.borrow_mut() = subtitle;
             this.clear_note_view();
             let raw = entry.zone == orbital_vault::Zone::Raw;
+            if raw {
+                // La importación (015) y la asociación de URL operan sobre el archivo de raw/
+                // abierto, sea que se muestre en el editor o en la vista externa.
+                *i.externo_ruta.borrow_mut() = Some(entry.path.clone());
+            }
             match loaded {
                 Ok(Some(note)) => {
                     if this.0.persist.get() {
@@ -1313,6 +1330,15 @@ impl Window {
                     };
                     *i.externo_ruta.borrow_mut() = Some(entry.path.clone());
                     i.quitar_url.set_visible(url.is_some());
+                    // Importar a Markdown solo se ofrece para PDF, DOCX y HTML.
+                    let extension = entry
+                        .path
+                        .file_name()
+                        .rsplit_once('.')
+                        .map(|(_, e)| e.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    i.importar_md
+                        .set_visible(orbital_vault::importar::formato_de_ext(&extension).is_some());
                     match url {
                         Some(url) => {
                             i.url_web.load_uri(url.as_str());
@@ -1962,6 +1988,7 @@ impl Window {
         ),
         ("Card link desde el portapapeles", "card-link", None, true),
         ("Presentar con OnStage", "onstage", None, true),
+        ("Importar a nota (Markdown)", "importar-md", None, false),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
@@ -2450,6 +2477,42 @@ impl Window {
             return;
         }
         self.0.onstage.presentar();
+    }
+
+    /// Importa el archivo abierto de `raw/` a una nota Markdown nueva en `wiki/` (015).
+    fn importar_md(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let Some(ruta) = self.0.externo_ruta.borrow().clone() else {
+            self.toast("Abrí un archivo de raw/ antes de importar");
+            return;
+        };
+        let extension = ruta
+            .file_name()
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if orbital_vault::importar::formato_de_ext(&extension).is_none() {
+            self.toast("Solo se importan archivos PDF, DOCX o HTML");
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(vault.config()));
+                orbital_vault::importar::crear_nota_importada(&vault, &ruta, &ctx)
+            })
+            .await;
+            match result {
+                Ok(Ok(path)) => {
+                    this.reload(Some(path.clone())).await;
+                    this.toast(&format!("Nota creada: «{path}»"));
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo importar el archivo"),
+            }
+        });
     }
 
     /// Arma los `GrafoDatos` del grafo actual en segundo plano (SC-1).
