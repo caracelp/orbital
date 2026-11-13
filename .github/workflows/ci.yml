@@ -1,0 +1,50 @@
+# CI de Orbital: el mismo gate que en local (CLAUDE.md), en un contenedor de Arch
+# porque webkitgtk-6.0 (WebKitGTK para GTK4) no está en los runners de Ubuntu.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verificacion:
+    name: fmt, clippy, test y deny
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, Rust, Xvfb y curl)
+        run: |
+          pacman -Syu --noconfirm \
+            curl \
+            gtk4 \
+            libadwaita \
+            webkitgtk-6.0 \
+            xorg-server-xvfb \
+            rust
+
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formato
+        run: cargo fmt --all -- --check
+
+      - name: Clippy sin avisos
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Los tests de GTK necesitan un display: corren bajo Xvfb.
+      - name: Tests
+        run: xvfb-run -a cargo test
+
+      - name: Licencias y vulnerabilidades
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - run: cargo deny check

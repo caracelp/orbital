@@ -20,9 +20,9 @@ el error está en el código. Define lo que cualquier herramienta
 - `raw/`: Orbital nunca modifica, renombra ni borra nada de esta carpeta. Solo agrega archivos copiados.
 - `wiki/`: todo lo demás. Las subcarpetas son libres. Las funciones identifican las notas por `type`, no por
   carpeta.
-- `.orbital/`: `config.yaml`, `respaldo/` y `papelera/` (solo se usa si el disco no tiene papelera del
-  sistema, por ejemplo tmpfs o FAT). Ninguna otra herramienta debería escribir aquí. Borrarla no
-  pierde contenido.
+- `.orbital/`: `config.yaml`, `respaldo/`, `papelera/` (solo se usa si el disco no tiene papelera del
+  sistema, por ejemplo tmpfs o FAT), `busquedas.yaml`, `enlaces.yaml` e `historial/` (secciones 9 y
+  12.1). Ninguna otra herramienta debería escribir aquí. Borrarla no pierde contenido de las notas.
 
 ## 2. Elementos ocultos
 
@@ -170,6 +170,22 @@ Formato de OKF v0.2 §8 y §9.
   entero. Si falta o el archivo tiene errores, Orbital lo muestra y no lo sobrescribe sin confirmación. Su
   contenido se especifica en sus propias funciones.
 - `.orbital/config.yaml`: `format_version`, `link_style` (`wikilink` | `markdown`), `journal_name`, `actor`.
+- `.orbital/busquedas.yaml` (004): búsquedas guardadas, una lista de mapas `name`/`query`. Escritura
+  atómica con respaldo; si el YAML tiene errores, Orbital avisa y no lo sobrescribe.
+- `.orbital/enlaces.yaml` (009): archivos de `raw/` asociados a una URL, una lista de mapas
+  `ruta`/`url`. La ruta es relativa a la raíz de la bóveda y la URL es `http` o `https`. Al
+  renombrar o mover el archivo, la entrada se actualiza.
+
+  ```yaml
+  - ruta: raw/callen-termodinamica.pdf
+    url: https://ejemplo.com/termodinamica
+  ```
+
+- `.orbital/historial/<ruta>/` (010): versiones automáticas del contenido **previo** a cada guardado,
+  un archivo de texto por versión con nombre `AAAA-MM-DD_HH-MM-SS.txt` (milisegundos y sufijo
+  incremental si hace falta). Máximo 20 versiones por nota: se descartan las más viejas. Un guardado
+  que no cambia el contenido no crea versión duplicada. Las versiones nunca son notas: no entran en
+  la búsqueda, el grafo ni las listas.
 
 ## 10. Borrar y papelera
 
@@ -208,5 +224,18 @@ generado; en Código queda el texto plano.
   con #tag». Las filas son clicables: una nota se abre; una etiqueta abre la búsqueda `tag:`.
 - ` ```toc ` con `minLevel`/`maxLevel` opcionales (números, 0 = sin límite): índice de encabezados
   de la nota, anidado por nivel; cada entrada lleva al encabezado. Sin encabezados: aviso discreto.
+- ` ```cardlink ` (013): tarjeta de una URL. El cuerpo es YAML con `url` más los metadatos
+  (`title`, `description`, `host`, `favicon`, `image`); Lectura lo muestra como tarjeta clicable y
+  el archivo conserva el fuente. Compatible con el formato del plugin de Obsidian.
+
+  ````markdown
+  ```cardlink
+  url: https://ejemplo.com/articulo
+  title: El artículo
+  description: Resumen del artículo.
+  host: ejemplo.com
+  ```
+  ````
+
 - Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
 - El contenido de transclusiones incrustadas (`![[…]]`) no se genera: se ve el codeblock fuente.

@@ -1,0 +1,28 @@
+name: Pedido de función
+description: Una función nueva que te gustaría en Orbital
+labels: [función]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: ¿Qué problema resuelve?
+      description: Qué te falta en tu flujo de trabajo de notas.
+    validations:
+      required: true
+  - type: textarea
+    id: propuesta
+    attributes:
+      label: Propuesta
+      description: Cómo te lo imaginás funcionando.
+    validations:
+      required: true
+  - type: checkboxes
+    id: constitucion
+    attributes:
+      label: Límites del proyecto
+      description: Orbital es local y privada, y el disco siempre tiene la verdad (ver docs/formato-boveda.md).
+      options:
+        - label: La función funciona sin conexión (o es una acción explícita de red del usuario)
+          required: true
+        - label: No ataría las notas a un formato propietario
+          required: true

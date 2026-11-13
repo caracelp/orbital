@@ -1,0 +1,36 @@
+name: Reporte de error
+description: Algo no funciona como debería
+labels: [error]
+body:
+  - type: textarea
+    id: que-paso
+    attributes:
+      label: ¿Qué pasó?
+      description: Describe el problema y qué esperabas que pasara.
+    validations:
+      required: true
+  - type: textarea
+    id: pasos
+    attributes:
+      label: Pasos para reproducir
+      placeholder: |
+        1. Abrí una bóveda con…
+        2. Toqué…
+        3. Vio…
+    validations:
+      required: true
+  - type: textarea
+    id: entorno
+    attributes:
+      label: Entorno
+      description: Distribución, versión de GNOME/GTK, cómo instalaste Orbital.
+      placeholder: Arch Linux, GNOME 49, compilado con cargo
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Contexto adicional
+      description: Capturas, salidas de consola (`RUST_LOG=debug cargo run`), la nota involucrada.
+    validations:
+      required: false
