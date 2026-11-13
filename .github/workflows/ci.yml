@@ -18,12 +18,13 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, Rust, Xvfb y curl)
+      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, Rust, Xvfb y curl)
         run: |
           pacman -Syu --noconfirm \
             curl \
             gtk4 \
             libadwaita \
+            gtksourceview-5 \
             webkitgtk-6.0 \
             xorg-server-xvfb \
             rust
