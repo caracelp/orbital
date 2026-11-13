@@ -2,6 +2,7 @@ mod editor;
 mod export;
 mod grafo;
 mod html_view;
+mod onstage;
 mod open_dialog;
 mod preferences;
 mod search_panel;

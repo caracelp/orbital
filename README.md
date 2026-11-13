@@ -59,6 +59,8 @@ compatible con otros editores. Ninguna función escribe HTML en tus notas.
 **Conocimiento**
 
 - **Grafo de enlaces** de la bóveda a pantalla completa, con arrastre de nodos y vecinos resaltados.
+- **OnStage**: la nota como diapositivas en una ventana separada, con portada, índice y modo calm;
+  sigue la edición en vivo mientras presentás.
 - **Historial de versiones**: snapshot automático al guardar, 20 versiones por nota con diff y
   restaurar, en `.orbital/historial/`.
 - **Exportar la nota abierta** a HTML autónomo y PDF.
