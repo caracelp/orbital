@@ -10,6 +10,7 @@ pub mod conflict;
 pub mod find;
 pub mod html;
 pub mod multi_cursor;
+pub mod outliner;
 pub mod props;
 pub mod reader;
 pub mod right_sidebar;
@@ -678,7 +679,37 @@ impl Editor {
         teclas.connect_key_pressed(move |_, keyval, _code, state| {
             let inner = &this.0;
             if inner.extra.borrow().is_empty() {
-                return glib::Propagation::Proceed;
+                // Outliner (011): solo si el cursor está en una línea de lista y sin modificadores
+                // ocupados. Alt+Arriba/Abajo mueve ítems (sin Ctrl/Shift).
+                let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
+                let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                let en_lista = outliner::item_en_cursor(&inner.buffer).is_some();
+                let intervenir = match (keyval, ctrl, alt, shift) {
+                    (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, false, false, _)
+                    | (gtk::gdk::Key::Tab, false, false, false) => en_lista,
+                    (gtk::gdk::Key::ISO_Left_Tab, false, false, true) => en_lista,
+                    (gtk::gdk::Key::Up | gtk::gdk::Key::Down, false, true, false) => en_lista,
+                    _ => false,
+                };
+                if !intervenir {
+                    return glib::Propagation::Proceed;
+                }
+                let hecho = match (keyval, shift) {
+                    (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, _) => {
+                        outliner::enter(&inner.buffer)
+                    }
+                    (gtk::gdk::Key::Tab, false) => outliner::indentar(&inner.buffer, true),
+                    (gtk::gdk::Key::ISO_Left_Tab, true) => outliner::indentar(&inner.buffer, false),
+                    (gtk::gdk::Key::Up, _) => outliner::mover_item(&inner.buffer, true),
+                    (gtk::gdk::Key::Down, _) => outliner::mover_item(&inner.buffer, false),
+                    _ => false,
+                };
+                return if hecho {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                };
             }
             let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
             let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
