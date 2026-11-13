@@ -736,6 +736,19 @@ impl Window {
             simple("ver-grafo", Window::ver_grafo),
             simple("cerrar-grafo", Window::cerrar_grafo),
             simple("historial", Window::historial),
+            simple("renumerar-notas-al-pie", |w| {
+                if w.0.code_editor.current_path().is_none() {
+                    w.toast("Abrí una nota antes de renumerar");
+                    return;
+                }
+                let text = w.0.code_editor.text();
+                let Some(nuevo) = crate::editor::notas_al_pie::renumerar(&text) else {
+                    w.toast("Las notas al pie ya están en orden");
+                    return;
+                };
+                w.0.code_editor.replace_text(&nuevo);
+                w.toast("Notas al pie renumeradas (guardá para persistir)");
+            }),
             simple("asociar-url", |w| {
                 let Some(ruta) = w.0.externo_ruta.borrow().clone() else {
                     w.toast("Abrí un archivo de raw/ antes de asociar una URL");
@@ -1932,6 +1945,12 @@ impl Window {
         ("Exportar nota como PDF", "exportar-pdf", None, true),
         ("Ver el grafo de enlaces", "ver-grafo", None, false),
         ("Historial de versiones…", "historial", None, true),
+        (
+            "Renumerar notas al pie",
+            "renumerar-notas-al-pie",
+            None,
+            true,
+        ),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el

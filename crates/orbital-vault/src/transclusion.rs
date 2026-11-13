@@ -298,6 +298,11 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                 out.push_str(&escape(text));
                 out.push_str("</code></pre>");
             }
+            BlockKind::FootnoteDefinition { inlines, .. } => {
+                out.push_str("<p>");
+                inlines_html(out, inlines);
+                out.push_str("</p>");
+            }
             // En una transclusión el contenido generado no se expande: se ve el codeblock.
             BlockKind::Generated(g) => {
                 out.push_str("<pre><code>");
@@ -352,6 +357,7 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
     for i in inlines {
         match i {
             Inline::Text(t) => out.push_str(&escape(t)),
+            Inline::FootnoteRef(nombre) => out.push_str(&escape(&format!("[^{nombre}]"))),
             Inline::Code(t) => {
                 out.push_str("<code>");
                 out.push_str(&escape(t));
