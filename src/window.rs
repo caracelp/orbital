@@ -736,6 +736,7 @@ impl Window {
             simple("ver-grafo", Window::ver_grafo),
             simple("cerrar-grafo", Window::cerrar_grafo),
             simple("historial", Window::historial),
+            simple("card-link", Window::card_link),
             simple("renumerar-notas-al-pie", |w| {
                 if w.0.code_editor.current_path().is_none() {
                     w.toast("Abrí una nota antes de renumerar");
@@ -1951,6 +1952,7 @@ impl Window {
             None,
             true,
         ),
+        ("Card link desde el portapapeles", "card-link", None, true),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
@@ -2177,6 +2179,87 @@ impl Window {
             });
         }
         dialog
+    }
+
+    /// Card link (013): lee la URL del portapapeles, arma el bloque `cardlink` con los
+    /// metadatos disponibles (host derivado de la URL; título/descr/image por red si gvfs
+    /// lo resuelve; sin red, el bloque queda con la URL y el host) y lo inserta en la nota.
+    pub fn card_link(&self) {
+        let i = &self.0;
+        if i.code_editor.current_path().is_none() {
+            self.toast("Abrí una nota antes de insertar un card link");
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let clip = this
+                .0
+                .window
+                .clipboard()
+                .read_text_future()
+                .await
+                .map(|t| t.map(String::from).unwrap_or_default())
+                .unwrap_or_default();
+            let url = clip.trim().to_owned();
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                this.toast("El portapapeles no tiene una URL http(s)");
+                return;
+            }
+            let host = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+                .and_then(|r| r.split('/').next())
+                .unwrap_or("")
+                .to_owned();
+            let (title, description, image) =
+                match gio::File::for_uri(&url).load_contents_future().await {
+                    Ok((bytes, _)) => {
+                        let bytes = bytes.to_vec();
+                        let texto = String::from_utf8_lossy(&bytes).to_string();
+                        let extraer = |tag: &str| -> Option<String> {
+                            let marker = format!("{tag}\" content=\"");
+                            let start = texto.find(&marker)? + marker.len();
+                            let end = texto[start..].find('"')? + start;
+                            Some(texto[start..end].to_owned())
+                        };
+                        let title = extraer("property=\"og:title\"")
+                            .or_else(|| extraer("name=\"og:title\""))
+                            .or_else(|| {
+                                texto.find("<title>").and_then(|s| {
+                                    texto[s + 7..]
+                                        .find("</title>")
+                                        .map(|e| texto[s + 7..s + 7 + e].to_owned())
+                                })
+                            });
+                        let description = extraer("property=\"og:description\"")
+                            .or_else(|| extraer("name=\"og:description\""));
+                        let image = extraer("property=\"og:image\"")
+                            .or_else(|| extraer("name=\"og:image\""));
+                        (title, description, image)
+                    }
+                    Err(_) => (None, None, None),
+                };
+            let mut bloque = format!(
+                "```cardlink\nurl: \"{url}\"\ntitle: \"{}\"\n",
+                title.as_deref().unwrap_or(&url)
+            );
+            if let Some(d) = &description {
+                bloque.push_str(&format!("description: \"{d}\"\n"));
+            }
+            bloque.push_str(&format!("host: \"{host}\"\n"));
+            if let Some(img) = &image {
+                bloque.push_str(&format!("image: \"{img}\"\n"));
+            }
+            bloque.push_str("```\n");
+            let actual = this.0.code_editor.text();
+            let nuevo = if actual.ends_with('\n') || actual.is_empty() {
+                format!("{actual}\n{bloque}\n")
+            } else {
+                format!("{actual}\n\n{bloque}\n")
+            };
+            this.0.code_editor.replace_text(&nuevo);
+            this.toast(&format!("Card link insertado: {host}"));
+        });
     }
 
     /// Fecha legible desde el nombre de archivo `AAAA-MM-DD_HH-MM-SS-mmm.txt`.

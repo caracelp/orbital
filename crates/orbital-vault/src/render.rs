@@ -77,6 +77,8 @@ pub enum GeneratedKind {
     Indice,
     /// Índice de encabezados de la nota, con opciones de nivel.
     Toc,
+    /// Tarjeta de enlace externo (013): url, title, description, host, favicon, image.
+    CardLink,
 }
 
 impl GeneratedKind {
@@ -85,6 +87,7 @@ impl GeneratedKind {
         match lang {
             "indice" => Some(Self::Indice),
             "toc" => Some(Self::Toc),
+            "cardlink" => Some(Self::CardLink),
             _ => None,
         }
     }
