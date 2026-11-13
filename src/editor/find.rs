@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
+use sourceview5::prelude::*;
 
 type SearchFn = Box<dyn Fn(&str)>;
 type ActionFn = Box<dyn Fn()>;
@@ -380,4 +381,36 @@ impl FindBar {
     pub fn set_on_close(&self, f: impl Fn() + 'static) {
         *self.callbacks.on_close.borrow_mut() = Some(Box::new(f));
     }
+}
+
+/// Vista plana de texto para diffs (historial 010): monoespaciada, sin resaltado de sintaxis,
+/// con los tags `diff-added`/`diff-removed` ya registrados en su buffer.
+pub fn vista_diff() -> sourceview5::View {
+    let buffer = sourceview5::Buffer::new(None);
+    let colores = [
+        ("diff-removed", crate::style::DIFF_REMOVED_BG.hex()),
+        (
+            "diff-removed-marker",
+            crate::style::DIFF_REMOVED_MARKER.hex(),
+        ),
+        ("diff-added", crate::style::DIFF_ADDED_BG.hex()),
+        ("diff-added-marker", crate::style::DIFF_ADDED_MARKER.hex()),
+    ];
+    for (nombre, color) in colores {
+        buffer.tag_table().add(
+            &gtk::TextTag::builder()
+                .name(nombre)
+                .foreground(color)
+                .build(),
+        );
+    }
+    let view = sourceview5::View::with_buffer(&buffer);
+    view.set_editable(false);
+    view.set_monospace(true);
+    view.upcast_ref::<gtk::Widget>()
+        .update_property(&[gtk::accessible::Property::Label(
+            "Diferencia con el contenido actual",
+        )]);
+    let _ = &view;
+    view
 }
