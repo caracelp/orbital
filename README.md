@@ -64,6 +64,8 @@ compatible con otros editores. Ninguna función escribe HTML en tus notas.
 - **Historial de versiones**: snapshot automático al guardar, 20 versiones por nota con diff y
   restaurar, en `.orbital/historial/`.
 - **Exportar la nota abierta** a HTML autónomo y PDF.
+- **Importar a Markdown**: un PDF, DOCX o HTML de `raw/` se convierte offline a una nota nueva
+  en `wiki/`, vinculada al fuente en `sources`.
 - **Archivos externos por URL**: asocia un archivo de `raw/` a una URL y ábrelo en un webview
   embebido con sesión de red efímera.
 
