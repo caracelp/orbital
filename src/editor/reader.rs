@@ -136,6 +136,65 @@ pub fn complete_generated(
                 let (min, max) = niveles(&g.params);
                 toc_items(&encabezados, path, min, max)
             }
+            orbital_vault::render::GeneratedKind::CardLink => {
+                // La tarjeta se muestra como bloque de texto enlazado (013).
+                let url = g
+                    .params
+                    .iter()
+                    .find(|e| e.key == "url")
+                    .and_then(|e| e.value.as_text())
+                    .unwrap_or("");
+                let title = g
+                    .params
+                    .iter()
+                    .find(|e| e.key == "title")
+                    .and_then(|e| e.value.as_text())
+                    .unwrap_or(url);
+                let description = g
+                    .params
+                    .iter()
+                    .find(|e| e.key == "description")
+                    .and_then(|e| e.value.as_text())
+                    .unwrap_or("");
+                let host = g
+                    .params
+                    .iter()
+                    .find(|e| e.key == "host")
+                    .and_then(|e| e.value.as_text())
+                    .unwrap_or("");
+                let mut items = vec![ListItem {
+                    task: None,
+                    blocks: vec![Block {
+                        line: 0,
+                        source: 0..0,
+                        kind: BlockKind::Paragraph(vec![Inline::Link {
+                            url: url.to_owned(),
+                            children: vec![Inline::Text(title.to_owned())],
+                        }]),
+                    }],
+                }];
+                if !description.is_empty() {
+                    items.push(ListItem {
+                        task: None,
+                        blocks: vec![Block {
+                            line: 0,
+                            source: 0..0,
+                            kind: BlockKind::Paragraph(vec![Inline::Text(description.to_owned())]),
+                        }],
+                    });
+                }
+                if !host.is_empty() {
+                    items.push(ListItem {
+                        task: None,
+                        blocks: vec![Block {
+                            line: 0,
+                            source: 0..0,
+                            kind: BlockKind::Paragraph(vec![Inline::Text(host.to_owned())]),
+                        }],
+                    });
+                }
+                items
+            }
             orbital_vault::render::GeneratedKind::Indice => {
                 let tag = g
                     .params
