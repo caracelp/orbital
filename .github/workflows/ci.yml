@@ -24,7 +24,7 @@ jobs:
             curl \
             gtk4 \
             libadwaita \
-            gtksourceview-5 \
+            gtksourceview5 \
             webkitgtk-6.0 \
             xorg-server-xvfb \
             rust
