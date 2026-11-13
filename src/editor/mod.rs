@@ -73,6 +73,8 @@ pub struct Header {
 }
 type LinkFn = Box<dyn Fn(&RelPath, &str)>;
 type ViewFn = Box<dyn Fn(Format, View)>;
+/// Cambio del texto de la nota abierta (OnStage, 014).
+type TextChangedFn = Box<dyn Fn()>;
 
 /// Vistas de una nota `.md` (FR-008).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +147,7 @@ struct Inner {
     on_header: RefCell<Option<HeaderFn>>,
     on_link: RefCell<Option<LinkFn>>,
     on_view: RefCell<Option<ViewFn>>,
+    on_text_changed: RefCell<Option<TextChangedFn>>,
     session: RefCell<Option<EditSession>>,
     vault: RefCell<Option<Arc<Vault>>>,
     /// Ignorar `changed` mientras se carga un texto.
@@ -293,6 +296,7 @@ impl Editor {
             on_header: RefCell::new(None),
             on_link: RefCell::new(None),
             on_view: RefCell::new(None),
+            on_text_changed: RefCell::new(None),
             session: RefCell::new(None),
             vault: RefCell::new(None),
             loading: Cell::new(false),
@@ -1348,6 +1352,12 @@ impl Editor {
         *self.0.on_view.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Avisa cada cambio del texto de la nota abierta (edición en vivo de OnStage, 014).
+    /// Va por tecla: el receptor aplica su propia pausa.
+    pub fn set_on_text_changed(&self, f: impl Fn() + 'static) {
+        *self.0.on_text_changed.borrow_mut() = Some(Box::new(f));
+    }
+
     /// Índice de búsqueda para los codeblocks `indice` (005); se pasa junto con el del panel.
     pub fn set_search_index(
         &self,
@@ -2027,6 +2037,9 @@ impl Editor {
         let i = &self.0;
         if i.loading.get() {
             return;
+        }
+        if let Some(f) = i.on_text_changed.borrow().as_ref() {
+            f();
         }
         if i.format.get() == Format::Html && i.mode.get() == View::Codigo {
             // Se vuelve a validar al entrar a Visual, no en cada tecla.

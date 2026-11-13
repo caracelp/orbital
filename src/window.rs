@@ -97,6 +97,8 @@ struct Inner {
     grafo_datos: RefCell<Option<std::rc::Rc<crate::grafo::GrafoDatos>>>,
     grafo_vista: crate::grafo::VistaGrafo,
     grafo_cerrar: gtk::Button,
+    /// Presentación OnStage de la nota abierta (014): se crea con la ventana, oculta.
+    onstage: std::rc::Rc<crate::onstage::OnStage>,
     /// Archivos externos por URL (009): vista del archivo y webview de la URL asociada.
     externo_ruta: RefCell<Option<RelPath>>,
     asociar_url: gtk::Button,
@@ -429,6 +431,10 @@ impl Window {
         breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
         window.add_breakpoint(breakpoint);
 
+        // OnStage (014): ventana separada, oculta hasta «Presentar con OnStage». El material
+        // vivo (texto de la nota y bóveda) lo arma la ventana en cada refresco.
+        let onstage = std::rc::Rc::new(crate::onstage::OnStage::new(&window));
+
         let this = Self(Rc::new(Inner {
             window,
             toasts,
@@ -470,6 +476,7 @@ impl Window {
             grafo_datos: RefCell::new(None),
             grafo_vista,
             grafo_cerrar,
+            onstage,
             externo_ruta: RefCell::new(None),
             asociar_url,
             quitar_url,
@@ -737,6 +744,7 @@ impl Window {
             simple("cerrar-grafo", Window::cerrar_grafo),
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
+            simple("onstage", Window::presentar),
             simple("renumerar-notas-al-pie", |w| {
                 if w.0.code_editor.current_path().is_none() {
                     w.toast("Abrí una nota antes de renumerar");
@@ -1953,6 +1961,7 @@ impl Window {
             true,
         ),
         ("Card link desde el portapapeles", "card-link", None, true),
+        ("Presentar con OnStage", "onstage", None, true),
     ];
 
     /// Abre la paleta de comandos (US8). La lista se arma al abrir con el
@@ -2430,6 +2439,19 @@ impl Window {
         self.0.content_stack.set_visible_child_name("codigo");
     }
 
+    /// Presenta la nota abierta como diapositivas (OnStage, 014): solo notas `.md`.
+    pub fn presentar(&self) {
+        let Some(ruta) = self.0.code_editor.current_path() else {
+            self.toast("Abrí una nota antes de presentar");
+            return;
+        };
+        if ruta.as_str().ends_with(".html") {
+            self.toast("OnStage presenta notas .md; esta nota es HTML");
+            return;
+        }
+        self.0.onstage.presentar();
+    }
+
     /// Arma los `GrafoDatos` del grafo actual en segundo plano (SC-1).
     fn reconstruir_grafo_visual(
         &self,
@@ -2649,6 +2671,39 @@ impl Window {
                 Window(i).toast(msg);
             }
         });
+        // OnStage (014): material vivo, apertura de enlaces y aviso de cambios del editor.
+        let onstage = self.0.onstage.clone();
+        onstage.set_on_link({
+            let weak = Rc::downgrade(&self.0);
+            move |url| {
+                let Some(i) = weak.upgrade() else {
+                    return;
+                };
+                let from = i.code_editor.current_path();
+                Window(i).open_link(from.as_ref(), url);
+            }
+        });
+        onstage.set_proveedor({
+            let weak = Rc::downgrade(&self.0);
+            move || {
+                let i = weak.upgrade()?;
+                let ruta = i.code_editor.current_path()?;
+                if ruta.as_str().ends_with(".html") {
+                    return None;
+                }
+                Some(crate::onstage::Fuente {
+                    texto: i.code_editor.text(),
+                    ruta,
+                    vault: i.vault.borrow().clone(),
+                })
+            }
+        });
+        {
+            let onstage = self.0.onstage.clone();
+            self.0
+                .code_editor
+                .set_on_text_changed(move || onstage.editar());
+        }
         // Al cerrar la ventana, primero se guarda lo pendiente.
         let this = self.clone();
         self.0.window.connect_close_request(move |w| {
