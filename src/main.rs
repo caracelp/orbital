@@ -10,6 +10,7 @@ mod state;
 mod style;
 mod switcher;
 mod tag_panel;
+mod visor_pdf;
 mod watcher;
 mod window;
 mod write_ctx;
