@@ -111,7 +111,10 @@ struct Inner {
     visor: std::rc::Rc<crate::visor_pdf::VisorPdf>,
     /// El PDF mostrado en el visor (para la búsqueda de resaltados).
     visor_ruta: RefCell<Option<RelPath>>,
-    url_web: webkit6::WebView,
+    /// Webview de la URL asociada (009): se crea al primer uso (crear un `WebView` cuesta
+    /// cientos de milisegundos de arranque) y va en `url_page`, debajo de su cabecera.
+    url_web: RefCell<Option<webkit6::WebView>>,
+    url_page: gtk::Box,
     url_abrir: gtk::Button,
     url_ver_archivo: gtk::Button,
 }
@@ -245,7 +248,6 @@ impl Window {
         content_stack.add_named(&external_page, Some("externo"));
 
         // Webview embebido de la URL asociada (009), con botón para volver al archivo.
-        let url_web = webkit6::WebView::new();
         let url_header = adw::HeaderBar::new();
         let url_ver_archivo = gtk::Button::builder()
             .label("Ver el archivo")
@@ -262,8 +264,6 @@ impl Window {
             .orientation(gtk::Orientation::Vertical)
             .build();
         url_page.append(&url_header);
-        url_page.append(&url_web);
-        url_web.set_vexpand(true);
         content_stack.add_named(&url_page, Some("url-webview"));
 
         // Grafo de enlaces (008): página a pantalla completa con el canvas propio.
@@ -512,7 +512,8 @@ impl Window {
             ver_pdf,
             visor,
             visor_ruta: RefCell::new(None),
-            url_web,
+            url_web: RefCell::new(None),
+            url_page: url_page.clone(),
             url_abrir,
             url_ver_archivo,
             html_props,
@@ -1371,7 +1372,7 @@ impl Window {
                     i.ver_pdf.set_visible(extension == "pdf");
                     match url {
                         Some(url) => {
-                            i.url_web.load_uri(url.as_str());
+                            Window::url_web(i).load_uri(url.as_str());
                             i.content_stack.set_visible_child_name("url-webview");
                         }
                         None => i.content_stack.set_visible_child_name("externo"),
@@ -1486,6 +1487,23 @@ impl Window {
                 i.pending_line.set(Some((path, line)));
             }
         }
+    }
+
+    /// El webview de la URL asociada (009), creado al primer uso con una sesión de red efímera:
+    /// nada de lo que cargue (cookies, caché, almacenamiento) queda en disco.
+    fn url_web(i: &Inner) -> webkit6::WebView {
+        if let Some(web) = i.url_web.borrow().as_ref() {
+            return web.clone();
+        }
+        let session = webkit6::NetworkSession::new_ephemeral();
+        let web = webkit6::WebView::builder()
+            .network_session(&session)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        i.url_page.append(&web);
+        *i.url_web.borrow_mut() = Some(web.clone());
+        web
     }
 
     /// Arma el grafo de enlaces de la bóveda en segundo plano (US4; 136 ms con 5000 notas).
@@ -4277,7 +4295,8 @@ impl Window {
 
     pub fn show_path(&self, rel: &str) {
         // Elegir la fila la abre (ver `selection-changed`); si no está en la lista (por ejemplo,
-        // archivada), se muestra igual.
+        // archivada) o ya estaba elegida (otra coincidencia de la nota abierta, o volver desde el
+        // grafo), se muestra directamente.
         if !self.reveal(rel)
             && let Some(e) = self.entry(rel)
         {
@@ -4285,7 +4304,8 @@ impl Window {
         }
     }
 
-    /// Expande las carpetas hasta `rel` y elige su fila. Devuelve si la encontró.
+    /// Expande las carpetas hasta `rel` y elige su fila. Devuelve si cambió la selección (y con
+    /// eso `selection-changed` abre la nota).
     fn reveal(&self, rel: &str) -> bool {
         let Some(selection) = self
             .0
@@ -4316,11 +4336,12 @@ impl Window {
         }
         match find(rel) {
             Some((pos, _)) => {
+                let changed = selection.selected() != pos;
                 selection.set_selected(pos);
                 self.0
                     .list_view
                     .scroll_to(pos, gtk::ListScrollFlags::NONE, None);
-                true
+                changed
             }
             None => false,
         }
@@ -4679,6 +4700,10 @@ mod url_tests {
                     .cloned()
                     .expect("el archivo de raw/ existe"),
             );
+            assert!(
+                window.0.url_web.borrow().is_none(),
+                "el webview de la URL no se crea al arrancar"
+            );
             window.show_entry(entry);
             for _ in 0..100 {
                 if window.0.content_stack.visible_child_name().as_deref() == Some("url-webview") {
@@ -4690,6 +4715,16 @@ mod url_tests {
                 window.0.content_stack.visible_child_name().as_deref(),
                 Some("url-webview"),
                 "el archivo asociado debe abrir el webview de la URL"
+            );
+            let web = window
+                .0
+                .url_web
+                .borrow()
+                .clone()
+                .expect("webview creado al abrir");
+            assert!(
+                web.network_session().is_some_and(|s| s.is_ephemeral()),
+                "la URL se carga con una sesión de red efímera"
             );
             // «Ver el archivo» vuelve a la vista de solo lectura.
             window.0.url_ver_archivo.emit_clicked();
@@ -4882,6 +4917,105 @@ mod tag_rename_tests {
             assert_eq!(
                 std::fs::read_to_string(path.to_path(&root)).unwrap(),
                 "#nueva con otros cambios\n"
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod search_open_tests {
+    use super::*;
+
+    async fn esperar(cond: impl Fn() -> bool) {
+        for _ in 0..150 {
+            if cond() {
+                return;
+            }
+            glib::timeout_future(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 004 escenario 1.3: elegir una coincidencia abre la nota en su línea, también cuando la
+    /// nota ya está elegida en la lista (otra coincidencia de la misma nota, o volver del grafo).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/verificar-004-us1.sh"]
+    fn us1_open_match_same_note() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.SearchOpenTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("orbital-us1-004-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            let texto: String = (1..=80).map(|n| format!("línea {n}\n\n")).collect();
+            std::fs::write(root.join("wiki/nota.md"), &texto).unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let (vault, tree, meta) = {
+                let v = orbital_vault::open(&root).unwrap();
+                let entries: Vec<_> = v.entries().to_vec();
+                let tree = build_tree(&entries);
+                (v, tree, orbital_vault::NoteMeta::default())
+            };
+            window.show_vault(vault, tree, meta);
+            // El índice de búsqueda se arma después del primer cuadro: la ventana tiene que verse.
+            window.0.window.present();
+            let abrir = |line: usize| {
+                let path = RelPath::new("wiki/nota.md").unwrap();
+                window.0.pending_line.set(Some((path.clone(), line)));
+                window.show_path(path.as_str());
+            };
+            let linea_cursor = || window.0.code_editor.cursor_line();
+            abrir(3);
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("codigo"))
+                .await;
+            esperar(|| linea_cursor() == 3).await;
+            assert_eq!(linea_cursor(), 3, "la primera coincidencia va a su línea");
+
+            // Otra coincidencia de la misma nota: la fila ya está elegida.
+            abrir(101);
+            esperar(|| linea_cursor() == 101).await;
+            assert_eq!(
+                linea_cursor(),
+                101,
+                "una coincidencia de la nota abierta va a su línea"
+            );
+
+            // Desde el grafo, la misma nota vuelve a verse.
+            window.0.content_stack.set_visible_child_name("grafo");
+            abrir(51);
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("codigo"))
+                .await;
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("codigo"),
+                "elegir una coincidencia vuelve al editor"
+            );
+            esperar(|| linea_cursor() == 51).await;
+            assert_eq!(linea_cursor(), 51);
+
+            // El camino real: buscar en el panel y activar la fila (clic o Intro) abre la línea.
+            window.0.search_panel.set_search_query("\"línea 70\"");
+            let mut activada = false;
+            for _ in 0..250 {
+                if window.0.search_panel.activate_match("línea 70") {
+                    activada = true;
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(activada, "el panel muestra la coincidencia");
+            esperar(|| linea_cursor() == 139).await;
+            assert_eq!(
+                linea_cursor(),
+                139,
+                "activar la fila va a la línea de la coincidencia"
             );
             window.0.window.destroy();
             std::fs::remove_dir_all(root).unwrap();

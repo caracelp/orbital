@@ -303,6 +303,29 @@ mod tests {
         }
     }
 
+    /// Mezcla `fg` con opacidad `alpha` sobre `bg`, como dibuja GTK un texto semitransparente.
+    fn blend(fg: Rgb, alpha: f64, bg: Rgb) -> Rgb {
+        let ch = |f: u8, b: u8| (f64::from(f) * alpha + f64::from(b) * (1.0 - alpha)).round() as u8;
+        Rgb(ch(fg.0, bg.0), ch(fg.1, bg.1), ch(fg.2, bg.2))
+    }
+
+    /// 004 T046: la marca «fuente» de `raw/`, las cantidades del panel de etiquetas y los
+    /// fragmentos de resultados usan `.dim-label` (texto blanco al 55 % en libadwaita) sobre la
+    /// barra lateral, las tarjetas y la vista; las etiquetas de Lectura usan el color de enlace.
+    #[test]
+    fn search_and_tag_labels_meet_wcag_aa() {
+        let white = Rgb(0xff, 0xff, 0xff);
+        for bg in [WINDOW_BG, VIEW_BG, SIDEBAR_BG, HEADERBAR_BG, CARD_BG] {
+            let dim = blend(white, 0.55, bg);
+            let r = contrast_ratio(dim, bg);
+            assert!(r >= 4.5, "dim-label sobre {bg:?}: {r:.2} < 4.5");
+        }
+        for bg in [SIDEBAR_BG, CARD_BG] {
+            let r = contrast_ratio(LINK_FG, bg);
+            assert!(r >= 4.5, "etiqueta sobre {bg:?}: {r:.2} < 4.5");
+        }
+    }
+
     #[test]
     fn search_match_colors_meet_wcag_aa() {
         let r_match = contrast_ratio(SEARCH_MATCH_FG, SEARCH_MATCH_BG);

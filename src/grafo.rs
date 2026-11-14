@@ -501,4 +501,83 @@ mod tests {
         // Lejos de ambos: nada.
         assert_eq!(vista.nodo_en(5000.0, 5000.0), None);
     }
+
+    /// SC-1/SC-2 de la 008: tiempo de armar el cuadro (snapshot) con 5000 nodos y ~15000 aristas
+    /// a tres niveles de zoom, en una ventana de 1280×800. Se corre en release:
+    /// `cargo test --release --bin orbital grafo::tests::sc_cuadro_5000 -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "medición; requiere acceso GTK"]
+    fn sc_cuadro_5000() {
+        gtk::init().expect("se necesita acceso GTK");
+        let notas: Vec<String> = (0..MAX_NODOS).map(|n| format!("wiki/n{n:05}.md")).collect();
+        let enlaces: Vec<(String, String)> = (0..MAX_NODOS)
+            .flat_map(|n| {
+                [n * 7 + 13, n * 31 + 5, n + 1].map(|m| {
+                    (
+                        format!("wiki/n{n:05}.md"),
+                        format!("wiki/n{:05}.md", m % MAX_NODOS),
+                    )
+                })
+            })
+            .collect();
+        let datos = Rc::new(GrafoDatos::desde(notas, enlaces));
+        let aristas = datos.aristas.len();
+        let vista = VistaGrafo::new();
+        vista.set_datos(datos);
+        let ventana = gtk::Window::builder()
+            .default_width(1280)
+            .default_height(800)
+            .child(&vista)
+            .build();
+        ventana.present();
+        let ctx = glib::MainContext::default();
+        for _ in 0..30 {
+            ctx.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            vista.width() > 1000 && vista.height() > 600,
+            "el lienzo tiene que estar asignado: {}×{}",
+            vista.width(),
+            vista.height()
+        );
+        let pintable = gtk::WidgetPaintable::new(Some(&vista));
+        for (nombre, zoom, pan) in [
+            ("todo el grafo", 0.25, 0.0),
+            ("normal", 1.0, 900.0),
+            ("con etiquetas", 2.5, 3000.0),
+        ] {
+            vista.imp().vista.set(Vista {
+                pan_x: pan,
+                pan_y: pan,
+                zoom,
+            });
+            let mut ms: Vec<f64> = (0..60)
+                .map(|_| {
+                    let snap = gtk::Snapshot::new();
+                    let t = std::time::Instant::now();
+                    pintable.snapshot(&snap, 1280.0, 800.0);
+                    let nodo = snap.to_node();
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    assert!(nodo.is_some(), "el cuadro dibuja algo");
+                    ms
+                })
+                .collect();
+            ms.sort_by(f64::total_cmp);
+            println!(
+                "GRAFO {nombre} (zoom {zoom}, {aristas} aristas): mediana {:.2} ms, p95 {:.2} ms, máx {:.2} ms",
+                ms[30], ms[57], ms[59]
+            );
+        }
+        // Hover: buscar el nodo bajo el mouse recorre todos los nodos.
+        let t = std::time::Instant::now();
+        for k in 0..1000 {
+            let _ = vista.nodo_en(f64::from(k % 1280), f64::from(k % 800));
+        }
+        println!(
+            "GRAFO nodo_en: {:.1} µs por evento",
+            t.elapsed().as_secs_f64() * 1e6 / 1000.0
+        );
+        ventana.destroy();
+    }
 }
