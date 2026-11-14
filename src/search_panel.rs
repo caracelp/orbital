@@ -517,6 +517,26 @@ impl SearchPanel {
     }
 
     #[allow(dead_code)]
+    /// Activa la primera fila de coincidencia (no de nota) cuyo fragmento contiene `text`, como
+    /// un clic o Intro. Devuelve si la encontró. Para las pruebas: AT-SPI no expone la activación
+    /// de las filas de un `GtkListView` (solo `listitem.scroll-to`).
+    #[cfg(test)]
+    pub fn activate_match(&self, text: &str) -> bool {
+        let store = &self.0.list_store;
+        for pos in 0..store.n_items() {
+            let Some(item) = store.item(pos).and_downcast::<SearchRowItem>() else {
+                continue;
+            };
+            if let Some(SearchRowData::Match { snippet, .. }) = item.data()
+                && snippet.contains(text)
+            {
+                self.0.list_view.emit_by_name::<()>("activate", &[&pos]);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn set_search_query(&self, text: &str) {
         self.0.search_entry.set_text(text);
         self.0.search_entry.set_position(-1);

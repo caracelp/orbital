@@ -194,16 +194,13 @@ def main():
                 match_row = c
                 break
     assert match_row is not None, "Debe existir una fila de coincidencia de línea"
-    print(f"Activando fila: {match_row.get_name()}")
-    do_action(match_row)
-    time.sleep(0.6)
-
-    # Verificar que el editor abrió la nota entropia
-    editor_text = find_one("text", "Contenido de la nota")
-    if not editor_text:
-        editor_text = find_one("text", "*")
-    print(f"Nota abierta en editor.")
-    print("[OK] Escenario 1.3: Elegir coincidencia abre la nota en la línea correspondiente.")
+    # GTK 4.24 solo expone `listitem.scroll-to` en las filas de un GtkListView: AT-SPI no puede
+    # activarlas (antes este escenario «pasaba» sin abrir nada). La activación real (clic o Intro)
+    # y la línea a la vista los cubre la prueba GTK en proceso `us1_open_match_same_note`:
+    #   cargo test --bin orbital search_open_tests -- --ignored
+    print(f"Fila de coincidencia presente: {match_row.get_role_name()}")
+    print("[LÍMITE] Escenario 1.3: la activación de la fila no es accionable por AT-SPI; "
+          "la cubre la prueba GTK us1_open_match_same_note.")
 
     # --- ESCENARIO 1.4: Nota HTML busca texto del cuerpo e ignora etiquetas ---
     print("\n--- Probando Escenario 1.4: Búsqueda en notas HTML ---")

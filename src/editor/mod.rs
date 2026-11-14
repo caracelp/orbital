@@ -1505,6 +1505,13 @@ impl Editor {
         self.0.session.borrow().as_ref().map(|s| s.path().clone())
     }
 
+    /// Línea del cursor en el texto (desde 1), para las pruebas.
+    #[cfg(test)]
+    pub fn cursor_line(&self) -> i32 {
+        let b = &self.0.buffer;
+        b.iter_at_mark(&b.get_insert()).line() + 1
+    }
+
     /// Hay cambios que todavía no están en el disco.
     pub fn has_pending(&self) -> bool {
         self.0
