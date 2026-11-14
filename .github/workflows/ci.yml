@@ -30,7 +30,7 @@ jobs:
             xorg-server-xvfb \
             rust
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: Swatinem/rust-cache@v2
 

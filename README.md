@@ -98,10 +98,11 @@ La lista completa está en la app, en **Ayuda → Atajos** (`Ctrl+?`).
 cargo run
 ```
 
-Requiere Rust estable y las bibliotecas de desarrollo de GTK4, libadwaita y WebKitGTK 6.0:
+Requiere Rust estable y las bibliotecas de desarrollo de GTK4, libadwaita, GtkSourceView 5 y
+WebKitGTK 6.0:
 
-- **Arch:** `gtk4`, `libadwaita`, `webkitgtk-6.0`
-- **Debian/Ubuntu:** los paquetes `-dev` correspondientes
+- **Arch:** `gtk4`, `libadwaita`, `gtksourceview5`, `webkitgtk-6.0`
+- **Debian/Ubuntu:** `libgtk-4-dev`, `libadwaita-1-dev`, `libgtksourceview-5-dev`, `libwebkitgtk-6.0-dev`
 
 Herramientas de desarrollo:
 

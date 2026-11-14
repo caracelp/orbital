@@ -16,11 +16,12 @@ Los dos que más se rompen:
 
 ## Entorno
 
-Rust estable y las bibliotecas de desarrollo de GTK4, libadwaita y WebKitGTK 6.0:
+Rust estable y las bibliotecas de desarrollo de GTK4, libadwaita, GtkSourceView 5 y WebKitGTK 6.0:
 
-- **Arch:** `gtk4`, `libadwaita`, `webkitgtk-6.0`
-- **Debian/Ubuntu:** los paquetes `-dev` correspondientes (`libwebkit2gtk-4.1-dev` incluye el de GTK4
-  en versiones recientes; revisalo contra `pkg-config --exists webkitgtk-6.0`)
+- **Arch:** `gtk4`, `libadwaita`, `gtksourceview5`, `webkitgtk-6.0`
+- **Debian/Ubuntu:** `libgtk-4-dev`, `libadwaita-1-dev`, `libgtksourceview-5-dev` y
+  `libwebkitgtk-6.0-dev` (no `libwebkit2gtk-4.1-dev`, que es la de GTK3); revisalo con
+  `pkg-config --exists webkitgtk-6.0`
 
 ## Compilar y verificar
 
