@@ -36,7 +36,7 @@ python3 -I tools/atspi.py elegir "nota-00001"
 sleep 1
 
 # Cambiar a vista Código si no lo está
-python3 -I tools/atspi.py activar "button" "Código" || true
+python3 -I tools/atspi.py activar frame "Orbital" win.view-code || true
 sleep 0.5
 
 # AT-SPI no da foco en GTK4 y el autocompletado solo se abre con el editor enfocado: abrir y

@@ -29,7 +29,7 @@ python3 -I tools/atspi.py activar "button" "wiki"
 sleep 1
 python3 -I tools/atspi.py elegir "nota-00001"
 sleep 1
-python3 -I tools/atspi.py activar "radio button" "Código"
+python3 -I tools/atspi.py activar frame "Orbital" win.view-code
 sleep 1
 python3 -I tools/atspi.py escribir "text" "Texto de la nota" "Cambio verificado por AT-SPI\n"
 sleep 0.5

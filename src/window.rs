@@ -35,6 +35,9 @@ struct Inner {
     /// Sección «Recientes» del explorador y sus rutas (las cinco últimas notas abiertas).
     recent_list: gtk::Box,
     recientes: RefCell<Vec<String>>,
+    /// Lo que muestra la sección ahora: se reconstruye solo si cambia (reabrir la misma nota, o
+    /// recargar la lista por un cambio en disco, no toca los widgets).
+    recientes_vistos: RefCell<Option<Vec<String>>>,
     /// «Cambiar orden» del explorador: árbol en orden inverso.
     tree_reversed: Cell<bool>,
     sidebar_title: adw::WindowTitle,
@@ -308,10 +311,27 @@ impl Window {
             .show_end_title_buttons(false)
             .css_classes(["flat", "orbital-note-toolbar"])
             .build();
-        content_header.set_title_widget(Some(&content_title));
+        // Ruta de la nota a la izquierda (maqueta: `note-path`); el subtítulo de `content_title`
+        // ya la arma con «solo lectura» y el estado del guardado.
+        let note_path = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .css_classes(["orbital-note-path"])
+            .build();
+        content_title
+            .bind_property("subtitle", &note_path, "label")
+            .sync_create()
+            .build();
+        content_title
+            .bind_property("subtitle", &note_path, "tooltip-text")
+            .sync_create()
+            .build();
+        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        content_header.pack_start(&note_path);
         let note_menu_button = menu_button(
             "view-more-symbolic",
-            "Opciones de la nota",
+            "Más opciones de la nota",
             &[
                 ("Renombrar o mover…", "win.rename", "F2"),
                 ("Archivar", "win.archive", "Ctrl+Mayús+A"),
@@ -323,9 +343,52 @@ impl Window {
                 ("Mover a la papelera", "win.trash", "Supr"),
             ],
         );
+        note_menu_button.set_child(Some(&crate::iconos::Icono::new("mas", 18)));
+        note_menu_button.add_css_class("flat");
+        note_menu_button.add_css_class("orbital-iconbtn");
         content_header.pack_end(&note_menu_button);
-        // El selector de vista del editor (Código, Lectura, Dividida) va a la izquierda.
-        content_header.pack_start(code_editor.switcher());
+        // Botón de vista de la maqueta: muestra el modo actual y pasa al siguiente (Código →
+        // Lectura → Dividida en `.md`; Código ↔ Visual en `.html`). El grupo del editor sigue
+        // siendo el estado (y lo usan Ctrl+1/2/3), pero ya no se muestra.
+        let view_icon = crate::iconos::Icono::new("codigo", 18);
+        let view_button = gtk::Button::builder()
+            .child(&view_icon)
+            .css_classes(["flat", "orbital-iconbtn"])
+            .build();
+        {
+            let group = code_editor.switcher().clone();
+            view_button.connect_clicked(move |_| {
+                let n = group.n_toggles();
+                if n > 0 {
+                    group.set_active((group.active() + 1) % n);
+                }
+            });
+            let (icon, button) = (view_icon.clone(), view_button.clone());
+            let poner = move |g: &adw::ToggleGroup| {
+                let name = g.active_name();
+                let (glifo, nombre) = match name.as_deref() {
+                    Some("lectura") => ("archivo", "Lectura"),
+                    Some("dividida") => ("barra-izquierda", "Pantalla dividida"),
+                    Some("visual") => ("archivo", "Visual"),
+                    _ => ("codigo", "Código"),
+                };
+                icon.set_nombre(glifo);
+                button.set_tooltip_text(Some(&format!(
+                    "Modo de vista: {nombre} (clic para cambiar)"
+                )));
+                button.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Modo de vista: {nombre}. Cambiar al siguiente"
+                ))]);
+            };
+            poner(code_editor.switcher());
+            code_editor.switcher().connect_active_name_notify(poner);
+            code_editor
+                .switcher()
+                .bind_property("visible", &view_button, "visible")
+                .sync_create()
+                .build();
+        }
+        content_header.pack_end(&view_button);
         let content_view = adw::ToolbarView::new();
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
@@ -386,7 +449,7 @@ impl Window {
         // un panel redimensionable.
         let (files_section, _) = seccion_plegable("Explorador", &sidebar_scroll, true, true);
         sidebar_scroll.set_vexpand(true);
-        tag_panel.widget().set_height_request(190);
+        tag_panel.widget().set_height_request(150);
         let (tags_section, _) = seccion_plegable("Etiquetas", tag_panel.widget(), true, false);
         let recent_list = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -403,12 +466,23 @@ impl Window {
         let (favorites_section, favorites_toggle) =
             seccion_plegable("Favoritos", &favorites_empty, false, false);
         favorites_toggle.set_sensitive(false);
+        // Las secciones de abajo comparten un desplazamiento que puede encogerse: el alto
+        // mínimo de la barra no depende de cuántas etiquetas o notas recientes haya (si no, la
+        // ventana se pasa de alto y GTK la desacomoda).
+        let lower = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lower.append(&tags_section);
+        lower.append(&recent_section);
+        lower.append(&favorites_section);
+        let lower_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(260)
+            .child(&lower)
+            .build();
         let explorer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         files_section.set_vexpand(true);
         explorer.append(&files_section);
-        explorer.append(&tags_section);
-        explorer.append(&recent_section);
-        explorer.append(&favorites_section);
+        explorer.append(&lower_scroll);
 
         let sidebar_stack = adw::ViewStack::new();
         sidebar_stack.add_named(&explorer, Some("archivos"));
@@ -647,8 +721,10 @@ impl Window {
             .content(&toasts)
             .build();
 
-        // Anchos de la maqueta: 260/280 px; por debajo de 900 px, 220/220; por debajo de 680 px,
-        // 190/170; en ventanas muy angostas, las barras se superponen al centro.
+        // Anchos de la maqueta: 260/280 px y, en ventanas más chicas, 220/220 y 190/170. La
+        // maqueta lo hace a 900 y 680 px; acá el centro tiene un ancho mínimo real (la columna del
+        // editor y las propiedades), así que los cortes van antes y, si no entra, la barra
+        // derecha y después la izquierda se superponen al centro en vez de recortarlo.
         let ancho_maximo = |px: f64| {
             adw::Breakpoint::new(adw::BreakpointCondition::new_length(
                 adw::BreakpointConditionLengthType::MaxWidth,
@@ -656,7 +732,7 @@ impl Window {
                 adw::LengthUnit::Px,
             ))
         };
-        for (px, izq, der) in [(900.0, 220.0, 220.0), (680.0, 190.0, 170.0)] {
+        for (px, izq, der) in [(1180.0, 220.0, 220.0), (1060.0, 190.0, 170.0)] {
             let bp = ancho_maximo(px);
             for (vista, ancho) in [(&split, izq), (&right_split, der)] {
                 bp.add_setter(vista, "min-sidebar-width", Some(&ancho.to_value()));
@@ -664,7 +740,12 @@ impl Window {
             }
             window.add_breakpoint(bp);
         }
-        let bp = ancho_maximo(520.0);
+        let bp = ancho_maximo(1040.0);
+        bp.add_setter(&right_split, "collapsed", Some(&true.to_value()));
+        bp.add_setter(&split, "min-sidebar-width", Some(&190.0.to_value()));
+        bp.add_setter(&split, "max-sidebar-width", Some(&190.0.to_value()));
+        window.add_breakpoint(bp);
+        let bp = ancho_maximo(760.0);
         bp.add_setter(&split, "collapsed", Some(&true.to_value()));
         bp.add_setter(&right_split, "collapsed", Some(&true.to_value()));
         window.add_breakpoint(bp);
@@ -685,6 +766,7 @@ impl Window {
             status,
             recent_list,
             recientes: RefCell::new(Vec::new()),
+            recientes_vistos: RefCell::new(None),
             tree_reversed: Cell::new(false),
             sidebar_title,
             content_title,
@@ -1797,6 +1879,11 @@ impl Window {
 
     /// Sección «Recientes» del explorador: las cinco últimas notas abiertas.
     fn refresh_recent(&self) {
+        let top: Vec<String> = self.0.recientes.borrow().iter().take(5).cloned().collect();
+        if self.0.recientes_vistos.borrow().as_ref() == Some(&top) {
+            return;
+        }
+        *self.0.recientes_vistos.borrow_mut() = Some(top);
         let list = &self.0.recent_list;
         while let Some(c) = list.first_child() {
             list.remove(&c);

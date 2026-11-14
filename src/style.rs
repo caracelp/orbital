@@ -211,7 +211,8 @@ fn v13_css() -> String {
          .orbital-count {{ font-size: 11px; color: {muted}; font-feature-settings: \"tnum\"; }}\n\
          .orbital-split > .sidebar-pane {{ box-shadow: inset -1px 0 {line}; }}\n\
          .orbital-right > .sidebar-pane {{ background: {side}; box-shadow: inset 1px 0 {line}; }}\n\
-         headerbar.orbital-note-toolbar {{ background: transparent; box-shadow: none; min-height: 40px; }}\n\
+         headerbar.orbital-note-toolbar {{ background: transparent; box-shadow: none; min-height: 40px; padding: 0 9px; }}\n\
+         .orbital-note-path {{ color: {muted}; font-size: 11px; padding-left: 10px; }}\n\
          .orbital-status {{ min-height: 34px; padding: 0 6px 0 16px; background: {top}; box-shadow: inset 0 1px {line}; font-size: 11px; color: {muted}; }}\n\
          .orbital-status-tab {{ padding: 0 0 0 12px; background: {top}; border: 1px solid {line}; border-bottom: none; border-radius: 9px 9px 0 0; font-size: 11px; color: {muted}; margin-right: 4px; }}\n\
          .navigation-sidebar > row:selected {{ background: {selected}; color: {selected_fg}; }}\n\

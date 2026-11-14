@@ -41,7 +41,7 @@ python3 -I tools/atspi.py activar "button" "wiki"
 sleep 1
 python3 -I tools/atspi.py elegir "nota-00001"
 sleep 1
-python3 -I tools/atspi.py activar "radio button" "Lectura"
+python3 -I tools/atspi.py activar frame "Orbital" win.view-read
 sleep 1
 python3 -I tools/atspi.py esperar "text" "Nota formateada"
 
