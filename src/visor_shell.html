@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; background: #161618; color: #e6e6e6; font-family: sans-serif; }
+#paginas { margin: 0 auto; max-width: 940px; }
+.pagina { margin: 14px auto; position: relative; box-shadow: 0 0 8px rgba(0,0,0,.55); background: #fff; }
+.pagina canvas { display: block; }
+.pagina .texto { position: absolute; inset: 0; overflow: hidden; line-height: 1; }
+.texto span { position: absolute; color: transparent; cursor: text; white-space: pre; transform-origin: 0 0; }
+#estado { position: fixed; top: 8px; left: 0; right: 0; text-align: center; color: #949498;
+  font-size: 12px; pointer-events: none; z-index: 5; }
+.sin-cargar { opacity: .55; }
+::highlight(sel) { background-color: rgba(184, 70, 124, .5); }
+.resaltado { background-color: rgba(184, 70, 124, .5); }
+</style>
+</head>
+<body>
+<div id="estado">cargando…</div>
+<div id="paginas"></div>
+<script type="module">
+// Visor PDF de Orbital (016): PDF.js servido por el esquema propio orbital-pdf:, sin red.
+// La selección y el resaltado son offsets de caracteres sobre el texto concatenado de la
+// página (orden de la capa de texto); el PDF nunca se modifica.
+// El módulo de PDF.js se importa desde un blob URL (los import directos desde un esquema
+// propio quedan bloqueados por CORS de módulos; el blob pasa).
+const estado = document.getElementById("estado");
+const setTitle = () => { document.title = estado.textContent; };
+setTitle();
+const q = new URLSearchParams(location.search);
+const ruta = q.get("ruta") || "";
+const pageInicial = Math.max(1, parseInt(q.get("page") || "1", 10) || 1);
+const ancla = q.get("sel"); // "i,f" en el texto de pageInicial
+const enviar = (msg, datos) => {
+  try { window.webkit?.messageHandlers?.orbitalPdf?.postMessage(JSON.stringify({ msg, ...datos })); }
+  catch (e) { /* sin puente (por ejemplo, pruebas de la cáscara sola) */ }
+};
+const pdfjs = await import(URL.createObjectURL(
+  new Blob([await (await fetch("orbital-pdf://v/pdfjs")).text()], { type: "text/javascript" })
+));
+pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(
+  new Blob([await (await fetch("orbital-pdf://v/worker")).text()], { type: "text/javascript" })
+);
+
+// Punto de la selección (nodo + offset del Range) → offset en el texto de la página.
+const offsetDelPunto = (nodo, desplazamiento) => {
+  const span =
+    nodo.nodeType === Node.TEXT_NODE
+      ? nodo.parentElement?.closest("span")
+      : nodo.nodeType === Node.ELEMENT_NODE
+        ? (nodo.closest("span") || nodo.querySelector("span"))
+        : null;
+  if (!span) return null;
+  const pagina = span.closest(".pagina");
+  if (!pagina) return null;
+  const pre = document.createRange();
+  pre.selectNodeContents(span);
+  try { pre.setEnd(nodo, desplazamiento); } catch (e) { return null; }
+  const local = pre.toString().length;
+  const inicio = parseInt(span.dataset.inicio || "0", 10);
+  return { page: parseInt(pagina.dataset.page, 10), offset: inicio + local };
+};
+
+try {
+  const respuesta = await fetch(`orbital-pdf://v/doc?ruta=${encodeURIComponent(ruta)}`);
+  if (!respuesta.ok) throw new Error("HTTP " + respuesta.status);
+  const bytes = await respuesta.arrayBuffer();
+  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  estado.textContent = `${doc.numPages} páginas`;
+  setTitle();
+  const cont = document.getElementById("paginas");
+  const paginas = new Map(); // n → {div, cargada, texto}
+  const escalaBase = Math.min(1.35, Math.max(0.8, (window.innerWidth - 48) / 850));
+
+  // Resaltado del ancla por rango de caracteres (Custom Highlight API con reserva por clases).
+  const resaltar = (n, i, f) => {
+    const p = paginas.get(n);
+    if (!p || !p.cargada) return;
+    const capa = p.div.querySelector(".texto");
+    if (!capa) return;
+    let acumulado = 0;
+    let inicio = null;
+    let fin = null;
+    for (const span of capa.querySelectorAll("span")) {
+      const largo = (span.textContent || "").length;
+      if (inicio === null && acumulado + largo >= i) inicio = [span, i - acumulado];
+      if (acumulado + largo >= f) { fin = [span, Math.max(0, Math.min(f - acumulado, largo))]; break; }
+      acumulado += largo;
+    }
+    if (!inicio || !fin) return;
+    try {
+      const rango = new Range();
+      const nodoInicio = inicio[0].firstChild;
+      const nodoFin = fin[0].firstChild;
+      if (!nodoInicio || !nodoFin) throw new Error("sin texto");
+      rango.setStart(nodoInicio, Math.min(inicio[1], nodoInicio.length));
+      rango.setEnd(nodoFin, Math.min(fin[1], nodoFin.length));
+      if (CSS.highlights) {
+        CSS.highlights.set("sel", new Highlight(rango));
+        return;
+      }
+      // Reserva: marcar los nodos que intersecan (sin partir el texto).
+      for (const span of capa.querySelectorAll("span")) {
+        const desde = parseInt(span.dataset.inicio || "0", 10);
+        if (desde < f && desde + (span.textContent || "").length > i) {
+          span.classList.add("resaltado");
+        }
+      }
+    } catch (e) { /* rango inválido: nada */ }
+  };
+
+  const renderizar = async (n) => {
+    const p = paginas.get(n);
+    if (!p || p.cargada) return;
+    p.cargada = true;
+    const page = await doc.getPage(n);
+    const vp = page.getViewport({ scale: escalaBase });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(vp.width * devicePixelRatio);
+    canvas.height = Math.floor(vp.height * devicePixelRatio);
+    canvas.style.width = Math.floor(vp.width) + "px";
+    canvas.style.height = Math.floor(vp.height) + "px";
+    const ctx = canvas.getContext("2d");
+    await page.render({
+      canvasContext: ctx,
+      viewport: vp,
+      transform: [devicePixelRatio, 0, 0, devicePixelRatio, 0, 0],
+    }).promise;
+    p.div.classList.remove("sin-cargar");
+    p.div.style.height = Math.floor(vp.height) + "px";
+    p.div.style.setProperty("--scale-factor", escalaBase);
+    p.div.appendChild(canvas);
+    const capa = document.createElement("div");
+    capa.className = "texto";
+    p.div.appendChild(capa);
+    const contenido = await page.getTextContent();
+    const capaTexto = new pdfjs.TextLayer({
+      textContentSource: contenido,
+      container: capa,
+      viewport: vp,
+    });
+    await capaTexto.render();
+    let texto = "";
+    for (const span of capa.querySelectorAll("span")) {
+      span.dataset.inicio = String(texto.length);
+      texto += span.textContent || "";
+    }
+    p.texto = texto;
+    if (n === pageInicial) {
+      if (ancla) {
+        const [i, f] = ancla.split(",").map((v) => parseInt(v, 10));
+        if (Number.isFinite(i) && Number.isFinite(f)) resaltar(n, i, f);
+      }
+      p.div.scrollIntoView({ block: "start" });
+    }
+  };
+
+  // Páginas como placeholders; el render es bajo demanda.
+  for (let n = 1; n <= doc.numPages; n++) {
+    const div = document.createElement("div");
+    div.className = "pagina sin-cargar";
+    div.dataset.page = String(n);
+    cont.appendChild(div);
+    paginas.set(n, { div, cargada: false, texto: undefined });
+  }
+  const ver = new IntersectionObserver((entradas) => {
+    for (const e of entradas) {
+      if (e.isIntersecting) renderizar(parseInt(e.target.dataset.page, 10));
+    }
+  }, { rootMargin: "700px" });
+  for (const p of paginas.values()) ver.observe(p.div);
+  enviar("listo", { paginas: doc.numPages, ruta });
+} catch (e) {
+  estado.textContent = "No se pudo abrir el PDF: " + e.message;
+  setTitle();
+  enviar("error", { mensaje: String(e.message) });
+}
+
+// Selección → offsets en el texto de la página (misma convención que el ancla).
+document.addEventListener("pointerup", () => {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const a = offsetDelPunto(sel.anchorNode, sel.anchorOffset);
+  const b = offsetDelPunto(sel.focusNode, sel.focusOffset);
+  if (!a || !b || a.page !== b.page) return;
+  const inicio = Math.min(a.offset, b.offset);
+  const fin = Math.max(a.offset, b.offset);
+  const texto = sel.toString().replace(/\s+/g, " ").trim();
+  if (!texto) return;
+  enviar("seleccion", { page: a.page, inicio, fin, texto });
+}, true);
+</script>
+</body>
+</html>

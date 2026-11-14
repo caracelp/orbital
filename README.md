@@ -66,6 +66,8 @@ compatible con otros editores. Ninguna función escribe HTML en tus notas.
 - **Exportar la nota abierta** a HTML autónomo y PDF.
 - **Importar a Markdown**: un PDF, DOCX o HTML de `raw/` se convierte offline a una nota nueva
   en `wiki/`, vinculada al fuente en `sources`.
+- **Anotar PDFs**: visor embebido sin red, selecciones que se vuelven enlaces
+  `#page=N&sel=i,f` en tus notas y resaltados bidireccionales; el PDF nunca se modifica.
 - **Archivos externos por URL**: asocia un archivo de `raw/` a una URL y ábrelo en un webview
   embebido con sesión de red efímera.
 

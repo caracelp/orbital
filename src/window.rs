@@ -105,6 +105,12 @@ struct Inner {
     quitar_url: gtk::Button,
     /// Importar a Markdown (015): sensible solo para extensiones soportadas.
     importar_md: gtk::Button,
+    /// Ver el PDF (016): visible solo para `.pdf` en la vista externa.
+    ver_pdf: gtk::Button,
+    /// Visor PDF embebido (016).
+    visor: std::rc::Rc<crate::visor_pdf::VisorPdf>,
+    /// El PDF mostrado en el visor (para la búsqueda de resaltados).
+    visor_ruta: RefCell<Option<RelPath>>,
     url_web: webkit6::WebView,
     url_abrir: gtk::Button,
     url_ver_archivo: gtk::Button,
@@ -215,6 +221,13 @@ impl Window {
             .halign(gtk::Align::Center)
             .tooltip_text("Crea una nota Markdown en wiki/ (PDF, DOCX o HTML)")
             .build();
+        let ver_pdf = gtk::Button::builder()
+            .label("Ver el PDF")
+            .action_name("win.ver-pdf")
+            .css_classes(["pill", "suggested-action"])
+            .halign(gtk::Align::Center)
+            .visible(false)
+            .build();
         let externo_botones = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
@@ -224,6 +237,7 @@ impl Window {
         externo_botones.append(&asociar_url);
         externo_botones.append(&quitar_url);
         externo_botones.append(&importar_md);
+        externo_botones.append(&ver_pdf);
         let external_page = adw::StatusPage::builder()
             .icon_name("document-open-symbolic")
             .child(&externo_botones)
@@ -445,6 +459,10 @@ impl Window {
         // vivo (texto de la nota y bóveda) lo arma la ventana en cada refresco.
         let onstage = std::rc::Rc::new(crate::onstage::OnStage::new(&window));
 
+        // Visor PDF (016): página del stack; el webview y el esquema se crean al primer uso.
+        let visor = std::rc::Rc::new(crate::visor_pdf::VisorPdf::new());
+        content_stack.add_named(visor.page(), Some("pdf"));
+
         let this = Self(Rc::new(Inner {
             window,
             toasts,
@@ -491,6 +509,9 @@ impl Window {
             asociar_url,
             quitar_url,
             importar_md,
+            ver_pdf,
+            visor,
+            visor_ruta: RefCell::new(None),
             url_web,
             url_abrir,
             url_ver_archivo,
@@ -757,6 +778,10 @@ impl Window {
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
             simple("importar-md", Window::importar_md),
+            simple("ver-pdf", Window::ver_pdf_accion),
+            simple("test-pdf-seleccion", |w: &Window| {
+                w.0.visor.seleccion_de_prueba(1, 0, 6, "Informe");
+            }),
             simple("renumerar-notas-al-pie", |w| {
                 if w.0.code_editor.current_path().is_none() {
                     w.toast("Abrí una nota antes de renumerar");
@@ -1265,6 +1290,10 @@ impl Window {
                     Ok(Err(e)) => Err(e.to_string()),
                     Err(_) => Err("No se pudo leer la nota".to_owned()),
                 }
+            } else if entry.path.as_str().ends_with(".pdf") {
+                // Un PDF va a la vista externa con «Ver el PDF» (016): nunca se muestra como
+                // texto, aunque el archivo sea ASCII limpio.
+                Err("pdf".to_owned())
             } else {
                 // Cualquier otro archivo: si es texto UTF-8 se muestra; si no, se ofrece abrirlo afuera.
                 // Los NUL interiores panean `set_text`: se recortan.
@@ -1339,6 +1368,7 @@ impl Window {
                         .unwrap_or_default();
                     i.importar_md
                         .set_visible(orbital_vault::importar::formato_de_ext(&extension).is_some());
+                    i.ver_pdf.set_visible(extension == "pdf");
                     match url {
                         Some(url) => {
                             i.url_web.load_uri(url.as_str());
@@ -2479,6 +2509,29 @@ impl Window {
         self.0.onstage.presentar();
     }
 
+    /// Abre el visor del PDF abierto de `raw/` (016, acción de ventana y botón).
+    fn ver_pdf_accion(&self) {
+        let Some(ruta) = self.0.externo_ruta.borrow().clone() else {
+            self.toast("Abrí un PDF de raw/ antes de verlo");
+            return;
+        };
+        if !ruta.as_str().ends_with(".pdf") {
+            self.toast("Solo se ve así un PDF");
+            return;
+        }
+        self.ver_pdf(&ruta, &crate::visor_pdf::Ancla::default());
+    }
+
+    /// Muestra el PDF en el visor embebido, con ancla si la hay (016).
+    fn ver_pdf(&self, ruta: &RelPath, ancla: &crate::visor_pdf::Ancla) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        *self.0.visor_ruta.borrow_mut() = Some(ruta.clone());
+        self.0.visor.abrir(vault, ruta.clone(), ancla);
+        self.0.content_stack.set_visible_child_name("pdf");
+    }
+
     /// Importa el archivo abierto de `raw/` a una nota Markdown nueva en `wiki/` (015).
     fn importar_md(&self) {
         let Some(vault) = self.0.vault.borrow().clone() else {
@@ -2732,6 +2785,49 @@ impl Window {
         self.0.code_editor.set_on_error(move |msg| {
             if let Some(i) = weak.upgrade() {
                 Window(i).toast(msg);
+            }
+        });
+        // Visor PDF (016): copiar enlace al portapapeles, resaltados y volver.
+        let visor = self.0.visor.clone();
+        visor.set_on_copiar({
+            let weak = Rc::downgrade(&self.0);
+            move |texto| {
+                let Some(i) = weak.upgrade() else {
+                    return;
+                };
+                let bytes = gtk::glib::Bytes::from(texto.as_bytes());
+                let contenido =
+                    gtk::gdk::ContentProvider::for_bytes("text/plain;charset=utf-8", &bytes);
+                match i.window.clipboard().set_content(Some(&contenido)) {
+                    Ok(()) => Window(i).toast("Enlace copiado al portapapeles"),
+                    _ => Window(i).toast("No se pudo copiar el enlace"),
+                }
+            }
+        });
+        visor.set_on_resaltados({
+            let weak = Rc::downgrade(&self.0);
+            move || {
+                let Some(i) = weak.upgrade() else {
+                    return;
+                };
+                let nombre = i
+                    .visor_ruta
+                    .borrow()
+                    .as_ref()
+                    .map(|r| r.file_name().to_owned())
+                    .unwrap_or_default();
+                let consulta = format!("\"raw/{nombre}\"");
+                i.search_panel.set_search_query(&consulta);
+                Window(i).focus_search();
+            }
+        });
+        visor.set_on_volver({
+            let weak = Rc::downgrade(&self.0);
+            move || {
+                let Some(i) = weak.upgrade() else {
+                    return;
+                };
+                i.content_stack.set_visible_child_name("externo");
             }
         });
         // OnStage (014): material vivo, apertura de enlaces y aviso de cambios del editor.
@@ -4066,6 +4162,13 @@ impl Window {
 
         match res {
             orbital_vault::Resolution::Found(p) => {
+                // Un PDF va al visor embebido, con su ancla de página/selección si la hay (016).
+                if p.as_str().ends_with(".pdf") {
+                    let ancla_txt = clean_url.split_once('#').map(|(_, a)| a).unwrap_or("");
+                    let ancla = crate::visor_pdf::parse_ancla(ancla_txt);
+                    self.ver_pdf(&p, &ancla);
+                    return;
+                }
                 self.show_path(p.as_str());
                 if let Some(anchor) = parsed.anchor {
                     let w_clone = self.clone();
