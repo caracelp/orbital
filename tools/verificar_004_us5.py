@@ -78,7 +78,8 @@ def activate(node):
 
 
 wait_for(get_app, "No se encontró la instancia propia de Orbital")
-activate(wait_for(lambda: exact("Etiquetas"), "No aparece la pestaña Etiquetas"))
+# 025: las etiquetas son una sección del explorador; basta con el modo Explorador.
+activate(wait_for(lambda: exact("Explorador de archivos"), "No aparece el modo Explorador"))
 root = wait_for(lambda: tag_button("fisica", 2), "Falta raíz Física con conteo único de 2 notas")
 wait_for(lambda: tag_button("biologia", 1), "No se indexó la nota HTML Unicode")
 for ignored in ("#123", "#ff00ff", "#codigo", "#oculta"):
@@ -111,7 +112,7 @@ else:
 
 # Actualización externa: se elimina una etiqueta y se agrega otra, sin reabrir bóveda.
 (vault / "wiki/uno.md").write_text("Texto #nueva.\n", encoding="utf-8")
-activate(wait_for(lambda: exact("Etiquetas"), "No aparece pestaña Etiquetas"))
+activate(wait_for(lambda: exact("Explorador de archivos"), "No aparece el modo Explorador"))
 wait_for(lambda: tag_button("nueva", 1), "El árbol no se actualizó ante cambio externo")
 wait_for(lambda: tag_button("fisica", 1), "El conteo del padre quedó desactualizado")
 print("OK: actualización incremental del panel por cambio externo")

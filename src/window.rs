@@ -30,7 +30,13 @@ struct Inner {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
     stack: gtk::Stack,
-    split: adw::NavigationSplitView,
+    split: adw::OverlaySplitView,
+    status: crate::status_bar::StatusBar,
+    /// Sección «Recientes» del explorador y sus rutas (las cinco últimas notas abiertas).
+    recent_list: gtk::Box,
+    recientes: RefCell<Vec<String>>,
+    /// «Cambiar orden» del explorador: árbol en orden inverso.
+    tree_reversed: Cell<bool>,
     sidebar_title: adw::WindowTitle,
     content_title: adw::WindowTitle,
     banner: adw::Banner,
@@ -295,7 +301,13 @@ impl Window {
         content_stack.add_named(&grafo_page, Some("grafo"));
 
         let content_title = adw::WindowTitle::new("", "");
-        let content_header = adw::HeaderBar::new();
+        // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
+        // cabecera única de arriba).
+        let content_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .css_classes(["flat", "orbital-note-toolbar"])
+            .build();
         content_header.set_title_widget(Some(&content_title));
         let note_menu_button = menu_button(
             "view-more-symbolic",
@@ -334,27 +346,22 @@ impl Window {
             .content(&content_stack)
             .sidebar(right.widget())
             .sidebar_position(gtk::PackType::End)
-            .show_sidebar(false)
-            .min_sidebar_width(260.0)
-            .max_sidebar_width(340.0)
+            .show_sidebar(true)
+            .min_sidebar_width(280.0)
+            .max_sidebar_width(280.0)
+            .sidebar_width_fraction(1.0)
             .build();
-        let backlinks_button = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Retroenlaces (Ctrl+Mayús+B)")
-            .build();
-        backlinks_button
-            .update_property(&[gtk::accessible::Property::Label("Panel de retroenlaces")]);
-        backlinks_button
-            .bind_property("active", &right_split, "show-sidebar")
+        right_split.add_css_class("orbital-right");
+        let backlinks_button =
+            crate::iconos::boton_alternable("barra-derecha", "Mostrar barra derecha");
+        // La barra manda el estado inicial al botón (no al revés).
+        right_split
+            .bind_property("show-sidebar", &backlinks_button, "active")
             .bidirectional()
             .sync_create()
             .build();
-        content_header.pack_end(&backlinks_button);
+        nombre_de_barra(&backlinks_button, "barra derecha", "Ctrl+]");
         content_view.set_content(Some(&right_split));
-        let content_page = adw::NavigationPage::builder()
-            .title("Nota")
-            .child(&content_view)
-            .build();
 
         // --- Lista de la bóveda (barra lateral) ---
         let list_view = gtk::ListView::builder()
@@ -373,22 +380,39 @@ impl Window {
         let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
 
         let tag_panel = crate::tag_panel::TagPanel::new();
-        // --- ViewStack de la barra lateral izquierda (T014) ---
-        let sidebar_stack = adw::ViewStack::new();
-        let files_page = sidebar_stack.add_titled(&sidebar_scroll, Some("archivos"), "Archivos");
-        files_page.set_icon_name(Some("folder-symbolic"));
-
-        let search_page =
-            sidebar_stack.add_titled(search_panel.widget(), Some("busqueda"), "Búsqueda");
-        search_page.set_icon_name(Some("edit-find-symbolic"));
-        sidebar_stack
-            .add_titled(tag_panel.widget(), Some("etiquetas"), "Etiquetas")
-            .set_icon_name(Some("tag-symbolic"));
-
-        let sidebar_switcher = adw::ViewSwitcher::builder()
-            .stack(&sidebar_stack)
-            .policy(adw::ViewSwitcherPolicy::Narrow)
+        // --- Explorador (025): secciones plegables Explorador, Etiquetas, Recientes y Favoritos ---
+        // El árbol sigue siendo un `ListView` virtual con su propio desplazamiento (con 5000 notas
+        // no puede ir dentro de un scroll de altura natural); las otras secciones van debajo, en
+        // un panel redimensionable.
+        let (files_section, _) = seccion_plegable("Explorador", &sidebar_scroll, true, true);
+        sidebar_scroll.set_vexpand(true);
+        tag_panel.widget().set_height_request(190);
+        let (tags_section, _) = seccion_plegable("Etiquetas", tag_panel.widget(), true, false);
+        let recent_list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(["orbital-recent"])
             .build();
+        recent_list.update_property(&[gtk::accessible::Property::Label("Notas recientes")]);
+        let (recent_section, _) = seccion_plegable("Recientes", &recent_list, true, false);
+        let favorites_empty = gtk::Label::builder()
+            .label("Pendiente: todavía no se pueden marcar notas favoritas")
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(["orbital-count"])
+            .build();
+        let (favorites_section, favorites_toggle) =
+            seccion_plegable("Favoritos", &favorites_empty, false, false);
+        favorites_toggle.set_sensitive(false);
+        let explorer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        files_section.set_vexpand(true);
+        explorer.append(&files_section);
+        explorer.append(&tags_section);
+        explorer.append(&recent_section);
+        explorer.append(&favorites_section);
+
+        let sidebar_stack = adw::ViewStack::new();
+        sidebar_stack.add_named(&explorer, Some("archivos"));
+        sidebar_stack.add_named(search_panel.widget(), Some("busqueda"));
 
         let banner = adw::Banner::builder()
             .title("Estructura incompleta")
@@ -399,14 +423,65 @@ impl Window {
             .build();
 
         let sidebar_title = adw::WindowTitle::new("Orbital", "");
-        let sidebar_header = adw::HeaderBar::new();
-        sidebar_header.set_title_widget(Some(&sidebar_switcher));
-        sidebar_header.pack_start(&open_menu_button());
-        let new_button = menu_button("list-add-symbolic", "Nueva nota", &[]);
-        sidebar_header.pack_end(&new_button);
+        sidebar_title.set_halign(gtk::Align::Start);
+        // Cabecera de acciones del explorador (maqueta: crear nota, crear carpeta, cambiar orden,
+        // mostrar archivo actual, colapsar carpetas).
+        let new_button = menu_button("list-add-symbolic", "Crear nota", &[]);
+        new_button.set_child(Some(&crate::iconos::Icono::new("crear-nota", 18)));
+        new_button.add_css_class("flat");
+        new_button.add_css_class("orbital-iconbtn");
+        let left_head = gtk::Box::builder()
+            .css_classes(["orbital-left-head"])
+            .homogeneous(true)
+            .build();
+        left_head.append(&new_button);
+        for (icono, nombre, accion) in [
+            ("crear-carpeta", "Crear carpeta", "win.new-folder"),
+            ("ordenar", "Cambiar orden", "win.sort-tree"),
+            ("ubicar", "Mostrar archivo actual", "win.reveal-current"),
+            ("colapsar", "Colapsar carpetas", "win.collapse-folders"),
+        ] {
+            let b = crate::iconos::boton(icono, nombre);
+            b.set_action_name(Some(accion));
+            left_head.append(&b);
+        }
+        // Pie: la bóveda abierta y el menú para cambiarla.
+        let vault_button = menu_button(
+            "folder-open-symbolic",
+            "Cambiar de bóveda",
+            &[
+                ("Abrir una carpeta…", "win.open", "Ctrl+O"),
+                (
+                    "Abrir como bóveda de Orbital…",
+                    "win.open-as",
+                    "Ctrl+Mayús+O",
+                ),
+                ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
+                ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
+            ],
+        );
+        vault_button.set_child(Some(&crate::iconos::Icono::new("cambiar", 18)));
+        vault_button.add_css_class("flat");
+        vault_button.add_css_class("orbital-iconbtn");
+        vault_button.set_direction(gtk::ArrowType::Up);
+        let vault_footer = gtk::Box::builder()
+            .spacing(8)
+            .css_classes(["orbital-vault-footer"])
+            .build();
+        let vault_mark = gtk::Label::builder()
+            .label("◈")
+            .css_classes(["orbital-pink"])
+            .build();
+        vault_mark.set_accessible_role(gtk::AccessibleRole::Presentation);
+        sidebar_title.set_hexpand(true);
+        vault_footer.append(&vault_mark);
+        vault_footer.append(&sidebar_title);
+        vault_footer.append(&vault_button);
         let sidebar_view = adw::ToolbarView::new();
-        sidebar_view.add_top_bar(&sidebar_header);
+        sidebar_view.add_css_class("orbital-left");
+        sidebar_view.add_top_bar(&left_head);
         sidebar_view.add_top_bar(&banner);
+        sidebar_view.add_bottom_bar(&vault_footer);
         let gone_banner = adw::Banner::builder()
             .title("La bóveda no está disponible. Orbital no va a escribir nada.")
             .revealed(true)
@@ -414,15 +489,141 @@ impl Window {
             .build();
         sidebar_view.add_top_bar(&gone_banner);
         sidebar_view.set_content(Some(&sidebar_stack));
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Bóveda")
-            .child(&sidebar_view)
+
+        // --- Esqueleto de la interfaz v13 (025) ---
+        // Barra izquierda (260 px) y barra derecha (280 px) plegables; en ventanas angostas se
+        // superponen al centro (breakpoint de abajo).
+        let split = adw::OverlaySplitView::builder()
+            .sidebar(&sidebar_view)
+            .content(&content_view)
+            .min_sidebar_width(260.0)
+            .max_sidebar_width(260.0)
+            .sidebar_width_fraction(1.0)
+            .build();
+        split.add_css_class("orbital-split");
+        let left_toggle =
+            crate::iconos::boton_alternable("barra-izquierda", "Ocultar barra izquierda");
+        // La barra manda el estado inicial al botón (no al revés).
+        split
+            .bind_property("show-sidebar", &left_toggle, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        nombre_de_barra(&left_toggle, "barra izquierda", "Ctrl+[");
+
+        // Modos de la barra izquierda, alineados sobre ella: Explorador, Búsqueda y Guardados
+        // (pendiente: guardar notas todavía no existe).
+        let modes = gtk::Box::builder()
+            .spacing(8)
+            .css_classes(["orbital-left-modes"])
+            .build();
+        modes.update_property(&[gtk::accessible::Property::Label("Modo del panel izquierdo")]);
+        let mode_files = crate::iconos::boton_alternable("crear-carpeta", "Explorador de archivos");
+        let mode_search = crate::iconos::boton_alternable("buscar", "Búsqueda");
+        mode_search.set_group(Some(&mode_files));
+        let mode_saved = crate::iconos::boton_alternable("marcador", "Guardados (pendiente)");
+        mode_saved.set_sensitive(false);
+        mode_files.set_active(true);
+        for (b, page) in [(&mode_files, "archivos"), (&mode_search, "busqueda")] {
+            let stack = sidebar_stack.clone();
+            b.connect_toggled(move |b| {
+                if b.is_active() {
+                    stack.set_visible_child_name(page);
+                }
+            });
+        }
+        {
+            let (f, se) = (mode_files.clone(), mode_search.clone());
+            sidebar_stack.connect_visible_child_name_notify(move |st| {
+                match st.visible_child_name().as_deref() {
+                    Some("busqueda") => se.set_active(true),
+                    _ => f.set_active(true),
+                }
+            });
+        }
+        modes.append(&mode_files);
+        modes.append(&mode_search);
+        modes.append(&mode_saved);
+        split
+            .bind_property("show-sidebar", &modes, "visible")
+            .sync_create()
             .build();
 
-        let split = adw::NavigationSplitView::builder()
-            .sidebar(&sidebar_page)
-            .content(&content_page)
+        let brand = gtk::Box::builder()
+            .spacing(9)
+            .css_classes(["orbital-brand"])
             .build();
+        brand.append(
+            &gtk::Label::builder()
+                .label("◎")
+                .css_classes(["orbital-planet"])
+                .build(),
+        );
+        brand.append(&gtk::Label::new(Some("orbital")));
+        brand.update_property(&[gtk::accessible::Property::Label("Orbital")]);
+
+        let main_header = adw::HeaderBar::builder()
+            .css_classes(["orbital-top"])
+            .build();
+        let left_slot = gtk::Box::builder()
+            .width_request(58)
+            .halign(gtk::Align::Start)
+            .build();
+        left_toggle.set_halign(gtk::Align::Center);
+        left_toggle.set_hexpand(true);
+        left_slot.append(&left_toggle);
+        main_header.pack_start(&left_slot);
+        main_header.pack_start(&modes);
+        main_header.set_title_widget(Some(&brand));
+        main_header.pack_end(&backlinks_button);
+
+        // Riel de navegación (58 px): acciones reales; Canva y DB desactivados hasta su spec.
+        let rail = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .css_classes(["orbital-rail"])
+            .build();
+        rail.update_property(&[gtk::accessible::Property::Label("Navegación principal")]);
+        for (icono, nombre, accion) in [
+            ("selector", "Selector rápido", Some("win.quick-open")),
+            ("red", "Conexiones", Some("win.ver-grafo")),
+            ("canva", "Crear canva (todavía no disponible)", None),
+            ("db", "Crear base de datos (todavía no disponible)", None),
+            (
+                "comandos",
+                "Paleta de comandos",
+                Some("win.command-palette"),
+            ),
+        ] {
+            let b = crate::iconos::boton(icono, nombre);
+            match accion {
+                Some(a) => b.set_action_name(Some(a)),
+                None => b.set_sensitive(false),
+            }
+            rail.append(&b);
+        }
+        let settings = crate::iconos::boton("configuracion", "Configuración general");
+        settings.set_action_name(Some("win.preferences"));
+        settings.set_vexpand(true);
+        settings.set_valign(gtk::Align::End);
+        rail.append(&settings);
+
+        // Barra inferior plegable: versión, totales de la bóveda y contadores de la nota.
+        let status = crate::status_bar::StatusBar::new();
+
+        let workspace = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        workspace.append(&rail);
+        split.set_hexpand(true);
+        workspace.append(&split);
+        let root_view = adw::ToolbarView::builder()
+            .top_bar_style(adw::ToolbarStyle::Flat)
+            .bottom_bar_style(adw::ToolbarStyle::Flat)
+            .build();
+        root_view.add_top_bar(&main_header);
+        let overlay = gtk::Overlay::builder().child(&workspace).build();
+        overlay.add_overlay(status.tab());
+        root_view.set_content(Some(&overlay));
+        root_view.add_bottom_bar(status.widget());
 
         // --- Pantalla inicial ---
         let start = start_page();
@@ -431,7 +632,7 @@ impl Window {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         stack.add_named(&start, Some("inicio"));
-        stack.add_named(&split, Some("boveda"));
+        stack.add_named(&root_view, Some("boveda"));
 
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stack));
@@ -446,14 +647,27 @@ impl Window {
             .content(&toasts)
             .build();
 
-        // En pantallas estrechas, la barra lateral y el visor se apilan.
-        let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            600.0,
-            adw::LengthUnit::Sp,
-        ));
-        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-        window.add_breakpoint(breakpoint);
+        // Anchos de la maqueta: 260/280 px; por debajo de 900 px, 220/220; por debajo de 680 px,
+        // 190/170; en ventanas muy angostas, las barras se superponen al centro.
+        let ancho_maximo = |px: f64| {
+            adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+                adw::BreakpointConditionLengthType::MaxWidth,
+                px,
+                adw::LengthUnit::Px,
+            ))
+        };
+        for (px, izq, der) in [(900.0, 220.0, 220.0), (680.0, 190.0, 170.0)] {
+            let bp = ancho_maximo(px);
+            for (vista, ancho) in [(&split, izq), (&right_split, der)] {
+                bp.add_setter(vista, "min-sidebar-width", Some(&ancho.to_value()));
+                bp.add_setter(vista, "max-sidebar-width", Some(&ancho.to_value()));
+            }
+            window.add_breakpoint(bp);
+        }
+        let bp = ancho_maximo(520.0);
+        bp.add_setter(&split, "collapsed", Some(&true.to_value()));
+        bp.add_setter(&right_split, "collapsed", Some(&true.to_value()));
+        window.add_breakpoint(bp);
 
         // OnStage (014): ventana separada, oculta hasta «Presentar con OnStage». El material
         // vivo (texto de la nota y bóveda) lo arma la ventana en cada refresco.
@@ -468,6 +682,10 @@ impl Window {
             toasts,
             stack,
             split,
+            status,
+            recent_list,
+            recientes: RefCell::new(Vec::new()),
+            tree_reversed: Cell::new(false),
             sidebar_title,
             content_title,
             banner,
@@ -656,6 +874,7 @@ impl Window {
         this.setup_raw_drop();
         this.setup_editor();
         this.setup_list();
+        this.setup_status_counts();
         this
     }
 
@@ -760,6 +979,22 @@ impl Window {
                 let s = &w.0.right_split;
                 s.set_show_sidebar(!s.shows_sidebar());
             }),
+            simple("toggle-left", |w| {
+                let s = &w.0.split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
+            simple("toggle-right", |w| {
+                let s = &w.0.right_split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
+            simple("new-folder", Window::ask_new_folder),
+            simple("sort-tree", Window::sort_tree),
+            simple("reveal-current", |w| {
+                if let Some(e) = w.0.current_entry.borrow().clone() {
+                    w.reveal(e.path.as_str());
+                }
+            }),
+            simple("collapse-folders", Window::collapse_folders),
             simple("search", Window::focus_search),
             simple("toggle-search-raw", Window::toggle_search_raw),
             simple("find", |w| w.0.code_editor.open_find(false)),
@@ -845,6 +1080,8 @@ impl Window {
         app.set_accels_for_action("win.command-palette", &["<Control><Shift>p"]);
         app.set_accels_for_action("win.exportar-html", &["<Control><Shift>e"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
+        app.set_accels_for_action("win.toggle-left", &["<Control>bracketleft"]);
+        app.set_accels_for_action("win.toggle-right", &["<Control>bracketright"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -1181,56 +1418,22 @@ impl Window {
             }
         });
 
-        let root = children_model(&tree, "");
-        let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
-            let path = item.downcast_ref::<gtk::StringObject>()?.string();
-            tree.get(path.as_str())
-                .map(|_| children_model(&tree, path.as_str()).upcast::<gio::ListModel>())
-        });
-        let selection = gtk::SingleSelection::builder()
-            .model(&tree_model)
-            .autoselect(false)
-            .build();
-        // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
-        let this = self.clone();
-        selection.connect_selection_changed(move |sel, _, _| {
-            let Some(row) = sel.selected_item().and_downcast::<gtk::TreeListRow>() else {
-                return;
-            };
-            let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
-                return;
-            };
-            if let Some(e) = this
-                .entry(path.string().as_str())
-                .filter(|e| e.kind != EntryKind::Folder)
-            {
-                this.show_entry(e);
+        // Totales de la barra inferior (maqueta: notas, carpetas y archivos).
+        let (mut notas, mut carpetas, mut archivos) = (0, 0, 0);
+        for e in arc_vault.entries() {
+            match e.kind {
+                EntryKind::Folder => carpetas += 1,
+                EntryKind::AtomNote | EntryKind::SynthesisNote => {
+                    notas += 1;
+                    archivos += 1;
+                }
+                _ => archivos += 1,
             }
-        });
-        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
-        let expanded: std::collections::HashSet<String> = i
-            .list_view
-            .model()
-            .map(|old| {
-                (0..old.n_items())
-                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
-                    .filter(|r| r.is_expanded())
-                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
-                    .map(|o| o.string().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        i.list_view.set_model(Some(&selection));
-        let mut n = 0;
-        while n < selection.n_items() {
-            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
-                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
-                && expanded.contains(o.string().as_str())
-            {
-                row.set_expanded(true);
-            }
-            n += 1;
         }
+        i.status.set_totales(notas, carpetas, archivos);
+        *i.recientes.borrow_mut() = AppState::load().recent_notes_for(arc_vault.root()).to_vec();
+        self.refresh_recent();
+        self.set_list_model(tree);
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
@@ -1326,6 +1529,13 @@ impl Window {
             }
             match loaded {
                 Ok(Some(note)) => {
+                    {
+                        let mut r = this.0.recientes.borrow_mut();
+                        let rel = note.path.as_str();
+                        r.retain(|p| p != rel);
+                        r.insert(0, rel.to_owned());
+                    }
+                    this.refresh_recent();
                     if this.0.persist.get() {
                         let rel = note.path.as_str().to_string();
                         let vroot = vault.root().to_path_buf();
@@ -1399,7 +1609,6 @@ impl Window {
                     action.set_enabled(enabled);
                 }
             }
-            i.split.set_show_content(true);
         });
     }
 
@@ -1487,6 +1696,224 @@ impl Window {
                 i.pending_line.set(Some((path, line)));
             }
         }
+    }
+
+    /// Arma el modelo del árbol de la bóveda (con el orden elegido) y conserva las carpetas que
+    /// estaban abiertas.
+    fn set_list_model(&self, tree: Rc<Tree>) {
+        let i = &self.0;
+        let reversed = i.tree_reversed.get();
+        let root = children_model(&tree, "", reversed);
+        let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
+            let path = item.downcast_ref::<gtk::StringObject>()?.string();
+            tree.get(path.as_str())
+                .map(|_| children_model(&tree, path.as_str(), reversed).upcast::<gio::ListModel>())
+        });
+        let selection = gtk::SingleSelection::builder()
+            .model(&tree_model)
+            .autoselect(false)
+            .build();
+        // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
+        let this = self.clone();
+        selection.connect_selection_changed(move |sel, _, _| {
+            let Some(row) = sel.selected_item().and_downcast::<gtk::TreeListRow>() else {
+                return;
+            };
+            let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
+                return;
+            };
+            if let Some(e) = this
+                .entry(path.string().as_str())
+                .filter(|e| e.kind != EntryKind::Folder)
+            {
+                this.show_entry(e);
+            }
+        });
+        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
+        let expanded: std::collections::HashSet<String> = i
+            .list_view
+            .model()
+            .map(|old| {
+                (0..old.n_items())
+                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
+                    .filter(|r| r.is_expanded())
+                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
+                    .map(|o| o.string().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        i.list_view.set_model(Some(&selection));
+        let mut n = 0;
+        while n < selection.n_items() {
+            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
+                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
+                && expanded.contains(o.string().as_str())
+            {
+                row.set_expanded(true);
+            }
+            n += 1;
+        }
+    }
+
+    /// Contadores de la barra inferior: se recalculan 150 ms después del último cambio de texto o
+    /// de selección (nunca en cada tecla sobre todo el texto: rompería el presupuesto por tecla).
+    fn setup_status_counts(&self) {
+        let generation = Rc::new(Cell::new(0u64));
+        let schedule = {
+            let weak = Rc::downgrade(&self.0);
+            let generation = generation.clone();
+            move || {
+                let g = generation.get() + 1;
+                generation.set(g);
+                let weak = weak.clone();
+                let generation = generation.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                    if generation.get() != g {
+                        return;
+                    }
+                    let Some(i) = weak.upgrade() else { return };
+                    let b = i.code_editor.buffer();
+                    let (start, end) = b.bounds();
+                    let total = crate::status_bar::contar(&b.text(&start, &end, false));
+                    let seleccion = b
+                        .selection_bounds()
+                        .map(|(a, z)| crate::status_bar::contar(&b.text(&a, &z, false)));
+                    i.status.set_contadores(total, seleccion);
+                });
+            }
+        };
+        let buffer = self.0.code_editor.buffer();
+        let s = schedule.clone();
+        buffer.connect_changed(move |_| s());
+        let s = schedule.clone();
+        buffer.connect_has_selection_notify(move |_| s());
+        // Extender una selección mueve la marca sin cambiar `has-selection`.
+        buffer.connect_mark_set(move |b, _, mark| {
+            if b.has_selection() && (mark == &b.selection_bound() || mark == &b.get_insert()) {
+                schedule();
+            }
+        });
+    }
+
+    /// Sección «Recientes» del explorador: las cinco últimas notas abiertas.
+    fn refresh_recent(&self) {
+        let list = &self.0.recent_list;
+        while let Some(c) = list.first_child() {
+            list.remove(&c);
+        }
+        let recientes = self.0.recientes.borrow();
+        if recientes.is_empty() {
+            list.append(
+                &gtk::Label::builder()
+                    .label("Sin notas recientes")
+                    .xalign(0.0)
+                    .css_classes(["orbital-count"])
+                    .build(),
+            );
+            return;
+        }
+        for ruta in recientes.iter().take(5) {
+            let nombre = ruta.rsplit('/').next().unwrap_or(ruta);
+            let b = gtk::Button::builder()
+                .child(
+                    &gtk::Label::builder()
+                        .label(nombre)
+                        .xalign(0.0)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .build(),
+                )
+                .tooltip_text(ruta.as_str())
+                .css_classes(["flat", "orbital-list-item"])
+                .build();
+            b.update_property(&[gtk::accessible::Property::Label(&format!("Abrir {nombre}"))]);
+            let weak = Rc::downgrade(&self.0);
+            let ruta = ruta.clone();
+            b.connect_clicked(move |_| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).show_path(&ruta);
+                }
+            });
+            list.append(&b);
+        }
+    }
+
+    /// «Cambiar orden» (maqueta): invierte el orden del árbol.
+    fn sort_tree(&self) {
+        self.0.tree_reversed.set(!self.0.tree_reversed.get());
+        let tree = self.0.tree.borrow().clone();
+        self.set_list_model(tree);
+    }
+
+    /// «Colapsar carpetas» (maqueta): si hay carpetas abiertas, las cierra todas; si no, abre
+    /// todas.
+    fn collapse_folders(&self) {
+        let Some(model) = self.0.list_view.model() else {
+            return;
+        };
+        let rows = || {
+            (0..model.n_items()).filter_map(|n| model.item(n).and_downcast::<gtk::TreeListRow>())
+        };
+        if rows().any(|r| r.is_expanded()) {
+            // De abajo hacia arriba: cerrar una carpeta saca a sus hijas de la lista.
+            for n in (0..model.n_items()).rev() {
+                if let Some(r) = model.item(n).and_downcast::<gtk::TreeListRow>() {
+                    r.set_expanded(false);
+                }
+            }
+        } else {
+            let mut n = 0;
+            while n < model.n_items() {
+                if let Some(r) = model.item(n).and_downcast::<gtk::TreeListRow>()
+                    && r.is_expandable()
+                {
+                    r.set_expanded(true);
+                }
+                n += 1;
+            }
+        }
+    }
+
+    /// «Crear carpeta»: pide el nombre y la crea donde se crean las notas nuevas.
+    fn ask_new_folder(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder().activates_default(true).build();
+            field.update_property(&[gtk::accessible::Property::Label("Nombre de la carpeta")]);
+            let dialog = adw::AlertDialog::new(Some("Carpeta nueva"), Some("¿Cómo se llama?"));
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("create", "Crear");
+            dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("create"));
+            dialog.set_close_response("cancel");
+            let f = field.clone();
+            glib::idle_add_local_once(move || {
+                f.grab_focus();
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "create" {
+                return;
+            }
+            let name = field.text().trim().to_owned();
+            if name.is_empty() || name.contains('/') || name.starts_with('.') {
+                return this.toast("El nombre no puede estar vacío, tener «/» ni empezar con «.»");
+            }
+            warn_portable(&this, &name);
+            let dir = this
+                .target_dir()
+                .map_or_else(|| "wiki".to_owned(), |d| d.as_str().to_owned());
+            let abs = vault.root().join(&dir).join(&name);
+            let result = gio::spawn_blocking(move || std::fs::create_dir(abs)).await;
+            match result {
+                Ok(Ok(())) => this.toast(&format!("Carpeta «{name}» creada en {dir}/")),
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    this.toast(&format!("Ya existe «{name}» en {dir}/"))
+                }
+                _ => this.toast("No se pudo crear la carpeta"),
+            }
+        });
     }
 
     /// El webview de la URL asociada (009), creado al primer uso con una sesión de red efímera:
@@ -4416,13 +4843,16 @@ fn build_tree(entries: &[Entry]) -> Tree {
     tree
 }
 
-fn children_model(tree: &Tree, parent: &str) -> gio::ListStore {
+fn children_model(tree: &Tree, parent: &str, reversed: bool) -> gio::ListStore {
     let store = gio::ListStore::new::<gtk::StringObject>();
     if let Some(children) = tree.get(parent) {
-        let items: Vec<gtk::StringObject> = children
+        let mut items: Vec<gtk::StringObject> = children
             .iter()
             .map(|e| gtk::StringObject::new(e.path.as_str()))
             .collect();
+        if reversed {
+            items.reverse();
+        }
         store.extend_from_slice(&items);
     }
     store
@@ -4440,21 +4870,69 @@ fn icon_for(kind: EntryKind) -> &'static str {
     }
 }
 
-fn open_menu_button() -> gtk::MenuButton {
-    menu_button(
-        "folder-open-symbolic",
-        "Abrir",
-        &[
-            ("Abrir una carpeta…", "win.open", "Ctrl+O"),
-            (
-                "Abrir como bóveda de Orbital…",
-                "win.open-as",
-                "Ctrl+Mayús+O",
-            ),
-            ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
-            ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
-        ],
-    )
+/// Una sección plegable del explorador (maqueta: rótulo en mayúsculas con chevron). Devuelve la
+/// sección y su botón de encabezado.
+fn seccion_plegable(
+    titulo: &str,
+    contenido: &impl IsA<gtk::Widget>,
+    abierta: bool,
+    expandir: bool,
+) -> (gtk::Box, gtk::Button) {
+    let chevron = crate::iconos::Icono::new("abajo", 14);
+    let rotulo = gtk::Label::builder()
+        .label(titulo.to_uppercase())
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    let fila = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    fila.append(&rotulo);
+    fila.append(&chevron);
+    let boton = gtk::Button::builder()
+        .child(&fila)
+        .css_classes(["flat", "orbital-section"])
+        .build();
+    boton.update_property(&[gtk::accessible::Property::Label(titulo)]);
+    let revealer = gtk::Revealer::builder()
+        .child(contenido)
+        .reveal_child(abierta)
+        .vexpand(expandir && abierta)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .build();
+    let marcar = {
+        let chevron = chevron.clone();
+        move |b: &gtk::Button, abierta: bool| {
+            b.update_state(&[gtk::accessible::State::Expanded(Some(abierta))]);
+            chevron.set_nombre(if abierta { "abajo" } else { "derecha" });
+        }
+    };
+    marcar(&boton, abierta);
+    let r = revealer.clone();
+    boton.connect_clicked(move |b| {
+        let abierta = !r.reveals_child();
+        r.set_reveal_child(abierta);
+        r.set_vexpand(expandir && abierta);
+        marcar(b, abierta);
+    });
+    let seccion = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["orbital-explorer-section"])
+        .build();
+    seccion.append(&boton);
+    seccion.append(&revealer);
+    (seccion, boton)
+}
+
+/// Nombre accesible y tooltip de un botón de barra plegable, según esté abierta o no
+/// («Ocultar barra izquierda (Ctrl+[)» / «Mostrar…»), como los `aria-label` de la maqueta.
+fn nombre_de_barra(boton: &gtk::ToggleButton, barra: &'static str, atajo: &'static str) {
+    let poner = move |b: &gtk::ToggleButton| {
+        let verbo = if b.is_active() { "Ocultar" } else { "Mostrar" };
+        let nombre = format!("{verbo} {barra}");
+        b.set_tooltip_text(Some(&format!("{nombre} ({atajo})")));
+        b.update_property(&[gtk::accessible::Property::Label(&nombre)]);
+    };
+    poner(boton);
+    boton.connect_active_notify(poner);
 }
 
 /// Botón con un menú hecho de botones planos.

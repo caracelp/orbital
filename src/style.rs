@@ -25,6 +25,26 @@ pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
 /// Fondo de las transclusiones `![[nota]]` en la vista formateada (rosado muy oscuro).
 pub const EMBED_BG: Rgb = Rgb(0x23, 0x18, 0x20);
 
+// Interfaz v13 (025): tonos de la maqueta `orbital_estructura_base_v13.html`.
+/// Texto atenuado (etiquetas de sección, barra inferior, pestañas inactivas).
+pub const MUTED_FG: Rgb = Rgb(0x99, 0x94, 0x9e);
+/// Texto principal de la maqueta.
+pub const TEXT_FG: Rgb = Rgb(0xee, 0xe9, 0xed);
+/// Íconos en reposo.
+pub const ICON_FG: Rgb = Rgb(0xbd, 0xb7, 0xc0);
+/// Líneas divisorias.
+pub const LINE: Rgb = Rgb(0x30, 0x30, 0x36);
+/// Fondo del riel de navegación.
+pub const RAIL_BG: Rgb = Rgb(0x14, 0x13, 0x16);
+/// Botón de ícono bajo el puntero, presionado y elegido en el riel.
+pub const HOVER_BG: Rgb = Rgb(0x32, 0x25, 0x30);
+pub const PRESSED_BG: Rgb = Rgb(0x36, 0x23, 0x30);
+pub const RAIL_ACTIVE_BG: Rgb = Rgb(0x40, 0x23, 0x36);
+/// Fila elegida (árbol, resultados, menús).
+pub const SELECTED_BG: Rgb = Rgb(0x39, 0x25, 0x32);
+/// Texto de la fila elegida.
+pub const SELECTED_FG: Rgb = Rgb(0xff, 0xd2, 0xe6);
+
 /// Enlaces a notas existentes.
 pub const LINK_FG: Rgb = ACCENT_TEXT;
 /// Enlaces a notas pendientes o inexistentes (rosa atenuado con contraste WCAG AA ≥ 4,5:1).
@@ -156,6 +176,7 @@ fn css() -> String {
          popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
          listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
     );
+    out.push_str(&v13_css());
     for (name, c) in vars {
         out.push_str(&format!(
             "@define-color {} {};\n",
@@ -164,6 +185,55 @@ fn css() -> String {
         ));
     }
     out
+}
+
+/// Estilos de la interfaz v13 (025): medidas y tonos de la maqueta.
+fn v13_css() -> String {
+    format!(
+        "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; }}\n\
+         .orbital-brand {{ font-size: 18px; font-weight: 650; letter-spacing: -0.5px; }}\n\
+         .orbital-planet {{ color: {pink}; font-size: 24px; }}\n\
+         .orbital-pink {{ color: {pink}; }}\n\
+         .orbital-left-modes {{ min-width: 250px; padding-left: 10px; }}\n\
+         button.orbital-iconbtn {{ min-width: 32px; min-height: 32px; padding: 0; border-radius: 9px; color: {icon}; }}\n\
+         button.orbital-iconbtn:hover {{ background: {hover}; color: {pink}; }}\n\
+         button.orbital-iconbtn:checked {{ background: {pressed}; color: {pink}; }}\n\
+         button.orbital-iconbtn:disabled {{ color: alpha({icon}, 0.4); }}\n\
+         .orbital-rail {{ min-width: 58px; background: {rail}; box-shadow: inset -1px 0 {line}; padding: 14px 0; }}\n\
+         .orbital-rail button.orbital-iconbtn {{ min-width: 38px; min-height: 38px; margin: 0 10px; }}\n\
+         .orbital-rail button.orbital-iconbtn:checked {{ background: {rail_active}; }}\n\
+         .orbital-left {{ background: {side}; }}\n\
+         .orbital-left-head {{ padding: 12px 10px 10px; box-shadow: inset 0 -1px {line}; }}\n\
+         .orbital-left-head button.orbital-iconbtn, .orbital-left-head menubutton > button {{ min-height: 34px; }}\n\
+         .orbital-vault-footer {{ padding: 12px; box-shadow: inset 0 1px {line}; }}\n\
+         .orbital-section {{ font-size: 10px; letter-spacing: 1.5px; color: {muted}; }}\n\
+         .orbital-section:hover {{ color: {pink}; }}\n\
+         .orbital-count {{ font-size: 11px; color: {muted}; font-feature-settings: \"tnum\"; }}\n\
+         .orbital-split > .sidebar-pane {{ box-shadow: inset -1px 0 {line}; }}\n\
+         .orbital-right > .sidebar-pane {{ background: {side}; box-shadow: inset 1px 0 {line}; }}\n\
+         headerbar.orbital-note-toolbar {{ background: transparent; box-shadow: none; min-height: 40px; }}\n\
+         .orbital-status {{ min-height: 34px; padding: 0 6px 0 16px; background: {top}; box-shadow: inset 0 1px {line}; font-size: 11px; color: {muted}; }}\n\
+         .orbital-status-tab {{ padding: 0 0 0 12px; background: {top}; border: 1px solid {line}; border-bottom: none; border-radius: 9px 9px 0 0; font-size: 11px; color: {muted}; margin-right: 4px; }}\n\
+         .navigation-sidebar > row:selected {{ background: {selected}; color: {selected_fg}; }}\n\
+         .orbital-explorer-section {{ padding: 6px 8px 4px; }}\n\
+         .orbital-explorer-section + .orbital-explorer-section {{ box-shadow: inset 0 1px {line}; }}\n\
+         button.orbital-section {{ min-height: 30px; padding: 0 6px; }}\n\
+         button.orbital-list-item {{ color: {text}; padding: 6px 7px; font-weight: normal; }}\n\
+         button.orbital-list-item:hover {{ background: {selected}; color: {pink}; }}\n",
+        top = HEADERBAR_BG.hex(),
+        line = LINE.hex(),
+        pink = ACCENT_TEXT.hex(),
+        icon = ICON_FG.hex(),
+        hover = HOVER_BG.hex(),
+        pressed = PRESSED_BG.hex(),
+        rail = RAIL_BG.hex(),
+        rail_active = RAIL_ACTIVE_BG.hex(),
+        side = SIDEBAR_BG.hex(),
+        muted = MUTED_FG.hex(),
+        selected = SELECTED_BG.hex(),
+        selected_fg = SELECTED_FG.hex(),
+        text = TEXT_FG.hex(),
+    )
 }
 
 /// Aplica la base oscura y el acento rosa a toda la app.
@@ -324,6 +394,23 @@ mod tests {
             let r = contrast_ratio(LINK_FG, bg);
             assert!(r >= 4.5, "etiqueta sobre {bg:?}: {r:.2} < 4.5");
         }
+    }
+
+    /// 025: los tonos de la maqueta v13 cumplen WCAG AA (texto 4,5:1; íconos 3:1).
+    #[test]
+    fn v13_colors_meet_wcag_aa() {
+        for bg in [HEADERBAR_BG, SIDEBAR_BG, RAIL_BG, VIEW_BG, WINDOW_BG] {
+            for fg in [MUTED_FG, TEXT_FG, ICON_FG, ACCENT_TEXT] {
+                let r = contrast_ratio(fg, bg);
+                assert!(r >= 4.5, "{fg:?} sobre {bg:?}: {r:.2} < 4.5");
+            }
+        }
+        for bg in [HOVER_BG, PRESSED_BG, RAIL_ACTIVE_BG, SELECTED_BG] {
+            let r = contrast_ratio(ACCENT_TEXT, bg);
+            assert!(r >= 4.5, "rosa sobre {bg:?}: {r:.2} < 4.5");
+        }
+        let r = contrast_ratio(SELECTED_FG, SELECTED_BG);
+        assert!(r >= 4.5, "fila elegida: {r:.2} < 4.5");
     }
 
     #[test]

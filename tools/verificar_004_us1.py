@@ -96,7 +96,7 @@ def set_text(node, text):
 
 
 def switch_to_search():
-    tab = find_one("page tab", "Búsqueda", timeout=5.0)
+    tab = find_one("toggle button", "Búsqueda", timeout=5.0)
     if tab:
         do_action(tab)
         time.sleep(0.4)

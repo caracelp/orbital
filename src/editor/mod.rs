@@ -1505,6 +1505,11 @@ impl Editor {
         self.0.session.borrow().as_ref().map(|s| s.path().clone())
     }
 
+    /// El texto de la nota (para los contadores de la barra inferior).
+    pub fn buffer(&self) -> &sourceview5::Buffer {
+        &self.0.buffer
+    }
+
     /// Línea del cursor en el texto (desde 1), para las pruebas.
     #[cfg(test)]
     pub fn cursor_line(&self) -> i32 {
