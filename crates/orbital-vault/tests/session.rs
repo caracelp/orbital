@@ -200,11 +200,14 @@ fn failure_then_retry() {
     let p = rel("wiki/fisica/entropia.md");
     let (mut s, text) = EditSession::open(&v.read_note(&p).unwrap());
     s.edited();
-    let dir = t.path().join("wiki/fisica");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    // Hacer fallar el guardado poniendo una carpeta en el destino: falla incluso corriendo
+    // como root (la CI corre en un contenedor como root, y a root no le afectan los modos).
+    let destino = p.to_path(t.path());
+    fs::remove_file(&destino).unwrap();
+    fs::create_dir(&destino).unwrap();
     let r = s.save(&v, &format!("{text}z\n"), &ctx());
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::remove_dir(&destino).unwrap();
+    fs::write(&destino, &text).unwrap();
     assert!(r.is_err());
     assert!(matches!(s.state(), SessionState::Failed { .. }));
     assert_eq!(s.failures(), 1);
