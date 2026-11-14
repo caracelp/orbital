@@ -326,17 +326,17 @@ fn substitute_runs<'a>(
         run: &mut Vec<(pulldown_cmark::CowStr<'a>, std::ops::Range<usize>)>,
         out: &mut Vec<Ev<'a>>,
         repl: &[(std::ops::Range<usize>, &str)],
-        base: usize,
     ) {
         if run.is_empty() {
             return;
         }
         let run_start = run[0].1.start;
         let run_end = run.last().expect("corrida no vacía").1.end;
-        // Corrida sin marcadores: los eventos originales pasan intactos, sin realocar.
-        let hay = repl.iter().any(|(r, _)| {
-            r.start.saturating_sub(base) < run_end && r.end.saturating_sub(base) > run_start
-        });
+        // Corrida sin marcadores: los eventos originales pasan intactos, sin realocar. Los rangos
+        // de `repl` ya son relativos al cuerpo (sin el frontmatter): no se resta `base` de nuevo.
+        let hay = repl
+            .iter()
+            .any(|(r, _)| r.start < run_end && r.end > run_start);
         if !hay {
             out.extend(run.drain(..).map(|(t, r)| (Event::Text(t), r)));
             return;
@@ -361,20 +361,11 @@ fn substitute_runs<'a>(
         if let Event::Text(t) = ev {
             run.push((t, range));
         } else {
-            flush(&mut run, &mut out, &repl_rel, base);
+            flush(&mut run, &mut out, &repl_rel);
             out.push((ev, range));
         }
     }
-    flush(&mut run, &mut out, &repl_rel, base);
-    for (ev, range) in events.drain(..) {
-        if let Event::Text(t) = ev {
-            run.push((t, range));
-        } else {
-            flush(&mut run, &mut out, &repl_rel, base);
-            out.push((ev, range));
-        }
-    }
-    flush(&mut run, &mut out, &repl_rel, base);
+    flush(&mut run, &mut out, &repl_rel);
     out
 }
 

@@ -193,10 +193,19 @@ fn us4_webkit() {
         wait_dom(&web, "document.querySelectorAll('table').length", "1", &diagnostics).await;
         println!("OK: nombres accesibles y acciones de negrita, deshacer y tabla por AT-SPI");
         editor.flush().await;
+        // La ventana puede no tener un cuadro listo todavía (captura vacía): reintentar.
         let paintable = gtk::WidgetPaintable::new(Some(&window));
-        let snapshot = gtk::Snapshot::new();
-        paintable.snapshot(&snapshot, f64::from(window.width()), f64::from(window.height()));
-        let node = snapshot.to_node().expect("captura de la ventana de prueba");
+        let mut node = None;
+        for _ in 0..40 {
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, f64::from(window.width()), f64::from(window.height()));
+            node = snapshot.to_node();
+            if node.is_some() {
+                break;
+            }
+            glib::timeout_future(std::time::Duration::from_millis(50)).await;
+        }
+        let node = node.expect("captura de la ventana de prueba");
         let texture = window.renderer().unwrap().render_texture(&node, None);
         texture.save_to_png(artifacts.join("visual.png")).unwrap();
         println!("OK: captura y árbol accesible en {}", artifacts.display());

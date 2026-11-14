@@ -95,6 +95,20 @@ def elegir(nombre):
         lambda: find_one("list", "Contenido de la bóveda", timeout=0.5),
         "No está la lista de la bóveda",
     )
+    # Lista virtual: primero subir hasta el principio (la fila buscada puede haber quedado arriba
+    # del área visible), después bajar de a tandas.
+    for _ in range(50):
+        if lista.get_child_count() == 0:
+            break
+        primera = lista.get_child_at_index(0)
+        antes = primera.get_name()
+        accion = primera.get_action_iface()
+        if accion is None:
+            break
+        accion.do_action(0)
+        time.sleep(SONDEO)
+        if lista.get_child_at_index(0).get_name() == antes:
+            break
     hits = []
     for _ in range(50):
         nombres = [
@@ -112,7 +126,7 @@ def elegir(nombre):
         time.sleep(SONDEO)
         if lista.get_child_at_index(lista.get_child_count() - 1).get_name() == antes:
             break
-    assert hits, f"No hay ninguna fila con {nombre!r}"
+    assert hits, f"No hay ninguna fila con {nombre!r}; filas: {nombres}"
     lista.get_selection_iface().select_child(hits[0])
     time.sleep(PAUSA)
 

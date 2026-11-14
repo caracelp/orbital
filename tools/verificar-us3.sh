@@ -39,6 +39,12 @@ sleep 1
 python3 -I tools/atspi.py activar "button" "Código" || true
 sleep 0.5
 
+# AT-SPI no da foco en GTK4 y el autocompletado solo se abre con el editor enfocado: abrir y
+# cerrar la búsqueda en la nota devuelve el foco a la vista Código (como en la 005 US5).
+python3 -I tools/atspi.py activar frame "Orbital" win.find
+python3 -I tools/atspi.py activar "button" "Cerrar búsqueda"
+sleep 0.5
+
 # Escribir texto con trigger [[ al final
 python3 -I tools/atspi.py escribir "text" "Texto de la nota" "# Título\n\nTexto con enlace a [["
 sleep 1

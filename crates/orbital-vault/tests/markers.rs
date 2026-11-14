@@ -198,3 +198,23 @@ fn escenario_2_3_no_toma_el_campo_ajeno() {
     let out = resolve_markers(text, &[]);
     assert_eq!(out[0].1, "«faltante»");
 }
+
+/// Regresión (2026-11-14, `tools/verificar-005-us1.sh`): en una lista, todos los marcadores se
+/// resuelven: inline de la sección, YAML y «faltante».
+#[test]
+fn list_markers_all_resolved() {
+    let text = "---\ntype: nota\nestado: pausado\notra: pausado\n---\n# Principal\n\nestado:: activo\n\n- Inline de la sección: [%estado]\n- Solo en YAML: [%otra]\n- Sin valor: [%nada]\n";
+    let yaml =
+        orbital_vault::props::yaml::parse_block("type: nota\nestado: pausado\notra: pausado")
+            .unwrap();
+    let repl = orbital_vault::markers::resolve_markers(text, &yaml);
+    let values: Vec<&str> = repl.iter().map(|(_, v)| v.as_str()).collect();
+    assert_eq!(values, ["activo", "pausado", "«faltante»"]);
+    let doc = orbital_vault::render::render_markdown_interpolated(text, &repl);
+    let all: String = format!("{doc:?}");
+    assert!(
+        !all.contains("[%otra]"),
+        "quedó [%otra] sin resolver: {all}"
+    );
+    assert!(all.contains("«faltante»"), "falta «faltante»: {all}");
+}

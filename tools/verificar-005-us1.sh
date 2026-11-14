@@ -29,6 +29,7 @@ estado:: activo
 - Solo en YAML: [%otra]
 - Sin valor: [%nada]
 MD
+cp "$ORBITAL_TEST_VAULT/wiki/principal.md" "$test_root/principal.original"
 cat > "$XDG_CONFIG_HOME/orbital/estado.yaml" <<EOF_STATE
 md_view: lectura
 EOF_STATE
@@ -50,8 +51,9 @@ python3 -I tools/verificar_005_us1.py codigo
 grep -q '\[%estado\]' "$ORBITAL_TEST_VAULT/wiki/principal.md"
 grep -q '\[%otra\]' "$ORBITAL_TEST_VAULT/wiki/principal.md"
 grep -q '\[%nada\]' "$ORBITAL_TEST_VAULT/wiki/principal.md"
+# El frontmatter ya dice «pausado»: lo que importa es que el archivo siga byte a byte igual.
 if grep -q '«faltante»' "$ORBITAL_TEST_VAULT/wiki/principal.md" ||
-    grep -q 'pausado' "$ORBITAL_TEST_VAULT/wiki/principal.md"; then
+    ! cmp -s "$test_root/principal.original" "$ORBITAL_TEST_VAULT/wiki/principal.md"; then
     echo "ERROR: el disco recibió contenido generado"
     exit 1
 fi

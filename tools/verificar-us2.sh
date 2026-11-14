@@ -39,8 +39,8 @@ python3 -I tools/atspi.py activar "frame" "Orbital" "win.open-missing"
 sleep 1
 
 # Esperar y confirmar en el diálogo de confirmación
-python3 -I tools/atspi.py esperar "button" "Crear"
-python3 -I tools/atspi.py activar "button" "Crear"
+python3 -I tools/atspi.py esperar "button" "=Crear"
+python3 -I tools/atspi.py activar "button" "=Crear"
 sleep 1.5
 
 # Verificar creación en disco
