@@ -22,6 +22,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm \
             curl \
+            git \
             gtk4 \
             libadwaita \
             gtksourceview5 \
