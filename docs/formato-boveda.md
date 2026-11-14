@@ -239,3 +239,42 @@ generado; en Código queda el texto plano.
 
 - Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
 - El contenido de transclusiones incrustadas (`![[…]]`) no se genera: se ve el codeblock fuente.
+
+## 13. Etiquetas, campos y búsqueda (004)
+
+### Etiquetas
+
+- Una etiqueta es `#` seguido de letras, números, `_`, `-` o `/`, con al menos un carácter que no sea
+  número (`#2026` no es etiqueta; `#v2` sí). No cuentan las que están dentro de código ni de enlaces.
+- También son etiquetas los valores de la propiedad `tags` (sin `#`).
+- Son jerárquicas con `/`: `#fisica/termo` es hija de `#fisica`. Buscar o elegir una etiqueta incluye a
+  sus hijas.
+- Renombrar una etiqueta cambia el texto y la propiedad `tags` de cada nota afectada (también las hijas),
+  con GuardadoSeguro y «Deshacer». No toca etiquetas parecidas (`#fisicas` al renombrar `#fisica`); si
+  el nombre nuevo ya existe, las dos se fusionan.
+
+### Campos en línea `clave:: valor`
+
+- Un campo es `clave:: valor` al comienzo de una línea o de un ítem de lista, fuera de código.
+- Cuenta como propiedad de la nota para la búsqueda (`[clave]`, `[clave:valor]`) y queda disponible para
+  las bases. Si la misma clave está en el bloque de propiedades, manda el bloque.
+- Orbital no reescribe los campos: siguen siendo texto normal de la nota.
+
+### Sintaxis de búsqueda
+
+La búsqueda ignora mayúsculas y tildes, y **no** interpreta expresiones regulares.
+
+| Escritura | Significado |
+|-----------|-------------|
+| `energia fisica` | Todas las palabras, en cualquier orden. |
+| `"frase exacta"` | La frase tal cual. |
+| `-termino` | Excluye las notas que lo tienen. |
+| `a OR b` | Una u otra. |
+| `tag:fisica` | Notas con la etiqueta o sus hijas. |
+| `path:wiki/fisica` / `file:entropia` | Por carpeta o por nombre de archivo. |
+| `line:(a b)` / `section:(a b)` | Todos los términos en la misma línea o en la misma sección. |
+| `[clave]` / `[clave:valor]` | Por propiedades del bloque o campos `clave:: valor`. |
+
+Una consulta mal escrita muestra un aviso con la columna del problema y no borra lo escrito. Los
+resultados de `raw/` llevan la marca «fuente» y se pueden ocultar. Las búsquedas guardadas viven en
+`.orbital/busquedas.yaml` (sección 9), nunca en las notas.
