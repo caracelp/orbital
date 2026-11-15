@@ -1,4 +1,4 @@
-//! Esqueleto de la interfaz v13 (025): barras plegables, modos de la barra izquierda, marca, cabecera única, riel de navegación y barra inferior.
+//! Esqueleto del diseño de interfaz (025): barras plegables, modos de la barra izquierda, marca, cabecera única, riel de navegación y barra inferior.
 
 use super::*;
 
@@ -15,7 +15,7 @@ pub(super) fn construir_esqueleto(
     sidebar_stack: adw::ViewStack,
     sidebar_view: adw::ToolbarView,
 ) -> Esqueleto {
-    // --- Esqueleto de la interfaz v13 (025) ---
+    // --- Esqueleto del diseño de interfaz (025) ---
     // Barra izquierda (260 px) y barra derecha (280 px) plegables; en ventanas angostas se
     // superponen al centro (breakpoint de abajo).
     let split = adw::OverlaySplitView::builder()

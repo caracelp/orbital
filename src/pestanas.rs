@@ -1,4 +1,4 @@
-//! Pestañas de notas de la interfaz v13 (025), con **un editor compartido** (decisión de la
+//! Pestañas de notas del diseño de interfaz (025), con **un editor compartido** (decisión de la
 //! usuaria): las páginas del `adw::TabView` son marcadores livianos y el contenido real sigue
 //! siendo el centro de la ventana. Cada pestaña recuerda el estado de vista de su nota (cursor,
 //! desplazamiento y vista) para reponerlo al volver.

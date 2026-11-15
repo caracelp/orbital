@@ -1,4 +1,4 @@
-//! Pie de la barra izquierda de la interfaz v13 (025): la bóveda abierta en un desplegable con las
+//! Pie de la barra izquierda del diseño de interfaz (025): la bóveda abierta en un desplegable con las
 //! bóvedas recientes (elegir otra la abre) y el botón «Cambiar de bóveda» con el menú de abrir.
 
 use gtk::prelude::*;
