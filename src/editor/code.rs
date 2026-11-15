@@ -145,6 +145,26 @@ pub fn link_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32
     Some((after_open.to_string(), start_offset))
 }
 
+/// `[[nombre#^filtro` antes del cursor (026): `(nombre, filtro, offset de «[[»)`. `nombre` vacío es
+/// la nota abierta.
+pub fn block_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, String, i32)> {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_start = cursor;
+    line_start.set_line_offset(0);
+    let line = buffer.text(&line_start, &cursor, false);
+    let open = line.rfind("[[")?;
+    let after = &line[open + 2..];
+    if after.contains("]]") || after.contains('|') {
+        return None;
+    }
+    let (nombre, filtro) = after.split_once("#^")?;
+    if nombre.contains('#') || !filtro.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    let start = line_start.offset() + line[..open].chars().count() as i32;
+    Some((nombre.to_owned(), filtro.to_owned(), start))
+}
+
 /// Busca primero el prefijo en la línea actual para no analizar la nota en cada movimiento.
 pub fn tag_query_at_cursor(buffer: &sourceview5::Buffer, is_html: bool) -> Option<(String, i32)> {
     let cursor = buffer.iter_at_offset(buffer.cursor_position());

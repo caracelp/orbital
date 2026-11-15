@@ -736,3 +736,65 @@ mod esqueleto_tests {
         });
     }
 }
+
+mod enlaces_bloque_tests {
+    use super::super::*;
+
+    /// 026 US2: seguir `[[destino#^id]]` abre la nota con el cursor en el bloque (SC-004: < 300 ms),
+    /// y `[[#^id]]` va al bloque en la nota abierta.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn seguir_enlace_a_bloque() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.BloqueTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("orbital-026-us2-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            let mut destino: String = (1..=300).map(|n| format!("Párrafo {n}.\n\n")).collect();
+            destino.push_str("- ítem buscado ^k3x9a1\n\n");
+            destino.push_str("Final. ^fin001\n");
+            std::fs::write(root.join("wiki/destino.md"), &destino).unwrap();
+            std::fs::write(root.join("wiki/origen.md"), "Ver [[destino#^k3x9a1]].\n").unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let (vault, tree) = {
+                let v = orbital_vault::open(&root).unwrap();
+                let tree = build_tree(v.entries());
+                (v, tree)
+            };
+            window.show_vault(vault, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            window.show_path("wiki/origen.md");
+            glib::timeout_future(std::time::Duration::from_millis(300)).await;
+
+            let origen = RelPath::new("wiki/origen.md").unwrap();
+            let t0 = std::time::Instant::now();
+            window.open_link(Some(&origen), "[[destino#^k3x9a1]]");
+            let linea = || window.0.code_editor.cursor_line();
+            while linea() != 601 && t0.elapsed() < std::time::Duration::from_secs(3) {
+                glib::timeout_future(std::time::Duration::from_millis(5)).await;
+            }
+            let ms = t0.elapsed().as_millis();
+            assert_eq!(linea(), 601, "el cursor queda en el ítem con ^k3x9a1");
+            println!("SC-004: seguir el enlace al bloque tardó {ms} ms");
+            assert!(ms < 300, "SC-004: {ms} ms");
+
+            // `[[#^fin001]]`: en la nota abierta.
+            window.open_link(Some(&RelPath::new("wiki/destino.md").unwrap()), "[[#^fin001]]");
+            for _ in 0..100 {
+                if linea() == 603 {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(linea(), 603, "[[#^id]] va al bloque de la nota abierta");
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}

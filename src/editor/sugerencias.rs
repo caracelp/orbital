@@ -13,6 +13,10 @@ impl Editor {
             return;
         }
 
+        if let Some((nota, filtro, start)) = code::block_query_at_cursor(&i.buffer) {
+            self.sugerir_bloques(nota, &filtro, start);
+            return;
+        }
         let link_query = code::link_query_at_cursor(&i.buffer);
         let tag_query = link_query
             .is_none()
@@ -57,12 +61,77 @@ impl Editor {
                 }
             }
             None => {
+                *i.completion_bloques.borrow_mut() = None;
                 i.completion_dismissed_at.set(None);
                 i.completion_active_start.set(None);
                 if i.completion.is_visible() {
                     i.completion.popdown();
                 }
             }
+        }
+    }
+
+    /// Sugerencias de `[[nota#^filtro` (026, FR-010): los bloques con id de la nota, leída en
+    /// otro hilo una vez por consulta (`completion_bloques`).
+    fn sugerir_bloques(&self, nota: String, filtro: &str, start: i32) {
+        let i = &self.0;
+        if i.completion_dismissed_at.get() == Some(start) {
+            return;
+        }
+        i.completion_active_start.set(Some(start));
+        i.completion_is_tag.set(false);
+        i.completion_is_marker.set(false);
+        let cache = i.completion_bloques.borrow().clone();
+        let bloques = match cache {
+            Some((n, Some(b))) if n == nota => b,
+            Some((n, None)) if n == nota => return, // se está leyendo
+            _ => {
+                let es_html = |p: &str| p.ends_with(".html") || p.ends_with(".htm");
+                if nota.is_empty() {
+                    // La nota abierta: el texto ya está en el buffer.
+                    let texto = i.buffer.text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
+                    let b = Rc::new(orbital_vault::bloques::listar(
+                        &texto,
+                        i.format.get() == Format::Html,
+                    ));
+                    *i.completion_bloques.borrow_mut() = Some((nota.clone(), Some(b.clone())));
+                    b
+                } else {
+                    let Some(vault) = i.vault.borrow().clone() else {
+                        return;
+                    };
+                    let orbital_vault::Resolution::Found(path) = vault.resolve_wikilink(&nota)
+                    else {
+                        i.completion.popdown();
+                        return;
+                    };
+                    *i.completion_bloques.borrow_mut() = Some((nota.clone(), None));
+                    let this = self.clone();
+                    glib::spawn_future_local(async move {
+                        let html = es_html(path.as_str());
+                        let leidos = gio::spawn_blocking(move || {
+                            std::fs::read_to_string(path.to_path(vault.root()))
+                                .map(|t| orbital_vault::bloques::listar(&t, html))
+                                .unwrap_or_default()
+                        })
+                        .await
+                        .unwrap_or_default();
+                        let mut cache = this.0.completion_bloques.borrow_mut();
+                        if cache.as_ref().is_some_and(|(n, _)| *n == nota) {
+                            *cache = Some((nota, Some(Rc::new(leidos))));
+                            drop(cache);
+                            this.check_link_completion();
+                        }
+                    });
+                    return;
+                }
+            }
+        };
+        if i.completion.filter_block_query(&nota, &bloques, filtro) > 0 {
+            let rect = code::cursor_popup_rect(&i.view, &i.buffer);
+            i.completion.popup_at(&rect);
+        } else {
+            i.completion.popdown();
         }
     }
 

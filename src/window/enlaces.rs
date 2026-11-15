@@ -146,6 +146,19 @@ impl Window {
 
     /// Muestra una nota por su ruta relativa (para el modo de captura).
     /// Abre un enlace externo o interno, resolviendo anclas de encabezado.
+    /// Lleva al encabezado o, si el ancla empieza con `^`, al bloque (026) de la nota abierta.
+    pub(super) fn ir_al_ancla(&self, anchor: String) {
+        let w = self.clone();
+        glib::idle_add_local_once(move || match anchor.strip_prefix('^') {
+            Some(id) => {
+                if !w.0.code_editor.scroll_to_block(id) {
+                    w.toast(&format!("No hay un bloque «^{id}» en esta nota"));
+                }
+            }
+            None => w.0.code_editor.scroll_to_heading(&anchor),
+        });
+    }
+
     pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
         if let Some(tag) = url.strip_prefix("orbital-tag:") {
             self.search_tag(tag);
@@ -199,13 +212,14 @@ impl Window {
                     self.ver_pdf(&p, &ancla);
                     return;
                 }
-                self.show_path(p.as_str());
-                if let Some(anchor) = parsed.anchor {
-                    let w_clone = self.clone();
-                    glib::idle_add_local_once(move || {
-                        w_clone.0.code_editor.scroll_to_heading(&anchor);
-                    });
+                // El ancla se sigue cuando la nota termina de abrirse (se lee en otro hilo).
+                let abierta = self.0.code_editor.current_path().as_ref() == Some(&p);
+                match parsed.anchor {
+                    Some(anchor) if abierta => self.ir_al_ancla(anchor),
+                    Some(anchor) => *self.0.pending_ancla.borrow_mut() = Some((p.clone(), anchor)),
+                    None => {}
                 }
+                self.show_path(p.as_str());
             }
             orbital_vault::Resolution::Ambiguous(hits) => {
                 if let Some(first) = hits.first() {
@@ -216,6 +230,10 @@ impl Window {
             orbital_vault::Resolution::Missing => {
                 let note_name = parsed.path.trim().to_string();
                 if note_name.is_empty() {
+                    // `[[#encabezado]]` o `[[#^id]]`: en la nota abierta.
+                    if let Some(anchor) = parsed.anchor {
+                        self.ir_al_ancla(anchor);
+                    }
                     return;
                 }
                 let clean_name = note_name

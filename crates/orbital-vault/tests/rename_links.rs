@@ -216,3 +216,21 @@ fn a_file_changed_meanwhile_is_not_overwritten() {
         "[[nuevo]]\n"
     );
 }
+
+/// 026: renombrar conserva el ancla de bloque `#^id`, en enlaces e incrustaciones.
+#[test]
+fn renombrar_conserva_ancla_de_bloque() {
+    let (_t, v) = vault(&[("wiki/viejo.md", DESTINO), ("wiki/a.md", "")]);
+    let (out, n) = v.rewrite_links(
+        &rel("wiki/a.md"),
+        "[[viejo#^k3x9a1]] ![[viejo#^q1w2e3]] [[viejo#^k3x9a1|alias]] ^p1p1p1\n",
+        false,
+        &rel("wiki/viejo.md"),
+        &rel("wiki/nuevo.md"),
+    );
+    assert_eq!(n, 3, "{out}");
+    assert_eq!(
+        out,
+        "[[nuevo#^k3x9a1]] ![[nuevo#^q1w2e3]] [[nuevo#^k3x9a1|alias]] ^p1p1p1\n"
+    );
+}

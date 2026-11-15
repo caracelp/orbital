@@ -233,6 +233,14 @@ impl Window {
                 i.pending_line.set(Some((path, line)));
             }
         }
+        let ancla = i.pending_ancla.borrow_mut().take();
+        if let Some((path, ancla)) = ancla {
+            if path == note.path {
+                self.ir_al_ancla(ancla);
+            } else {
+                *i.pending_ancla.borrow_mut() = Some((path, ancla));
+            }
+        }
         let pendiente = i.estado_pendiente.borrow_mut().take();
         if let Some((path, (cursor, scroll, vista))) = pendiente
             && path == note.path

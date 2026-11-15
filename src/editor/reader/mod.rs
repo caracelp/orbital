@@ -88,6 +88,8 @@ struct Inner {
     /// Línea del texto fuente a mostrar cuando termine el volcado en curso (al abrir una nota
     /// desde un retroenlace).
     pending_line: Cell<Option<usize>>,
+    /// Bloque a resaltar cuando termine de dibujarse (navegación a `#^id`, 026).
+    pending_resaltar: Cell<Option<usize>>,
     attach_scheduled: Cell<bool>,
     on_toggle: RefCell<Option<ToggleFn>>,
     on_link: RefCell<Option<LinkFn>>,
@@ -151,6 +153,7 @@ impl Reader {
             wide: RefCell::new(Vec::new()),
             pending: RefCell::new(Vec::new()),
             pending_line: Cell::new(None),
+            pending_resaltar: Cell::new(None),
             attach_scheduled: Cell::new(false),
             on_toggle: RefCell::new(None),
             on_link: RefCell::new(None),
@@ -253,6 +256,7 @@ impl Reader {
         i.links.borrow_mut().clear();
         i.pending.borrow_mut().clear();
         i.pending_line.set(None);
+        i.pending_resaltar.set(None);
         i.header.set(None);
         i.view.set_buffer(Some(&gtk::TextBuffer::new(Some(&table))));
     }
@@ -286,6 +290,24 @@ impl Reader {
         if let Some(b) = blocks.get(idx) {
             self.0.view.scroll_to_mark(&b.mark, 0.0, true, 0.0, 0.0);
         }
+    }
+
+    /// Resalta un momento el bloque que contiene la línea `line` del texto fuente; si la nota se
+    /// está volcando, cuando termine (026).
+    pub fn resaltar_linea(&self, line: usize) {
+        let blocks = self.0.blocks.borrow();
+        if blocks.is_empty() {
+            self.0.pending_resaltar.set(Some(line));
+            return;
+        }
+        let idx = blocks.partition_point(|b| b.line <= line).saturating_sub(1);
+        let Some(b) = blocks.get(idx) else { return };
+        let buf = self.buffer();
+        let a = buf.iter_at_mark(&b.mark);
+        let z = blocks
+            .get(idx + 1)
+            .map_or_else(|| buf.end_iter(), |n| buf.iter_at_mark(&n.mark));
+        super::vistas::resaltar(&buf, &a, &z);
     }
 
     /// Desplaza la vista hasta el encabezado con el texto indicado. Devuelve si lo encontró.

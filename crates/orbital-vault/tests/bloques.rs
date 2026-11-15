@@ -210,3 +210,28 @@ fn render_sin_ids() {
     assert_eq!(doc.blocks[2].id.as_deref(), Some("tab001"));
     assert_eq!(doc.blocks[3].id.as_deref(), Some("cit001"));
 }
+
+/// T015: buscar y listar, en `.md` y `.html`.
+#[test]
+fn buscar_y_listar() {
+    let md = "# T\n\nUn párrafo largo ^abc123\n\n- ítem uno ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n";
+    let (r, linea) = bloques::buscar(md, "def456", false).unwrap();
+    assert_eq!(&md[r], "- ítem uno");
+    assert_eq!(linea, 4);
+    assert!(bloques::buscar(md, "nada00", false).is_none());
+    let l = bloques::listar(md, false);
+    let ids: Vec<_> = l.iter().map(|b| b.id.as_str()).collect();
+    assert_eq!(ids, ["abc123", "def456", "tab001"]);
+    assert_eq!(l[0].resumen, "Un párrafo largo");
+    assert_eq!(l[1].resumen, "ítem uno");
+    assert_eq!(l[2].resumen, "| a | | 1 |");
+
+    let html = "<body>\n<blockquote id=\"k3x9a1\"><p>La <b>entropía</b> mide.</p></blockquote>\n<ul><li id=\"p2\">Primero</li></ul>\n</body>";
+    let (r, linea) = bloques::buscar(html, "p2", true).unwrap();
+    assert_eq!(&html[r], "<li id=\"p2\">");
+    assert_eq!(linea, 2);
+    let l = bloques::listar(html, true);
+    assert_eq!(l.len(), 2);
+    assert_eq!(l[0].resumen, "La entropía mide.");
+    assert_eq!((l[1].id.as_str(), l[1].linea), ("p2", 2));
+}

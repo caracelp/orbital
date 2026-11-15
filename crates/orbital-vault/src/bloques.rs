@@ -551,10 +551,14 @@ const ETIQUETAS_HTML: &[&str] = &["p", "li", "blockquote", "table", "pre", "figu
 /// Ediciones que dan un atributo `id` a cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` de
 /// una nota `.html` que no tiene (y reemplazan los repetidos). Fuera de comentarios, `<script>` y
 /// `<style>`. Las etiquetas que tocan `excluir` no se modifican.
-pub fn inserciones_html(texto: &str, excluir: &[Range<usize>]) -> Vec<Edicion> {
+/// Etiqueta de apertura de un bloque HTML: rango de la etiqueta, rango del valor de su `id` y dónde
+/// iría ` id="…"`.
+type EtiquetaHtml = (Range<usize>, Option<Range<usize>>, usize);
+
+fn etiquetas_html(texto: &str) -> Vec<EtiquetaHtml> {
     let bytes = texto.as_bytes();
     let minus = texto.to_ascii_lowercase();
-    let mut etiquetas: Vec<(Range<usize>, Option<Range<usize>>, usize)> = Vec::new();
+    let mut etiquetas = Vec::new();
     let mut i = 0;
     while let Some(p) = minus[i..].find('<') {
         let a = i + p;
@@ -598,6 +602,11 @@ pub fn inserciones_html(texto: &str, excluir: &[Range<usize>]) -> Vec<Edicion> {
         }
         i = j + 1;
     }
+    etiquetas
+}
+
+pub fn inserciones_html(texto: &str, excluir: &[Range<usize>]) -> Vec<Edicion> {
+    let etiquetas = etiquetas_html(texto);
     let mut generador = Generador::new(
         etiquetas
             .iter()
@@ -679,4 +688,150 @@ fn buscar_atributo_id(etiqueta: &str, base: usize) -> Option<Range<usize>> {
         }
     }
     None
+}
+
+/// Un bloque con id, para las sugerencias de `[[nota#^`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BloqueConId {
+    pub id: String,
+    /// Línea (desde 0) donde empieza el bloque.
+    pub linea: usize,
+    /// El comienzo de su texto, sin marcas (hasta 80 caracteres).
+    pub resumen: String,
+}
+
+/// Dónde está el bloque con ese id: su rango de bytes y su línea (desde 0).
+pub fn buscar(texto: &str, id: &str, es_html: bool) -> Option<(Range<usize>, usize)> {
+    if es_html {
+        let (r, _, _) = etiquetas_html(texto)
+            .into_iter()
+            .find(|(_, i, _)| i.as_ref().is_some_and(|i| &texto[i.clone()] == id))?;
+        let linea = texto.as_bytes()[..r.start].iter().filter(|b| **b == b'\n').count();
+        return Some((r, linea));
+    }
+    escanear(texto)
+        .into_iter()
+        .find(|b| b.id.as_ref().is_some_and(|i| &texto[i.clone()] == id))
+        .map(|b| (b.rango, b.linea))
+}
+
+/// Los bloques que tienen id, en orden.
+pub fn listar(texto: &str, es_html: bool) -> Vec<BloqueConId> {
+    if es_html {
+        let mut linea = 0;
+        let mut hasta = 0;
+        return etiquetas_html(texto)
+            .into_iter()
+            .filter_map(|(r, id, _)| {
+                let id = id?;
+                linea += texto.as_bytes()[hasta..r.start].iter().filter(|b| **b == b'\n').count();
+                hasta = r.start;
+                Some(BloqueConId {
+                    id: texto[id].to_owned(),
+                    linea,
+                    resumen: resumen_html(&texto[r.end..]),
+                })
+            })
+            .collect();
+    }
+    escanear(texto)
+        .into_iter()
+        .filter_map(|b| {
+            let id = b.id?;
+            Some(BloqueConId {
+                id: texto[id].to_owned(),
+                linea: b.linea,
+                resumen: resumen_md(&texto[b.rango]),
+            })
+        })
+        .collect()
+}
+
+const RESUMEN: usize = 80;
+
+fn resumen_md(bloque: &str) -> String {
+    let mut out = String::new();
+    for l in bloque.lines() {
+        let t = l.trim_start();
+        let t = t.trim_start_matches('>').trim_start();
+        let t = t
+            .strip_prefix("- [ ] ")
+            .or_else(|| t.strip_prefix("- [x] "))
+            .or_else(|| t.strip_prefix("- "))
+            .or_else(|| t.strip_prefix("* "))
+            .or_else(|| t.strip_prefix("+ "))
+            .or_else(|| {
+                let n = t.bytes().take_while(u8::is_ascii_digit).count();
+                (n > 0).then(|| t[n..].strip_prefix(". ").or_else(|| t[n..].strip_prefix(") ")))?
+            })
+            .unwrap_or(t);
+        let t = t.trim();
+        if t.is_empty() || t.starts_with("```") || t.starts_with("~~~") || t == "$$" {
+            continue;
+        }
+        // Separador de una tabla.
+        if t.starts_with('|') && t.bytes().all(|b| matches!(b, b'|' | b'-' | b':' | b' ')) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(t);
+        if out.chars().count() >= RESUMEN {
+            break;
+        }
+    }
+    recortar(out)
+}
+
+fn resumen_html(despues: &str) -> String {
+    let mut out = String::new();
+    let mut en_etiqueta = false;
+    let mut espacio = false;
+    for (n, c) in despues.char_indices() {
+        match c {
+            '<' => {
+                // El texto del bloque termina donde cierra o empieza otro bloque.
+                let nombre: String = despues[n + 1..]
+                    .trim_start_matches('/')
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                if !out.is_empty()
+                    && (ETIQUETAS_HTML.contains(&nombre.as_str())
+                        || matches!(nombre.as_str(), "ul" | "ol" | "div" | "br" | "tr"))
+                {
+                    break;
+                }
+                en_etiqueta = true;
+            }
+            '>' => en_etiqueta = false,
+            _ if en_etiqueta => {}
+            c if c.is_whitespace() => espacio = !out.is_empty(),
+            c => {
+                if espacio {
+                    out.push(' ');
+                    espacio = false;
+                }
+                out.push(c);
+                if out.chars().count() >= RESUMEN {
+                    break;
+                }
+            }
+        }
+        // El texto de un bloque termina en su cierre; basta con el comienzo.
+        if out.chars().count() >= RESUMEN {
+            break;
+        }
+    }
+    recortar(out)
+}
+
+fn recortar(mut s: String) -> String {
+    if let Some((n, _)) = s.char_indices().nth(RESUMEN) {
+        s.truncate(n);
+        s.push('…');
+    }
+    s
 }
