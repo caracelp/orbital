@@ -116,6 +116,8 @@ struct Inner {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
     code_scroller: gtk::ScrolledWindow,
+    /// Scroller de Código con la capa de cursores extra encima (el hijo izquierdo del `Paned`).
+    code_capa: gtk::Overlay,
     /// Cursores extra del multi-cursor (006): el principal sigue siendo la selección nativa.
     extra: RefCell<multi_cursor::ExtraCursors>,
     /// Selección nativa guardada durante un Alt+clic para reponerla al soltar.
@@ -203,18 +205,21 @@ impl Editor {
         // visible del texto. Dentro de un adw::Clamp calculaba todo el documento en cada tecla
         // (30 ms por tecla con 100 KB). El ancho de la columna se limita con márgenes.
         let caren = multi_cursor::CarenOverlay::new();
-        let capa_cursor = gtk::Overlay::new();
-        capa_cursor.set_child(Some(&view));
-        capa_cursor.add_overlay(&caren);
+        // La vista va directo en su `ScrolledWindow` (si no, GTK dispone el documento entero en
+        // cada tecla: 8 ms con 100 KB contra 2 ms). La capa de los cursores extra (006) envuelve el
+        // scroller desde afuera y dibuja en coordenadas de lo visible.
         let code_scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&capa_cursor)
+            .child(&view)
             .build();
         code::center_column(&code_scroller, &view, 860);
+        let capa_cursor = gtk::Overlay::new();
+        capa_cursor.set_child(Some(&code_scroller));
+        capa_cursor.add_overlay(&caren);
         let reader = reader::Reader::new();
         let root = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .start_child(&code_scroller)
+            .start_child(&capa_cursor)
             .end_child(reader.widget())
             .resize_start_child(true)
             .resize_end_child(true)
@@ -274,6 +279,7 @@ impl Editor {
             view,
             buffer,
             code_scroller,
+            code_capa: capa_cursor,
             extra: RefCell::new(multi_cursor::ExtraCursors::new()),
             extra_base: Cell::new(None),
             caren,
@@ -788,7 +794,8 @@ impl Editor {
             i.caren.limpiar();
             return;
         }
-        let rects = std::rc::Rc::new(multi_cursor::rects_para_dibujar(&i.view, &i.buffer, &extra));
+        let rects = multi_cursor::rects_para_dibujar(&i.view, &i.buffer, &extra);
+        let rects = std::rc::Rc::new(multi_cursor::a_capa(rects, &i.view, &i.caren));
         i.caren.set_rects(rects);
     }
 
@@ -1275,7 +1282,7 @@ impl Editor {
         }
         i.stack
             .set_visible_child_name(if v == View::Visual { "visual" } else { "texto" });
-        i.code_scroller.set_visible(v != View::Lectura);
+        i.code_capa.set_visible(v != View::Lectura);
         i.reader.widget().set_visible(v != View::Codigo);
         self.sync_switcher(v);
         if v == View::Dividida {
@@ -2384,8 +2391,10 @@ impl Editor {
 
     /// Desarrollo: inserta `chars` caracteres de a uno al final del texto y devuelve, en ms, el
     /// trabajo de cada tecla: la inserción más el cálculo y dibujo de su cuadro (sin contar la
-    /// espera de la sincronización vertical). Para comprobar FR-022 (< 16 ms).
-    pub async fn measure_typing(&self, chars: usize) -> Vec<f64> {
+    /// espera de la sincronización vertical), separado en `(inserción, cuadro)`: la inserción es lo
+    /// que corre al cambiar el texto (los manejadores de `changed`); el cuadro, disposición y dibujo.
+    /// Para comprobar FR-022 (< 16 ms).
+    pub async fn measure_typing(&self, chars: usize) -> Vec<(f64, f64)> {
         use std::time::Instant;
         let view = self.0.view.clone();
         // La medición es de la vista Código: con una configuración nueva la nota abre en
@@ -2438,7 +2447,7 @@ impl Editor {
                 (Some(u), Some(p)) => p.saturating_duration_since(u),
                 _ => continue,
             };
-            out.push((insert + frame).as_secs_f64() * 1000.0);
+            out.push((insert.as_secs_f64() * 1000.0, frame.as_secs_f64() * 1000.0));
         }
         clock.disconnect(h1);
         clock.disconnect(h2);
