@@ -219,6 +219,7 @@ pub fn base_columna(
 }
 
 /// Rectángulos en coordenadas del widget de la vista para el overlay (research R2).
+#[derive(Clone)]
 pub struct Rects {
     pub barras: Vec<(f64, f64, f64)>,
     pub selecciones: Vec<(f64, f64, f64, f64)>,
@@ -339,7 +340,10 @@ pub mod imp {
 
     #[derive(Default)]
     pub struct CarenOverlay {
+        /// Rectángulos en coordenadas del buffer y la vista que los ubica: se pasan a
+        /// coordenadas de la capa al dibujar, cuando el desplazamiento de la vista ya está al día.
         pub rects: RefCell<Option<Rc<Rects>>>,
+        pub vista: RefCell<Option<gtk::TextView>>,
     }
 
     #[glib::object_subclass]
@@ -356,7 +360,10 @@ pub mod imp {
             let Some(rects) = self.rects.borrow().clone() else {
                 return;
             };
-            let rects = rects.as_ref();
+            let Some(vista) = self.vista.borrow().clone() else {
+                return;
+            };
+            let rects = &super::a_capa((*rects).clone(), &vista, &*self.obj());
             let color = super::color_rgba();
             // Selecciones primero (debajo de las barras).
             for (x, y, w, h) in &rects.selecciones {
@@ -393,7 +400,9 @@ impl CarenOverlay {
     }
 
     /// Rectángulos nuevos en coordenadas del widget; el overlay se redibuja solo.
-    pub fn set_rects(&self, rects: std::rc::Rc<Rects>) {
+    /// Rectángulos en coordenadas del buffer de `vista` (se ubican al dibujar).
+    pub fn set_rects(&self, vista: &impl IsA<gtk::TextView>, rects: std::rc::Rc<Rects>) {
+        *self.imp().vista.borrow_mut() = Some(vista.clone().upcast());
         *self.imp().rects.borrow_mut() = Some(rects);
         self.queue_draw();
     }
@@ -588,6 +597,13 @@ mod tests {
             desplazado > 1000.0,
             "la nota se desplazó lejos: {desplazado}"
         );
+        // Como en el dibujo real: el desplazamiento interno de la vista ya está al día.
+        for _ in 0..50 {
+            if (f64::from(view.visible_rect().y()) - desplazado).abs() < 1.0 {
+                break;
+            }
+            pasar();
+        }
         let mut extra = ExtraCursors::new();
         extra.add_cursor(&buf, &linea);
         let rects = a_capa(rects_para_dibujar(&view, &buf, &extra), &view, &capa);
