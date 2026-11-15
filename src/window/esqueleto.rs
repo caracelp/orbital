@@ -11,7 +11,7 @@ pub(super) struct Esqueleto {
 
 pub(super) fn construir_esqueleto(
     backlinks_button: gtk::ToggleButton,
-    content_view: adw::ToolbarView,
+    centro: adw::OverlaySplitView,
     sidebar_stack: adw::ViewStack,
     sidebar_view: adw::ToolbarView,
 ) -> Esqueleto {
@@ -20,7 +20,7 @@ pub(super) fn construir_esqueleto(
     // superponen al centro (breakpoint de abajo).
     let split = adw::OverlaySplitView::builder()
         .sidebar(&sidebar_view)
-        .content(&content_view)
+        .content(&centro)
         .min_sidebar_width(260.0)
         .max_sidebar_width(260.0)
         .sidebar_width_fraction(1.0)
@@ -83,8 +83,10 @@ pub(super) fn construir_esqueleto(
     brand.append(&gtk::Label::new(Some("orbital")));
     brand.update_property(&[gtk::accessible::Property::Label("Orbital")]);
 
+    // Minimizar, maximizar y cerrar, aunque el sistema muestre solo cerrar (GNOME por defecto).
     let main_header = adw::HeaderBar::builder()
         .css_classes(["orbital-top"])
+        .decoration_layout(":minimize,maximize,close")
         .build();
     let left_slot = gtk::Box::builder()
         .width_request(58)

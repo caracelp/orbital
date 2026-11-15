@@ -21,7 +21,6 @@ pub(super) struct Centro {
     pub(super) grafo_vista: crate::grafo::VistaGrafo,
     pub(super) grafo_cerrar: gtk::Button,
     pub(super) content_title: adw::WindowTitle,
-    pub(super) content_view: adw::ToolbarView,
     pub(super) pestanas: crate::pestanas::Pestanas,
     pub(super) type_banner: adw::Banner,
     pub(super) note_banner: adw::Banner,
@@ -308,8 +307,11 @@ pub(super) fn construir_centro() -> Centro {
     let right = crate::editor::right_sidebar::RightSidebar::new();
     // Barra derecha de tres modos (025): Propiedades, Contexto (los retroenlaces) y Grafo.
     let panel = crate::panel_derecho::PanelDerecho::new(&right);
+    // La barra derecha va al lado de toda la columna central (pestañas y barra de la nota
+    // incluidas): llega hasta la barra superior.
+    content_view.set_content(Some(&content_stack));
     let right_split = adw::OverlaySplitView::builder()
-        .content(&content_stack)
+        .content(&content_view)
         .sidebar(panel.widget())
         .sidebar_position(gtk::PackType::End)
         .show_sidebar(true)
@@ -327,7 +329,6 @@ pub(super) fn construir_centro() -> Centro {
         .sync_create()
         .build();
     nombre_de_barra(&backlinks_button, "barra derecha", "Ctrl+]");
-    content_view.set_content(Some(&right_split));
     Centro {
         editor,
         props_list,
@@ -346,7 +347,6 @@ pub(super) fn construir_centro() -> Centro {
         grafo_vista,
         grafo_cerrar,
         content_title,
-        content_view,
         pestanas,
         type_banner,
         note_banner,

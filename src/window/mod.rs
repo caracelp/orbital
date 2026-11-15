@@ -178,7 +178,6 @@ impl Window {
             grafo_vista,
             grafo_cerrar,
             content_title,
-            content_view,
             pestanas,
             type_banner,
             note_banner,
@@ -205,7 +204,7 @@ impl Window {
             root_view,
         } = esqueleto::construir_esqueleto(
             backlinks_button.clone(),
-            content_view.clone(),
+            right_split.clone(),
             sidebar_stack.clone(),
             sidebar_view.clone(),
         );
