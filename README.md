@@ -154,8 +154,10 @@ código y el documento no coinciden, el error está en el código.
 ## Flatpak
 
 ```sh
+cd ~/Proyectos/orbital                    # el script se corre desde la carpeta del repo
 build-aux/flatpak/construir.sh            # deja build-aux/flatpak/build/orbital.flatpak
 flatpak install --user build-aux/flatpak/build/orbital.flatpak
+flatpak run io.github.caracelp.Orbital    # o desde el menú de aplicaciones
 ```
 
 Usa el runtime de GNOME 51 y la extensión de Rust de Flathub (el script dice cómo instalarlos, sin
