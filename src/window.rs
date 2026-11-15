@@ -636,12 +636,9 @@ impl Window {
             .spacing(9)
             .css_classes(["orbital-brand"])
             .build();
-        brand.append(
-            &gtk::Label::builder()
-                .label("◎")
-                .css_classes(["orbital-planet"])
-                .build(),
-        );
+        let planeta = crate::iconos::Icono::new("planeta", 24);
+        planeta.add_css_class("orbital-planet");
+        brand.append(&planeta);
         brand.append(&gtk::Label::new(Some("orbital")));
         brand.update_property(&[gtk::accessible::Property::Label("Orbital")]);
 
@@ -711,6 +708,8 @@ impl Window {
         // --- Pantalla inicial ---
         let start = start_page();
 
+        // Homogéneo a propósito: la primera disposición de la interfaz de la bóveda ocurre
+        // mientras la bóveda se lee en otro hilo (sin homogéneo, se suma después: +60 ms).
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
@@ -989,6 +988,11 @@ impl Window {
 
     pub fn present(&self) {
         self.0.window.present();
+    }
+
+    /// Medición del arranque (desarrollo): fases del próximo cuadro.
+    pub fn fases_del_proximo_cuadro(&self) {
+        crate::medir_arranque::fases_del_proximo_cuadro(&self.0.window);
     }
 
     fn setup_actions(&self, app: &adw::Application) {
@@ -1437,6 +1441,7 @@ impl Window {
             gio::spawn_blocking(move || orbital_vault::open(&for_thread).map(prepare)).await;
         match result {
             Ok(Ok((vault, tree, meta))) => {
+                crate::medir_arranque::marca("bóveda leída");
                 self.show_vault(vault, tree, meta);
                 self.remember(path);
             }
@@ -1506,7 +1511,9 @@ impl Window {
         i.tag_panel.set_tree(None);
         i.code_editor.set_tag_candidates(Vec::new());
 
+        crate::medir_arranque::marca("show_vault: hasta candidatos");
         let baseline = Self::collect_candidates_baseline(&arc_vault);
+        crate::medir_arranque::marca("show_vault: candidatos");
         *i.candidates.borrow_mut() = baseline;
         let vault_for_cand = arc_vault.clone();
         let this_cand = self.clone();
@@ -1520,6 +1527,7 @@ impl Window {
         });
 
         self.rebuild_graph();
+        crate::medir_arranque::marca("show_vault: grafo pedido");
         let this = self.clone();
         let generation = i.search_gen.get();
         self.after_next_frame(move || {
@@ -1541,9 +1549,12 @@ impl Window {
             }
         }
         i.status.set_totales(notas, carpetas, archivos);
+        crate::medir_arranque::marca("show_vault: totales");
         *i.recientes.borrow_mut() = AppState::load().recent_notes_for(arc_vault.root()).to_vec();
         self.refresh_recent();
+        crate::medir_arranque::marca("show_vault: recientes");
         self.set_list_model(tree);
+        crate::medir_arranque::marca("show_vault: lista");
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");

@@ -195,12 +195,15 @@ fn css() -> String {
     out
 }
 
-/// Estilos de la interfaz v13 (025): medidas y tonos de la maqueta.
+/// Estilos de la interfaz v13 (025): medidas y tonos de la maqueta. Los pesos de letra son los
+/// estándar (normal y 700): pesos intermedios como 650 o 750, y `font-feature-settings`, obligan a
+/// cargar otras caras de la fuente en la primera disposición (≈ 50 ms de arranque, medido). Por lo
+/// mismo, el texto chico usa un solo tamaño (11 px) y el planeta de la marca es un ícono de trazo.
 fn v13_css() -> String {
     format!(
         "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; }}\n\
-         .orbital-brand {{ font-size: 18px; font-weight: 650; letter-spacing: -0.5px; }}\n\
-         .orbital-planet {{ color: {pink}; font-size: 24px; }}\n\
+         .orbital-brand {{ font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }}\n\
+         .orbital-planet {{ color: {pink}; }}\n\
          .orbital-pink {{ color: {pink}; }}\n\
          .orbital-left-modes {{ min-width: 250px; padding-left: 10px; }}\n\
          button.orbital-iconbtn {{ min-width: 32px; min-height: 32px; padding: 0; border-radius: 9px; color: {icon}; }}\n\
@@ -214,9 +217,9 @@ fn v13_css() -> String {
          .orbital-left-head {{ padding: 12px 10px 10px; box-shadow: inset 0 -1px {line}; }}\n\
          .orbital-left-head button.orbital-iconbtn, .orbital-left-head menubutton > button {{ min-height: 34px; }}\n\
          .orbital-vault-footer {{ padding: 12px; box-shadow: inset 0 1px {line}; }}\n\
-         .orbital-section {{ font-size: 10px; letter-spacing: 1.5px; color: {muted}; }}\n\
+         .orbital-section {{ font-size: 11px; letter-spacing: 1.5px; color: {muted}; }}\n\
          .orbital-section:hover {{ color: {pink}; }}\n\
-         .orbital-count {{ font-size: 11px; color: {muted}; font-feature-settings: \"tnum\"; }}\n\
+         .orbital-count {{ font-size: 11px; color: {muted}; }}\n\
          .orbital-split > .sidebar-pane {{ box-shadow: inset -1px 0 {line}; }}\n\
          .orbital-right > .sidebar-pane {{ background: {side}; box-shadow: inset 1px 0 {line}; }}\n\
          headerbar.orbital-note-toolbar {{ background: transparent; box-shadow: none; min-height: 40px; padding: 0 9px; }}\n\
@@ -226,14 +229,14 @@ fn v13_css() -> String {
          .navigation-sidebar > row:selected {{ background: {selected}; color: {selected_fg}; }}\n\
          .orbital-right-head {{ padding: 12px 14px; box-shadow: inset 0 -1px {line}; }}\n\
          .orbital-right-block {{ padding: 20px 20px 8px; }}\n\
-         .orbital-right-heading {{ font-size: 10px; font-weight: 750; letter-spacing: 1.2px; color: {heading}; }}\n\
-         .orbital-meta-row {{ padding: 13px 0; box-shadow: inset 0 -1px {line}; font-size: 12px; }}\n\
+         .orbital-right-heading {{ font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: {heading}; }}\n\
+         .orbital-meta-row {{ padding: 13px 0; box-shadow: inset 0 -1px {line}; font-size: 11px; }}\n\
          .orbital-meta-label {{ color: {muted}; }}\n\
-         .orbital-meta-value {{ color: {text}; font-weight: 600; }}\n\
-         .orbital-tag-chip {{ border: 1px solid {chip_border}; background: {chip_bg}; color: {chip_fg}; padding: 7px 10px; border-radius: 9px; font-size: 12px; }}\n\
-         button.orbital-context-card {{ border: 1px solid {card_border}; background: {card_bg}; color: {text}; border-radius: 10px; padding: 12px; font-weight: 650; font-size: 12px; }}\n\
+         .orbital-meta-value {{ color: {text}; font-weight: 700; }}\n\
+         .orbital-tag-chip {{ border: 1px solid {chip_border}; background: {chip_bg}; color: {chip_fg}; padding: 7px 10px; border-radius: 9px; font-size: 11px; }}\n\
+         button.orbital-context-card {{ border: 1px solid {card_border}; background: {card_bg}; color: {text}; border-radius: 10px; padding: 12px; font-weight: 700; font-size: 11px; }}\n\
          button.orbital-context-card:hover {{ border-color: #9d577b; }}\n\
-         .orbital-context-empty {{ font-size: 12px; color: {muted}; }}\n\
+         .orbital-context-empty {{ font-size: 11px; color: {muted}; }}\n\
          tabbar.orbital-tabs > .box {{ background: {side}; box-shadow: none; min-height: 42px; padding: 0 12px; }}\n\
          tabbar.orbital-tabs tab {{ border-radius: 9px 9px 0 0; color: {muted}; min-width: 110px; }}\n\
          tabbar.orbital-tabs tab:selected {{ background: {view}; color: {text}; }}\n\

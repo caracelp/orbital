@@ -46,6 +46,10 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
     ),
     ("abajo", "M6 9l6 6 6-6"),
     ("arriba", "M6 15l6-6 6 6"),
+    (
+        "planeta",
+        "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0zM7.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0z",
+    ),
     ("derecha", "M9 6l6 6-6 6"),
     ("codigo", "M8 8l-4 4 4 4m8-8 4 4-4 4M14 4l-4 16"),
     (
