@@ -7,9 +7,9 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
+use gtk::{glib, gsk};
 
 /// Corte de nodos por apertura (SC-1: la bóveda de 5000 entra completa).
 pub const MAX_NODOS: usize = 5000;
@@ -28,6 +28,8 @@ pub struct GrafoDatos {
     pub aristas: Vec<(usize, usize)>,
     /// Se recortó al máximo (aviso discreto).
     pub cortado: bool,
+    /// Posiciones propias (grafo local de la barra derecha, 025); vacío = cuadrícula.
+    pub fijas: Vec<(f64, f64)>,
 }
 
 impl GrafoDatos {
@@ -57,11 +59,57 @@ impl GrafoDatos {
             rutas,
             aristas,
             cortado,
+            fijas: Vec::new(),
+        }
+    }
+
+    /// Grafo local (025): `centro` en el origen y sus vecinos en anillos alrededor (16 por
+    /// anillo), con aristas del centro a cada vecino y entre vecinos si se enlazan.
+    pub fn local(centro: String, mut vecinos: Vec<String>, enlaces: &[(String, String)]) -> Self {
+        vecinos.sort();
+        vecinos.dedup();
+        vecinos.retain(|v| *v != centro);
+        let mut rutas = Vec::with_capacity(vecinos.len() + 1);
+        rutas.push(centro);
+        rutas.extend(vecinos);
+        let indice: std::collections::HashMap<&str, usize> = rutas
+            .iter()
+            .enumerate()
+            .map(|(n, r)| (r.as_str(), n))
+            .collect();
+        let mut aristas: Vec<(usize, usize)> = enlaces
+            .iter()
+            .filter_map(|(a, b)| {
+                let ia = *indice.get(a.as_str())?;
+                let ib = *indice.get(b.as_str())?;
+                (ia != ib).then_some((ia.min(ib), ia.max(ib)))
+            })
+            .collect();
+        aristas.sort();
+        aristas.dedup();
+        let n = rutas.len() - 1;
+        let mut fijas = vec![(0.0, 0.0)];
+        for k in 0..n {
+            let anillo = k / 16;
+            let en_anillo = (n - anillo * 16).min(16);
+            let angulo = (k % 16) as f64 / en_anillo as f64 * std::f64::consts::TAU
+                - std::f64::consts::FRAC_PI_2;
+            let radio = 90.0 + anillo as f64 * 60.0;
+            fijas.push((radio * angulo.cos(), radio * angulo.sin()));
+        }
+        Self {
+            rutas,
+            aristas,
+            cortado: false,
+            fijas,
         }
     }
 
     /// Posición inicial en la cuadrícula (columnas de ~70 nodos por fila).
     pub fn posicion(&self, n: usize) -> (f64, f64) {
+        if let Some(p) = self.fijas.get(n) {
+            return *p;
+        }
         let por_fila = 70usize;
         let x = (n % por_fila) as f64 * PASO;
         let y = (n / por_fila) as f64 * PASO * 0.8;
@@ -110,6 +158,8 @@ mod imp {
         pub on_abrir: RefCell<Option<CallbackAbrir>>,
         pub on_cerrar: RefCell<Option<Box<dyn Fn()>>>,
         pub(crate) arrastre: RefCell<Arrastre>,
+        /// Grafo local: el origen del mundo va al centro del lienzo en el próximo cuadro.
+        pub centrar: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -126,11 +176,20 @@ mod imp {
             let Some(datos) = self.datos.borrow().clone() else {
                 return;
             };
-            let v = self.vista.get();
             let width = self.obj().width() as f64;
             let height = self.obj().height() as f64;
+            if self.centrar.get() && width > 0.0 {
+                self.centrar.set(false);
+                let mut v = self.vista.get();
+                v.pan_x = -width / 2.0;
+                v.pan_y = -height / 2.0;
+                self.vista.set(v);
+            }
+            let v = self.vista.get();
             let rosa = gtk::gdk::RGBA::parse("#ff8cc6").expect("rosa de paleta");
-            let gris = gtk::gdk::RGBA::parse("#8a8a92").expect("gris de paleta");
+            let linea = gtk::gdk::RGBA::parse("#685061").expect("línea de la maqueta");
+            let relleno = gtk::gdk::RGBA::parse("#392532").expect("relleno de la maqueta");
+            let texto = gtk::gdk::RGBA::parse("#eee9ed").expect("texto de la maqueta");
             let hovered = self.hover.get();
             let vecinos: Vec<usize> = hovered
                 .map(|n| {
@@ -153,67 +212,92 @@ mod imp {
                     posiciones.resize(datos.rutas.len(), (0.0, 0.0));
                 }
                 let (dx, dy) = posiciones[n];
-                let _ = &mut posiciones;
                 (base_x + dx, base_y + dy)
             };
             let a_pantalla = |wx: f64, wy: f64| (wx * v.zoom - v.pan_x, wy * v.zoom - v.pan_y);
-            // Aristas.
+            // Aristas: un solo trazo por color (barato con miles de aristas).
+            let aristas = gsk::PathBuilder::new();
+            let aristas_rosa = gsk::PathBuilder::new();
+            let (mut hay, mut hay_rosa) = (false, false);
             for (a, b) in &datos.aristas {
                 let resaltar = hovered.is_some_and(|h| *a == h || *b == h);
                 if hovered.is_some() && !resaltar {
                     continue; // con hover, el resto se atenúa (no se dibuja)
                 }
-                let (ax, ay) = pos(*a);
-                let (bx, by) = pos(*b);
-                let (x0, y0) = a_pantalla(ax, ay);
-                let (x1, y1) = a_pantalla(bx, by);
-                if (x1 - x0).abs() > width * 2.0 || (y1 - y0).abs() > height * 2.0 {
+                let (x0, y0) = {
+                    let (x, y) = pos(*a);
+                    a_pantalla(x, y)
+                };
+                let (x1, y1) = {
+                    let (x, y) = pos(*b);
+                    a_pantalla(x, y)
+                };
+                // Fuera del lienzo por completo: se omite.
+                if (x0 < 0.0 && x1 < 0.0)
+                    || (y0 < 0.0 && y1 < 0.0)
+                    || (x0 > width && x1 > width)
+                    || (y0 > height && y1 > height)
+                {
                     continue;
                 }
-                snapshot.append_color(
-                    &if resaltar { rosa } else { gris },
-                    &gtk::graphene::Rect::new(
-                        x0.min(x1) as f32,
-                        y0.min(y1) as f32,
-                        (x1 - x0).abs().max(1.0) as f32,
-                        (y1 - y0).abs().max(1.0) as f32,
-                    ),
-                );
+                let destino = if resaltar { &aristas_rosa } else { &aristas };
+                destino.move_to(x0 as f32, y0 as f32);
+                destino.line_to(x1 as f32, y1 as f32);
+                if resaltar {
+                    hay_rosa = true
+                } else {
+                    hay = true
+                }
             }
-            // Nodos.
+            let trazo = gsk::Stroke::new(1.5);
+            if hay {
+                snapshot.append_stroke(&aristas.to_path(), &trazo, &linea);
+            }
+            if hay_rosa {
+                snapshot.append_stroke(&aristas_rosa.to_path(), &trazo, &rosa);
+            }
+            // Nodos: círculos con relleno oscuro y borde rosa (como la maqueta); el hover y sus
+            // vecinos, rellenos de rosa.
+            let r = (RADIO * v.zoom).max(2.0);
+            let nodos = gsk::PathBuilder::new();
+            let nodos_rosa = gsk::PathBuilder::new();
+            let mut etiquetas: Vec<(usize, f64, f64)> = Vec::new();
             for n in 0..datos.rutas.len() {
                 let (wx, wy) = pos(n);
                 let (x, y) = a_pantalla(wx, wy);
-                if x < -RADIO * v.zoom || y < -RADIO * v.zoom || x > width || y > height {
+                if x < -r || y < -r || x > width + r || y > height + r {
                     continue;
                 }
                 let resaltar = hovered.is_some_and(|h| h == n || vecinos.contains(&n));
-                let mut color = gris;
                 if hovered.is_some() && !resaltar {
                     continue; // atenuar el resto
                 }
-                if resaltar {
-                    color = rosa;
+                let centro = gtk::graphene::Point::new(x as f32, y as f32);
+                if resaltar { &nodos_rosa } else { &nodos }.add_circle(&centro, r as f32);
+                if v.zoom > 0.5 || hovered == Some(n) {
+                    etiquetas.push((n, x, y));
                 }
-                let r = (RADIO * v.zoom).max(2.0);
-                snapshot.append_color(
-                    &color,
-                    &gtk::graphene::Rect::new(
-                        (x - r) as f32,
-                        (y - r) as f32,
-                        (r * 2.0) as f32,
-                        (r * 2.0) as f32,
-                    ),
-                );
-                // Etiqueta: con zoom suficiente o en el nodo/hover.
-                if (v.zoom > 0.5 || hovered == Some(n))
-                    && let Some(nombre) = datos.rutas.get(n)
-                {
-                    let etiqueta = nombre.rsplit_once('/').map(|(_, f)| f).unwrap_or(nombre);
-                    let widget = self.obj();
-                    let layout = pango_label(widget.upcast_ref::<gtk::Widget>(), etiqueta);
-                    snapshot.append_layout(&layout.2, &color);
-                }
+            }
+            let nodos = nodos.to_path();
+            snapshot.append_fill(&nodos, gsk::FillRule::Winding, &relleno);
+            snapshot.append_stroke(&nodos, &trazo, &rosa);
+            snapshot.append_fill(&nodos_rosa.to_path(), gsk::FillRule::Winding, &rosa);
+            // Etiquetas centradas debajo de cada nodo.
+            let widget = self.obj();
+            for (n, x, y) in etiquetas {
+                let Some(nombre) = datos.rutas.get(n) else {
+                    continue;
+                };
+                let archivo = nombre.rsplit_once('/').map(|(_, f)| f).unwrap_or(nombre);
+                let etiqueta = archivo.rsplit_once('.').map_or(archivo, |(s, _)| s);
+                let (w, _, layout) = pango_label(widget.upcast_ref::<gtk::Widget>(), etiqueta);
+                snapshot.save();
+                snapshot.translate(&gtk::graphene::Point::new(
+                    (x - w / 2.0) as f32,
+                    (y + r + 4.0) as f32,
+                ));
+                snapshot.append_layout(&layout, &texto);
+                snapshot.restore();
             }
         }
     }
@@ -254,6 +338,7 @@ impl VistaGrafo {
     }
 
     pub fn set_datos(&self, datos: Rc<GrafoDatos>) {
+        self.imp().centrar.set(!datos.fijas.is_empty());
         *self.imp().datos.borrow_mut() = Some(datos);
         self.imp().posiciones.borrow_mut().clear();
         self.queue_draw();
@@ -322,8 +407,9 @@ impl VistaGrafo {
                 let (mx, my) = pos;
                 let wx = (mx + v.pan_x) / v.zoom;
                 let wy = (my + v.pan_y) / v.zoom;
-                v.pan_x = mx - wx * nuevo;
-                v.pan_y = my - wy * nuevo;
+                // pantalla = mundo × zoom − pan, así que pan = mundo × zoom − pantalla.
+                v.pan_x = wx * nuevo - mx;
+                v.pan_y = wy * nuevo - my;
             }
             v.zoom = nuevo;
             imp.vista.set(v);
@@ -541,7 +627,6 @@ mod tests {
             vista.width(),
             vista.height()
         );
-        let pintable = gtk::WidgetPaintable::new(Some(&vista));
         for (nombre, zoom, pan) in [
             ("todo el grafo", 0.25, 0.0),
             ("normal", 1.0, 900.0),
@@ -554,9 +639,11 @@ mod tests {
             });
             let mut ms: Vec<f64> = (0..60)
                 .map(|_| {
+                    // Directo al `snapshot` del lienzo: `WidgetPaintable` reutiliza el cuadro
+                    // guardado si nada lo invalida, y mediría la caché.
                     let snap = gtk::Snapshot::new();
                     let t = std::time::Instant::now();
-                    pintable.snapshot(&snap, 1280.0, 800.0);
+                    WidgetImpl::snapshot(vista.imp(), &snap);
                     let nodo = snap.to_node();
                     let ms = t.elapsed().as_secs_f64() * 1000.0;
                     assert!(nodo.is_some(), "el cuadro dibuja algo");
@@ -568,6 +655,25 @@ mod tests {
                 "GRAFO {nombre} (zoom {zoom}, {aristas} aristas): mediana {:.2} ms, p95 {:.2} ms, máx {:.2} ms",
                 ms[30], ms[57], ms[59]
             );
+        }
+        // Con ORBITAL_CAPTURA_GRAFO=<png>, guarda el cuadro con zoom normal para revisarlo.
+        if let Some(png) = std::env::var_os("ORBITAL_CAPTURA_GRAFO") {
+            vista.imp().vista.set(Vista {
+                pan_x: 0.0,
+                pan_y: 0.0,
+                zoom: 1.0,
+            });
+            let snap = gtk::Snapshot::new();
+            WidgetImpl::snapshot(vista.imp(), &snap);
+            let node = snap.to_node().expect("cuadro");
+            let renderer = ventana.renderer().expect("renderizador");
+            renderer
+                .render_texture(
+                    &node,
+                    Some(&gtk::graphene::Rect::new(0.0, 0.0, 1280.0, 800.0)),
+                )
+                .save_to_png(png)
+                .unwrap();
         }
         // Hover: buscar el nodo bajo el mouse recorre todos los nodos.
         let t = std::time::Instant::now();

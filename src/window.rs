@@ -30,8 +30,21 @@ struct Inner {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
     stack: gtk::Stack,
-    split: adw::NavigationSplitView,
-    sidebar_title: adw::WindowTitle,
+    split: adw::OverlaySplitView,
+    status: crate::status_bar::StatusBar,
+    /// Sección «Recientes» del explorador y sus rutas (las cinco últimas notas abiertas).
+    recent_list: gtk::Box,
+    panel: crate::panel_derecho::PanelDerecho,
+    pestanas: crate::pestanas::Pestanas,
+    /// Estado de vista para reponer cuando cargue la nota de esa pestaña.
+    estado_pendiente: RefCell<Option<(RelPath, crate::pestanas::Estado)>>,
+    recientes: RefCell<Vec<String>>,
+    /// Lo que muestra la sección ahora: se reconstruye solo si cambia (reabrir la misma nota, o
+    /// recargar la lista por un cambio en disco, no toca los widgets).
+    recientes_vistos: RefCell<Option<Vec<String>>>,
+    /// «Cambiar orden» del explorador: árbol en orden inverso.
+    tree_reversed: Cell<bool>,
+    pie_boveda: crate::pie_boveda::PieBoveda,
     content_title: adw::WindowTitle,
     banner: adw::Banner,
     list_view: gtk::ListView,
@@ -295,11 +308,34 @@ impl Window {
         content_stack.add_named(&grafo_page, Some("grafo"));
 
         let content_title = adw::WindowTitle::new("", "");
-        let content_header = adw::HeaderBar::new();
-        content_header.set_title_widget(Some(&content_title));
+        // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
+        // cabecera única de arriba).
+        let content_header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .css_classes(["flat", "orbital-note-toolbar"])
+            .build();
+        // Ruta de la nota a la izquierda (maqueta: `note-path`); el subtítulo de `content_title`
+        // ya la arma con «solo lectura» y el estado del guardado.
+        let note_path = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .css_classes(["orbital-note-path"])
+            .build();
+        content_title
+            .bind_property("subtitle", &note_path, "label")
+            .sync_create()
+            .build();
+        content_title
+            .bind_property("subtitle", &note_path, "tooltip-text")
+            .sync_create()
+            .build();
+        content_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+        content_header.pack_start(&note_path);
         let note_menu_button = menu_button(
             "view-more-symbolic",
-            "Opciones de la nota",
+            "Más opciones de la nota",
             &[
                 ("Renombrar o mover…", "win.rename", "F2"),
                 ("Archivar", "win.archive", "Ctrl+Mayús+A"),
@@ -311,10 +347,56 @@ impl Window {
                 ("Mover a la papelera", "win.trash", "Supr"),
             ],
         );
+        note_menu_button.set_child(Some(&crate::iconos::Icono::new("mas", 18)));
+        note_menu_button.add_css_class("flat");
+        note_menu_button.add_css_class("orbital-iconbtn");
         content_header.pack_end(&note_menu_button);
-        // El selector de vista del editor (Código, Lectura, Dividida) va a la izquierda.
-        content_header.pack_start(code_editor.switcher());
+        // Botón de vista de la maqueta: muestra el modo actual y pasa al siguiente (Código →
+        // Lectura → Dividida en `.md`; Código ↔ Visual en `.html`). El grupo del editor sigue
+        // siendo el estado (y lo usan Ctrl+1/2/3), pero ya no se muestra.
+        let view_icon = crate::iconos::Icono::new("codigo", 18);
+        let view_button = gtk::Button::builder()
+            .child(&view_icon)
+            .css_classes(["flat", "orbital-iconbtn"])
+            .build();
+        {
+            let group = code_editor.switcher().clone();
+            view_button.connect_clicked(move |_| {
+                let n = group.n_toggles();
+                if n > 0 {
+                    group.set_active((group.active() + 1) % n);
+                }
+            });
+            let (icon, button) = (view_icon.clone(), view_button.clone());
+            let poner = move |g: &adw::ToggleGroup| {
+                let name = g.active_name();
+                let (glifo, nombre) = match name.as_deref() {
+                    Some("lectura") => ("archivo", "Lectura"),
+                    Some("dividida") => ("barra-izquierda", "Pantalla dividida"),
+                    Some("visual") => ("archivo", "Visual"),
+                    _ => ("codigo", "Código"),
+                };
+                icon.set_nombre(glifo);
+                button.set_tooltip_text(Some(&format!(
+                    "Modo de vista: {nombre} (clic para cambiar)"
+                )));
+                button.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Modo de vista: {nombre}. Cambiar al siguiente"
+                ))]);
+            };
+            poner(code_editor.switcher());
+            code_editor.switcher().connect_active_name_notify(poner);
+            code_editor
+                .switcher()
+                .bind_property("visible", &view_button, "visible")
+                .sync_create()
+                .build();
+        }
+        content_header.pack_end(&view_button);
         let content_view = adw::ToolbarView::new();
+        // Pestañas de notas (025) arriba de la barra de la nota.
+        let pestanas = crate::pestanas::Pestanas::new();
+        content_view.add_top_bar(pestanas.barra());
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
         // Dos avisos fijos: AT-SPI (y Orca) no ven un botón que se agrega después de crear el aviso.
@@ -330,31 +412,28 @@ impl Window {
         content_view.add_top_bar(&note_banner);
         // Panel derecho de retroenlaces, debajo de la cabecera de la nota (Ctrl+Mayús+B).
         let right = crate::editor::right_sidebar::RightSidebar::new();
+        // Barra derecha de tres modos (025): Propiedades, Contexto (los retroenlaces) y Grafo.
+        let panel = crate::panel_derecho::PanelDerecho::new(&right);
         let right_split = adw::OverlaySplitView::builder()
             .content(&content_stack)
-            .sidebar(right.widget())
+            .sidebar(panel.widget())
             .sidebar_position(gtk::PackType::End)
-            .show_sidebar(false)
-            .min_sidebar_width(260.0)
-            .max_sidebar_width(340.0)
+            .show_sidebar(true)
+            .min_sidebar_width(280.0)
+            .max_sidebar_width(280.0)
+            .sidebar_width_fraction(1.0)
             .build();
-        let backlinks_button = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-right-symbolic")
-            .tooltip_text("Retroenlaces (Ctrl+Mayús+B)")
-            .build();
-        backlinks_button
-            .update_property(&[gtk::accessible::Property::Label("Panel de retroenlaces")]);
-        backlinks_button
-            .bind_property("active", &right_split, "show-sidebar")
+        right_split.add_css_class("orbital-right");
+        let backlinks_button =
+            crate::iconos::boton_alternable("barra-derecha", "Mostrar barra derecha");
+        // La barra manda el estado inicial al botón (no al revés).
+        right_split
+            .bind_property("show-sidebar", &backlinks_button, "active")
             .bidirectional()
             .sync_create()
             .build();
-        content_header.pack_end(&backlinks_button);
+        nombre_de_barra(&backlinks_button, "barra derecha", "Ctrl+]");
         content_view.set_content(Some(&right_split));
-        let content_page = adw::NavigationPage::builder()
-            .title("Nota")
-            .child(&content_view)
-            .build();
 
         // --- Lista de la bóveda (barra lateral) ---
         let list_view = gtk::ListView::builder()
@@ -373,22 +452,50 @@ impl Window {
         let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
 
         let tag_panel = crate::tag_panel::TagPanel::new();
-        // --- ViewStack de la barra lateral izquierda (T014) ---
-        let sidebar_stack = adw::ViewStack::new();
-        let files_page = sidebar_stack.add_titled(&sidebar_scroll, Some("archivos"), "Archivos");
-        files_page.set_icon_name(Some("folder-symbolic"));
-
-        let search_page =
-            sidebar_stack.add_titled(search_panel.widget(), Some("busqueda"), "Búsqueda");
-        search_page.set_icon_name(Some("edit-find-symbolic"));
-        sidebar_stack
-            .add_titled(tag_panel.widget(), Some("etiquetas"), "Etiquetas")
-            .set_icon_name(Some("tag-symbolic"));
-
-        let sidebar_switcher = adw::ViewSwitcher::builder()
-            .stack(&sidebar_stack)
-            .policy(adw::ViewSwitcherPolicy::Narrow)
+        // --- Explorador (025): secciones plegables Explorador, Etiquetas, Recientes y Favoritos ---
+        // El árbol sigue siendo un `ListView` virtual con su propio desplazamiento (con 5000 notas
+        // no puede ir dentro de un scroll de altura natural); las otras secciones van debajo, en
+        // un panel redimensionable.
+        let (files_section, _) = seccion_plegable("Explorador", &sidebar_scroll, true, true);
+        sidebar_scroll.set_vexpand(true);
+        tag_panel.widget().set_height_request(150);
+        let (tags_section, _) = seccion_plegable("Etiquetas", tag_panel.widget(), true, false);
+        let recent_list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(["orbital-recent"])
             .build();
+        recent_list.update_property(&[gtk::accessible::Property::Label("Notas recientes")]);
+        let (recent_section, _) = seccion_plegable("Recientes", &recent_list, true, false);
+        let favorites_empty = gtk::Label::builder()
+            .label("Pendiente: todavía no se pueden marcar notas favoritas")
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(["orbital-count"])
+            .build();
+        let (favorites_section, favorites_toggle) =
+            seccion_plegable("Favoritos", &favorites_empty, false, false);
+        favorites_toggle.set_sensitive(false);
+        // Las secciones de abajo comparten un desplazamiento que puede encogerse: el alto
+        // mínimo de la barra no depende de cuántas etiquetas o notas recientes haya (si no, la
+        // ventana se pasa de alto y GTK la desacomoda).
+        let lower = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lower.append(&tags_section);
+        lower.append(&recent_section);
+        lower.append(&favorites_section);
+        let lower_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(260)
+            .child(&lower)
+            .build();
+        let explorer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        files_section.set_vexpand(true);
+        explorer.append(&files_section);
+        explorer.append(&lower_scroll);
+
+        let sidebar_stack = adw::ViewStack::new();
+        sidebar_stack.add_named(&explorer, Some("archivos"));
+        sidebar_stack.add_named(search_panel.widget(), Some("busqueda"));
 
         let banner = adw::Banner::builder()
             .title("Estructura incompleta")
@@ -398,15 +505,52 @@ impl Window {
             .visible(false)
             .build();
 
-        let sidebar_title = adw::WindowTitle::new("Orbital", "");
-        let sidebar_header = adw::HeaderBar::new();
-        sidebar_header.set_title_widget(Some(&sidebar_switcher));
-        sidebar_header.pack_start(&open_menu_button());
-        let new_button = menu_button("list-add-symbolic", "Nueva nota", &[]);
-        sidebar_header.pack_end(&new_button);
+        // Cabecera de acciones del explorador (maqueta: crear nota, crear carpeta, cambiar orden,
+        // mostrar archivo actual, colapsar carpetas).
+        let new_button = menu_button("list-add-symbolic", "Crear nota", &[]);
+        new_button.set_child(Some(&crate::iconos::Icono::new("crear-nota", 18)));
+        new_button.add_css_class("flat");
+        new_button.add_css_class("orbital-iconbtn");
+        let left_head = gtk::Box::builder()
+            .css_classes(["orbital-left-head"])
+            .homogeneous(true)
+            .build();
+        left_head.append(&new_button);
+        for (icono, nombre, accion) in [
+            ("crear-carpeta", "Crear carpeta", "win.new-folder"),
+            ("ordenar", "Cambiar orden", "win.sort-tree"),
+            ("ubicar", "Mostrar archivo actual", "win.reveal-current"),
+            ("colapsar", "Colapsar carpetas", "win.collapse-folders"),
+        ] {
+            let b = crate::iconos::boton(icono, nombre);
+            b.set_action_name(Some(accion));
+            left_head.append(&b);
+        }
+        // Pie: la bóveda abierta y el menú para cambiarla.
+        let vault_button = menu_button(
+            "folder-open-symbolic",
+            "Cambiar de bóveda",
+            &[
+                ("Abrir una carpeta…", "win.open", "Ctrl+O"),
+                (
+                    "Abrir como bóveda de Orbital…",
+                    "win.open-as",
+                    "Ctrl+Mayús+O",
+                ),
+                ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
+                ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
+            ],
+        );
+        vault_button.set_child(Some(&crate::iconos::Icono::new("cambiar", 18)));
+        vault_button.add_css_class("flat");
+        vault_button.add_css_class("orbital-iconbtn");
+        vault_button.set_direction(gtk::ArrowType::Up);
+        let pie_boveda = crate::pie_boveda::PieBoveda::new(&vault_button);
         let sidebar_view = adw::ToolbarView::new();
-        sidebar_view.add_top_bar(&sidebar_header);
+        sidebar_view.add_css_class("orbital-left");
+        sidebar_view.add_top_bar(&left_head);
         sidebar_view.add_top_bar(&banner);
+        sidebar_view.add_bottom_bar(pie_boveda.widget());
         let gone_banner = adw::Banner::builder()
             .title("La bóveda no está disponible. Orbital no va a escribir nada.")
             .revealed(true)
@@ -414,24 +558,149 @@ impl Window {
             .build();
         sidebar_view.add_top_bar(&gone_banner);
         sidebar_view.set_content(Some(&sidebar_stack));
-        let sidebar_page = adw::NavigationPage::builder()
-            .title("Bóveda")
-            .child(&sidebar_view)
+
+        // --- Esqueleto de la interfaz v13 (025) ---
+        // Barra izquierda (260 px) y barra derecha (280 px) plegables; en ventanas angostas se
+        // superponen al centro (breakpoint de abajo).
+        let split = adw::OverlaySplitView::builder()
+            .sidebar(&sidebar_view)
+            .content(&content_view)
+            .min_sidebar_width(260.0)
+            .max_sidebar_width(260.0)
+            .sidebar_width_fraction(1.0)
+            .build();
+        split.add_css_class("orbital-split");
+        let left_toggle =
+            crate::iconos::boton_alternable("barra-izquierda", "Ocultar barra izquierda");
+        // La barra manda el estado inicial al botón (no al revés).
+        split
+            .bind_property("show-sidebar", &left_toggle, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        nombre_de_barra(&left_toggle, "barra izquierda", "Ctrl+[");
+
+        // Modos de la barra izquierda, alineados sobre ella: Explorador, Búsqueda y Guardados
+        // (pendiente: guardar notas todavía no existe).
+        let modes = gtk::Box::builder()
+            .spacing(8)
+            .css_classes(["orbital-left-modes"])
+            .build();
+        modes.update_property(&[gtk::accessible::Property::Label("Modo del panel izquierdo")]);
+        let mode_files = crate::iconos::boton_alternable("crear-carpeta", "Explorador de archivos");
+        let mode_search = crate::iconos::boton_alternable("buscar", "Búsqueda");
+        mode_search.set_group(Some(&mode_files));
+        let mode_saved = crate::iconos::boton_alternable("marcador", "Guardados (pendiente)");
+        mode_saved.set_sensitive(false);
+        mode_files.set_active(true);
+        for (b, page) in [(&mode_files, "archivos"), (&mode_search, "busqueda")] {
+            let stack = sidebar_stack.clone();
+            b.connect_toggled(move |b| {
+                if b.is_active() {
+                    stack.set_visible_child_name(page);
+                }
+            });
+        }
+        {
+            let (f, se) = (mode_files.clone(), mode_search.clone());
+            sidebar_stack.connect_visible_child_name_notify(move |st| {
+                match st.visible_child_name().as_deref() {
+                    Some("busqueda") => se.set_active(true),
+                    _ => f.set_active(true),
+                }
+            });
+        }
+        modes.append(&mode_files);
+        modes.append(&mode_search);
+        modes.append(&mode_saved);
+        split
+            .bind_property("show-sidebar", &modes, "visible")
+            .sync_create()
             .build();
 
-        let split = adw::NavigationSplitView::builder()
-            .sidebar(&sidebar_page)
-            .content(&content_page)
+        let brand = gtk::Box::builder()
+            .spacing(9)
+            .css_classes(["orbital-brand"])
             .build();
+        let planeta = crate::iconos::Icono::new("planeta", 24);
+        planeta.add_css_class("orbital-planet");
+        brand.append(&planeta);
+        brand.append(&gtk::Label::new(Some("orbital")));
+        brand.update_property(&[gtk::accessible::Property::Label("Orbital")]);
+
+        let main_header = adw::HeaderBar::builder()
+            .css_classes(["orbital-top"])
+            .build();
+        let left_slot = gtk::Box::builder()
+            .width_request(58)
+            .halign(gtk::Align::Start)
+            .build();
+        left_toggle.set_halign(gtk::Align::Center);
+        left_toggle.set_hexpand(true);
+        left_slot.append(&left_toggle);
+        main_header.pack_start(&left_slot);
+        main_header.pack_start(&modes);
+        main_header.set_title_widget(Some(&brand));
+        main_header.pack_end(&backlinks_button);
+
+        // Riel de navegación (58 px): acciones reales; Canva y DB desactivados hasta su spec.
+        let rail = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .css_classes(["orbital-rail"])
+            .build();
+        rail.update_property(&[gtk::accessible::Property::Label("Navegación principal")]);
+        for (icono, nombre, accion) in [
+            ("selector", "Selector rápido", Some("win.quick-open")),
+            ("red", "Conexiones", Some("win.ver-grafo")),
+            ("canva", "Crear canva (todavía no disponible)", None),
+            ("db", "Crear base de datos (todavía no disponible)", None),
+            (
+                "comandos",
+                "Paleta de comandos",
+                Some("win.command-palette"),
+            ),
+        ] {
+            let b = crate::iconos::boton(icono, nombre);
+            match accion {
+                Some(a) => b.set_action_name(Some(a)),
+                None => b.set_sensitive(false),
+            }
+            rail.append(&b);
+        }
+        let settings = crate::iconos::boton("configuracion", "Configuración general");
+        settings.set_action_name(Some("win.preferences"));
+        settings.set_vexpand(true);
+        settings.set_valign(gtk::Align::End);
+        rail.append(&settings);
+
+        // Barra inferior plegable: versión, totales de la bóveda y contadores de la nota.
+        let status = crate::status_bar::StatusBar::new();
+
+        let workspace = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        workspace.append(&rail);
+        split.set_hexpand(true);
+        workspace.append(&split);
+        let root_view = adw::ToolbarView::builder()
+            .top_bar_style(adw::ToolbarStyle::Flat)
+            .bottom_bar_style(adw::ToolbarStyle::Flat)
+            .build();
+        root_view.add_top_bar(&main_header);
+        let overlay = gtk::Overlay::builder().child(&workspace).build();
+        overlay.add_overlay(status.tab());
+        root_view.set_content(Some(&overlay));
+        root_view.add_bottom_bar(status.widget());
 
         // --- Pantalla inicial ---
         let start = start_page();
 
+        // Homogéneo a propósito: la primera disposición de la interfaz de la bóveda ocurre
+        // mientras la bóveda se lee en otro hilo (sin homogéneo, se suma después: +60 ms).
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         stack.add_named(&start, Some("inicio"));
-        stack.add_named(&split, Some("boveda"));
+        stack.add_named(&root_view, Some("boveda"));
 
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stack));
@@ -446,14 +715,34 @@ impl Window {
             .content(&toasts)
             .build();
 
-        // En pantallas estrechas, la barra lateral y el visor se apilan.
-        let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            600.0,
-            adw::LengthUnit::Sp,
-        ));
-        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-        window.add_breakpoint(breakpoint);
+        // Anchos de la maqueta: 260/280 px y, en ventanas más chicas, 220/220 y 190/170. La
+        // maqueta lo hace a 900 y 680 px; acá el centro tiene un ancho mínimo real (la columna del
+        // editor y las propiedades), así que los cortes van antes y, si no entra, la barra
+        // derecha y después la izquierda se superponen al centro en vez de recortarlo.
+        let ancho_maximo = |px: f64| {
+            adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+                adw::BreakpointConditionLengthType::MaxWidth,
+                px,
+                adw::LengthUnit::Px,
+            ))
+        };
+        for (px, izq, der) in [(1180.0, 220.0, 220.0), (1060.0, 190.0, 170.0)] {
+            let bp = ancho_maximo(px);
+            for (vista, ancho) in [(&split, izq), (&right_split, der)] {
+                bp.add_setter(vista, "min-sidebar-width", Some(&ancho.to_value()));
+                bp.add_setter(vista, "max-sidebar-width", Some(&ancho.to_value()));
+            }
+            window.add_breakpoint(bp);
+        }
+        let bp = ancho_maximo(1040.0);
+        bp.add_setter(&right_split, "collapsed", Some(&true.to_value()));
+        bp.add_setter(&split, "min-sidebar-width", Some(&190.0.to_value()));
+        bp.add_setter(&split, "max-sidebar-width", Some(&190.0.to_value()));
+        window.add_breakpoint(bp);
+        let bp = ancho_maximo(760.0);
+        bp.add_setter(&split, "collapsed", Some(&true.to_value()));
+        bp.add_setter(&right_split, "collapsed", Some(&true.to_value()));
+        window.add_breakpoint(bp);
 
         // OnStage (014): ventana separada, oculta hasta «Presentar con OnStage». El material
         // vivo (texto de la nota y bóveda) lo arma la ventana en cada refresco.
@@ -468,7 +757,15 @@ impl Window {
             toasts,
             stack,
             split,
-            sidebar_title,
+            status,
+            recent_list,
+            panel,
+            pestanas,
+            estado_pendiente: RefCell::new(None),
+            recientes: RefCell::new(Vec::new()),
+            recientes_vistos: RefCell::new(None),
+            tree_reversed: Cell::new(false),
+            pie_boveda,
             content_title,
             banner,
             list_view,
@@ -656,11 +953,52 @@ impl Window {
         this.setup_raw_drop();
         this.setup_editor();
         this.setup_list();
+        this.setup_status_counts();
+        this.setup_pestanas();
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.pie_boveda.connect_elegir(move |ruta| {
+                let Some(i) = weak.upgrade() else { return };
+                let w = Window(i);
+                glib::spawn_future_local(async move {
+                    // Lo pendiente de la nota abierta se guarda antes de cambiar de bóveda.
+                    w.0.code_editor.flush().await;
+                    if w.0.code_editor.has_pending() {
+                        w.toast("La nota tiene cambios sin guardar: la bóveda no cambió");
+                        if let Some(v) = w.0.vault.borrow().clone() {
+                            w.0.pie_boveda
+                                .set_boveda(v.root(), &AppState::load().recent);
+                        }
+                        return;
+                    }
+                    w.open_path(ruta).await;
+                });
+            });
+        }
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.panel.connect_modo(move |_| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).refresh_panel();
+                }
+            });
+            let weak = Rc::downgrade(&this.0);
+            this.0.panel.connect_abrir(move |ruta| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).show_path(ruta);
+                }
+            });
+        }
         this
     }
 
     pub fn present(&self) {
         self.0.window.present();
+    }
+
+    /// Medición del arranque (desarrollo): fases del próximo cuadro.
+    pub fn fases_del_proximo_cuadro(&self) {
+        crate::medir_arranque::fases_del_proximo_cuadro(&self.0.window);
     }
 
     fn setup_actions(&self, app: &adw::Application) {
@@ -760,6 +1098,22 @@ impl Window {
                 let s = &w.0.right_split;
                 s.set_show_sidebar(!s.shows_sidebar());
             }),
+            simple("toggle-left", |w| {
+                let s = &w.0.split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
+            simple("toggle-right", |w| {
+                let s = &w.0.right_split;
+                s.set_show_sidebar(!s.shows_sidebar());
+            }),
+            simple("new-folder", Window::ask_new_folder),
+            simple("sort-tree", Window::sort_tree),
+            simple("reveal-current", |w| {
+                if let Some(e) = w.0.current_entry.borrow().clone() {
+                    w.reveal(e.path.as_str());
+                }
+            }),
+            simple("collapse-folders", Window::collapse_folders),
             simple("search", Window::focus_search),
             simple("toggle-search-raw", Window::toggle_search_raw),
             simple("find", |w| w.0.code_editor.open_find(false)),
@@ -845,6 +1199,8 @@ impl Window {
         app.set_accels_for_action("win.command-palette", &["<Control><Shift>p"]);
         app.set_accels_for_action("win.exportar-html", &["<Control><Shift>e"]);
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
+        app.set_accels_for_action("win.toggle-left", &["<Control>bracketleft"]);
+        app.set_accels_for_action("win.toggle-right", &["<Control>bracketright"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -907,6 +1263,14 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar la barra izquierda",
+            "<Control>bracketleft",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar la barra derecha",
+            "<Control>bracketright",
         ));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
@@ -1091,6 +1455,7 @@ impl Window {
             gio::spawn_blocking(move || orbital_vault::open(&for_thread).map(prepare)).await;
         match result {
             Ok(Ok((vault, tree, meta))) => {
+                crate::medir_arranque::marca("bóveda leída");
                 self.show_vault(vault, tree, meta);
                 self.remember(path);
             }
@@ -1108,6 +1473,7 @@ impl Window {
             .is_none_or(|current| current.root() != vault.root())
         {
             self.0.vault_session.set(self.0.vault_session.get() + 1);
+            self.0.pestanas.limpiar();
         }
         let i = &self.0;
         self.fill_new_menu(&meta.templates);
@@ -1116,9 +1482,8 @@ impl Window {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| vault.root().display().to_string());
-        i.sidebar_title.set_title(&name);
-        i.sidebar_title
-            .set_subtitle(&format!("{} elementos", vault.entries().len()));
+        i.pie_boveda
+            .set_boveda(vault.root(), &AppState::load().recent);
         i.window.set_title(Some(&format!("{name} — Orbital")));
 
         let incomplete = !vault.layout().is_complete();
@@ -1159,7 +1524,9 @@ impl Window {
         i.tag_panel.set_tree(None);
         i.code_editor.set_tag_candidates(Vec::new());
 
+        crate::medir_arranque::marca("show_vault: hasta candidatos");
         let baseline = Self::collect_candidates_baseline(&arc_vault);
+        crate::medir_arranque::marca("show_vault: candidatos");
         *i.candidates.borrow_mut() = baseline;
         let vault_for_cand = arc_vault.clone();
         let this_cand = self.clone();
@@ -1173,6 +1540,7 @@ impl Window {
         });
 
         self.rebuild_graph();
+        crate::medir_arranque::marca("show_vault: grafo pedido");
         let this = self.clone();
         let generation = i.search_gen.get();
         self.after_next_frame(move || {
@@ -1181,56 +1549,25 @@ impl Window {
             }
         });
 
-        let root = children_model(&tree, "");
-        let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
-            let path = item.downcast_ref::<gtk::StringObject>()?.string();
-            tree.get(path.as_str())
-                .map(|_| children_model(&tree, path.as_str()).upcast::<gio::ListModel>())
-        });
-        let selection = gtk::SingleSelection::builder()
-            .model(&tree_model)
-            .autoselect(false)
-            .build();
-        // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
-        let this = self.clone();
-        selection.connect_selection_changed(move |sel, _, _| {
-            let Some(row) = sel.selected_item().and_downcast::<gtk::TreeListRow>() else {
-                return;
-            };
-            let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
-                return;
-            };
-            if let Some(e) = this
-                .entry(path.string().as_str())
-                .filter(|e| e.kind != EntryKind::Folder)
-            {
-                this.show_entry(e);
+        // Totales de la barra inferior (maqueta: notas, carpetas y archivos).
+        let (mut notas, mut carpetas, mut archivos) = (0, 0, 0);
+        for e in arc_vault.entries() {
+            match e.kind {
+                EntryKind::Folder => carpetas += 1,
+                EntryKind::AtomNote | EntryKind::SynthesisNote => {
+                    notas += 1;
+                    archivos += 1;
+                }
+                _ => archivos += 1,
             }
-        });
-        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
-        let expanded: std::collections::HashSet<String> = i
-            .list_view
-            .model()
-            .map(|old| {
-                (0..old.n_items())
-                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
-                    .filter(|r| r.is_expanded())
-                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
-                    .map(|o| o.string().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        i.list_view.set_model(Some(&selection));
-        let mut n = 0;
-        while n < selection.n_items() {
-            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
-                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
-                && expanded.contains(o.string().as_str())
-            {
-                row.set_expanded(true);
-            }
-            n += 1;
         }
+        i.status.set_totales(notas, carpetas, archivos);
+        crate::medir_arranque::marca("show_vault: totales");
+        *i.recientes.borrow_mut() = AppState::load().recent_notes_for(arc_vault.root()).to_vec();
+        self.refresh_recent();
+        crate::medir_arranque::marca("show_vault: recientes");
+        self.set_list_model(tree);
+        crate::medir_arranque::marca("show_vault: lista");
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
@@ -1272,6 +1609,7 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        self.guardar_estado_pestana();
         let this = self.clone();
         glib::spawn_future_local(async move {
             // Antes de cambiar de nota, se guarda lo pendiente de la anterior (FR-002).
@@ -1309,6 +1647,8 @@ impl Window {
             };
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
+            i.pestanas
+                .abrir(entry.path.as_str(), entry.path.file_name());
             this.refresh_backlinks();
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();
@@ -1326,6 +1666,13 @@ impl Window {
             }
             match loaded {
                 Ok(Some(note)) => {
+                    {
+                        let mut r = this.0.recientes.borrow_mut();
+                        let rel = note.path.as_str();
+                        r.retain(|p| p != rel);
+                        r.insert(0, rel.to_owned());
+                    }
+                    this.refresh_recent();
                     if this.0.persist.get() {
                         let rel = note.path.as_str().to_string();
                         let vroot = vault.root().to_path_buf();
@@ -1399,7 +1746,6 @@ impl Window {
                     action.set_enabled(enabled);
                 }
             }
-            i.split.set_show_content(true);
         });
     }
 
@@ -1465,6 +1811,7 @@ impl Window {
             }
         }
         *i.current_note.borrow_mut() = Some(note);
+        self.refresh_panel();
     }
 
     /// Abre una nota `.md` en la vista Código. Si ya está abierta (por ejemplo, al recargar la
@@ -1487,6 +1834,246 @@ impl Window {
                 i.pending_line.set(Some((path, line)));
             }
         }
+        let pendiente = i.estado_pendiente.borrow_mut().take();
+        if let Some((path, (cursor, scroll, vista))) = pendiente
+            && path == note.path
+        {
+            i.code_editor
+                .restaurar_vista(cursor, scroll, vista.as_deref());
+        }
+    }
+
+    /// Arma el modelo del árbol de la bóveda (con el orden elegido) y conserva las carpetas que
+    /// estaban abiertas.
+    fn set_list_model(&self, tree: Rc<Tree>) {
+        let i = &self.0;
+        // Pestañas de notas que ya no existen (borradas, archivadas o renombradas afuera).
+        {
+            let this = self.clone();
+            i.pestanas.quitar(move |clave| this.entry(clave).is_none());
+        }
+        let reversed = i.tree_reversed.get();
+        let root = children_model(&tree, "", reversed);
+        let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
+            let path = item.downcast_ref::<gtk::StringObject>()?.string();
+            tree.get(path.as_str())
+                .map(|_| children_model(&tree, path.as_str(), reversed).upcast::<gio::ListModel>())
+        });
+        let selection = gtk::SingleSelection::builder()
+            .model(&tree_model)
+            .autoselect(false)
+            .build();
+        // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
+        let this = self.clone();
+        selection.connect_selection_changed(move |sel, _, _| {
+            let Some(row) = sel.selected_item().and_downcast::<gtk::TreeListRow>() else {
+                return;
+            };
+            let Some(path) = row.item().and_downcast::<gtk::StringObject>() else {
+                return;
+            };
+            if let Some(e) = this
+                .entry(path.string().as_str())
+                .filter(|e| e.kind != EntryKind::Folder)
+            {
+                this.show_entry(e);
+            }
+        });
+        // Las carpetas que estaban abiertas siguen abiertas después de recargar.
+        let expanded: std::collections::HashSet<String> = i
+            .list_view
+            .model()
+            .map(|old| {
+                (0..old.n_items())
+                    .filter_map(|n| old.item(n).and_downcast::<gtk::TreeListRow>())
+                    .filter(|r| r.is_expanded())
+                    .filter_map(|r| r.item().and_downcast::<gtk::StringObject>())
+                    .map(|o| o.string().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        i.list_view.set_model(Some(&selection));
+        let mut n = 0;
+        while n < selection.n_items() {
+            if let Some(row) = selection.item(n).and_downcast::<gtk::TreeListRow>()
+                && let Some(o) = row.item().and_downcast::<gtk::StringObject>()
+                && expanded.contains(o.string().as_str())
+            {
+                row.set_expanded(true);
+            }
+            n += 1;
+        }
+    }
+
+    /// Contadores de la barra inferior: se recalculan 150 ms después del último cambio de texto o
+    /// de selección (nunca en cada tecla sobre todo el texto: rompería el presupuesto por tecla).
+    fn setup_status_counts(&self) {
+        let generation = Rc::new(Cell::new(0u64));
+        let schedule = {
+            let weak = Rc::downgrade(&self.0);
+            let generation = generation.clone();
+            move || {
+                let g = generation.get() + 1;
+                generation.set(g);
+                let weak = weak.clone();
+                let generation = generation.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                    if generation.get() != g {
+                        return;
+                    }
+                    let Some(i) = weak.upgrade() else { return };
+                    let b = i.code_editor.buffer();
+                    let (start, end) = b.bounds();
+                    let total = crate::status_bar::contar(&b.text(&start, &end, false));
+                    let seleccion = b
+                        .selection_bounds()
+                        .map(|(a, z)| crate::status_bar::contar(&b.text(&a, &z, false)));
+                    i.status.set_contadores(total, seleccion);
+                    let en_editor = i.current_entry.borrow().as_ref().map(|e| &e.path)
+                        == i.code_editor.current_path().as_ref();
+                    if en_editor {
+                        i.panel.set_palabras(total.1);
+                    }
+                });
+            }
+        };
+        let buffer = self.0.code_editor.buffer();
+        let s = schedule.clone();
+        buffer.connect_changed(move |_| s());
+        let s = schedule.clone();
+        buffer.connect_has_selection_notify(move |_| s());
+        // Extender una selección mueve la marca sin cambiar `has-selection`.
+        buffer.connect_mark_set(move |b, _, mark| {
+            if b.has_selection() && (mark == &b.selection_bound() || mark == &b.get_insert()) {
+                schedule();
+            }
+        });
+    }
+
+    /// Sección «Recientes» del explorador: las cinco últimas notas abiertas.
+    fn refresh_recent(&self) {
+        let top: Vec<String> = self.0.recientes.borrow().iter().take(5).cloned().collect();
+        if self.0.recientes_vistos.borrow().as_ref() == Some(&top) {
+            return;
+        }
+        *self.0.recientes_vistos.borrow_mut() = Some(top);
+        let list = &self.0.recent_list;
+        while let Some(c) = list.first_child() {
+            list.remove(&c);
+        }
+        let recientes = self.0.recientes.borrow();
+        if recientes.is_empty() {
+            list.append(
+                &gtk::Label::builder()
+                    .label("Sin notas recientes")
+                    .xalign(0.0)
+                    .css_classes(["orbital-count"])
+                    .build(),
+            );
+            return;
+        }
+        for ruta in recientes.iter().take(5) {
+            let nombre = ruta.rsplit('/').next().unwrap_or(ruta);
+            let b = gtk::Button::builder()
+                .child(
+                    &gtk::Label::builder()
+                        .label(nombre)
+                        .xalign(0.0)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .build(),
+                )
+                .tooltip_text(ruta.as_str())
+                .css_classes(["flat", "orbital-list-item"])
+                .build();
+            b.update_property(&[gtk::accessible::Property::Label(&format!("Abrir {nombre}"))]);
+            let weak = Rc::downgrade(&self.0);
+            let ruta = ruta.clone();
+            b.connect_clicked(move |_| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).show_path(&ruta);
+                }
+            });
+            list.append(&b);
+        }
+    }
+
+    /// «Cambiar orden» (maqueta): invierte el orden del árbol.
+    fn sort_tree(&self) {
+        self.0.tree_reversed.set(!self.0.tree_reversed.get());
+        let tree = self.0.tree.borrow().clone();
+        self.set_list_model(tree);
+    }
+
+    /// «Colapsar carpetas» (maqueta): si hay carpetas abiertas, las cierra todas; si no, abre
+    /// todas.
+    fn collapse_folders(&self) {
+        let Some(model) = self.0.list_view.model() else {
+            return;
+        };
+        let rows = || {
+            (0..model.n_items()).filter_map(|n| model.item(n).and_downcast::<gtk::TreeListRow>())
+        };
+        if rows().any(|r| r.is_expanded()) {
+            // De abajo hacia arriba: cerrar una carpeta saca a sus hijas de la lista.
+            for n in (0..model.n_items()).rev() {
+                if let Some(r) = model.item(n).and_downcast::<gtk::TreeListRow>() {
+                    r.set_expanded(false);
+                }
+            }
+        } else {
+            let mut n = 0;
+            while n < model.n_items() {
+                if let Some(r) = model.item(n).and_downcast::<gtk::TreeListRow>()
+                    && r.is_expandable()
+                {
+                    r.set_expanded(true);
+                }
+                n += 1;
+            }
+        }
+    }
+
+    /// «Crear carpeta»: pide el nombre y la crea donde se crean las notas nuevas.
+    fn ask_new_folder(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder().activates_default(true).build();
+            field.update_property(&[gtk::accessible::Property::Label("Nombre de la carpeta")]);
+            let dialog = adw::AlertDialog::new(Some("Carpeta nueva"), Some("¿Cómo se llama?"));
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("create", "Crear");
+            dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("create"));
+            dialog.set_close_response("cancel");
+            let f = field.clone();
+            glib::idle_add_local_once(move || {
+                f.grab_focus();
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "create" {
+                return;
+            }
+            let name = field.text().trim().to_owned();
+            if name.is_empty() || name.contains('/') || name.starts_with('.') {
+                return this.toast("El nombre no puede estar vacío, tener «/» ni empezar con «.»");
+            }
+            warn_portable(&this, &name);
+            let dir = this
+                .target_dir()
+                .map_or_else(|| "wiki".to_owned(), |d| d.as_str().to_owned());
+            let abs = vault.root().join(&dir).join(&name);
+            let result = gio::spawn_blocking(move || std::fs::create_dir(abs)).await;
+            match result {
+                Ok(Ok(())) => this.toast(&format!("Carpeta «{name}» creada en {dir}/")),
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    this.toast(&format!("Ya existe «{name}» en {dir}/"))
+                }
+                _ => this.toast("No se pudo crear la carpeta"),
+            }
+        });
     }
 
     /// El webview de la URL asociada (009), creado al primer uso con una sesión de red efímera:
@@ -2005,6 +2592,32 @@ impl Window {
             Some("Ctrl+Mayús+B"),
             false,
         ),
+        (
+            "Alternar la barra izquierda",
+            "toggle-left",
+            Some("Ctrl+["),
+            false,
+        ),
+        (
+            "Alternar la barra derecha",
+            "toggle-right",
+            Some("Ctrl+]"),
+            false,
+        ),
+        ("Crear carpeta", "new-folder", None, false),
+        ("Cambiar el orden del explorador", "sort-tree", None, false),
+        (
+            "Ubicar la nota en el explorador",
+            "reveal-current",
+            None,
+            true,
+        ),
+        (
+            "Colapsar o expandir las carpetas",
+            "collapse-folders",
+            None,
+            false,
+        ),
         ("Abrir carpeta…", "open", Some("Ctrl+O"), false),
         (
             "Abrir como bóveda de Orbital…",
@@ -2502,6 +3115,8 @@ impl Window {
     /// Abre la página del grafo (008) y construye sus datos si no los tiene.
     pub fn ver_grafo(&self) {
         let i = &self.0;
+        self.guardar_estado_pestana();
+        i.pestanas.abrir(crate::pestanas::CONEXIONES, "Conexiones");
         if i.grafo_datos.borrow().is_none() {
             let graph = i.graph.borrow().clone();
             self.reconstruir_grafo_visual(graph.as_ref());
@@ -2511,7 +3126,210 @@ impl Window {
 
     /// Cierra el grafo y vuelve a la nota (Esc: SC-3, nada cambia).
     pub fn cerrar_grafo(&self) {
-        self.0.content_stack.set_visible_child_name("codigo");
+        // Cerrar el grafo es cerrar su pestaña: la barra elige la vecina (y la abre).
+        self.0.pestanas.cerrar(crate::pestanas::CONEXIONES);
+    }
+
+    /// Guarda el estado de vista de la nota del editor en su pestaña (antes de dejarla).
+    fn guardar_estado_pestana(&self) {
+        let i = &self.0;
+        if i.content_stack.visible_child_name().as_deref() != Some("codigo") {
+            return;
+        }
+        if let Some(path) = i.code_editor.current_path() {
+            i.pestanas
+                .guardar_estado(path.as_str(), i.code_editor.estado_vista());
+        }
+    }
+
+    /// Barra derecha (025): metadatos y etiquetas de la nota abierta, enlaces entrantes y, con
+    /// su modo a la vista, el grafo local (armado en segundo plano).
+    fn refresh_panel(&self) {
+        use crate::panel_derecho::Metadatos;
+        let i = &self.0;
+        if !i.right_split.shows_sidebar() {
+            return;
+        }
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            i.panel.set_nota(None);
+            i.panel.set_entrantes(&[]);
+            i.panel
+                .set_grafo(None, "Abrí una nota para ver sus conexiones.");
+            return;
+        };
+        let file = entry.path.file_name();
+        let formato = Format::from_name(file);
+        let meta = {
+            let note = i.current_note.borrow();
+            let note = note.as_ref().filter(|n| n.path == entry.path);
+            let nombre = note
+                .and_then(|n| n.prop("title"))
+                .and_then(|v| v.as_text())
+                .map(str::to_owned)
+                .unwrap_or_else(|| file.rsplit_once('.').map_or(file, |(s, _)| s).to_owned());
+            let palabras = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
+                let b = i.code_editor.buffer();
+                Some(crate::status_bar::contar(&b.text(&b.start_iter(), &b.end_iter(), false)).1)
+            } else {
+                note.map(|n| crate::status_bar::contar(&n.source).1)
+            };
+            let mut etiquetas: Vec<String> = Vec::new();
+            if let Some(n) = note {
+                for t in orbital_vault::tags::extract_tags(&n.source, n.format == Format::Html) {
+                    if !etiquetas.contains(&t.tag) {
+                        etiquetas.push(t.tag);
+                    }
+                }
+            }
+            Metadatos {
+                nombre,
+                formato: match formato {
+                    Some(Format::Md) => "Markdown".to_owned(),
+                    Some(Format::Html) => "HTML".to_owned(),
+                    None => file
+                        .rsplit_once('.')
+                        .map_or_else(|| "Archivo".to_owned(), |(_, e)| e.to_uppercase()),
+                },
+                ubicacion: entry
+                    .path
+                    .as_str()
+                    .rsplit_once('/')
+                    .map_or_else(|| "/".to_owned(), |(d, _)| d.to_owned()),
+                palabras,
+                etiquetas,
+            }
+        };
+        i.panel.set_nota(Some(meta));
+        let graph = i.graph.borrow().clone();
+        let Some(graph) = graph else {
+            i.panel.set_entrantes(&[]);
+            i.panel.set_grafo(None, "Armando las conexiones…");
+            return;
+        };
+        let mut entrantes: Vec<RelPath> = match graph.lock() {
+            Ok(g) => g
+                .backlinks_for(&entry.path)
+                .iter()
+                .map(|b| b.from.clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        entrantes.sort();
+        entrantes.dedup();
+        i.panel.set_entrantes(&entrantes);
+        if i.panel.modo() != "grafo" {
+            return;
+        }
+        if formato.is_none() {
+            i.panel
+                .set_grafo(None, "Los archivos que no son notas no tienen enlaces.");
+            return;
+        }
+        let this = self.clone();
+        let centro = entry.path.clone();
+        glib::spawn_future_local(async move {
+            let c = centro.clone();
+            let datos = gio::spawn_blocking(move || {
+                let g = graph.lock().ok()?;
+                let enlaces: Vec<(String, String)> = g
+                    .enlaces_resueltos()
+                    .into_iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect();
+                let vecinos: Vec<String> = enlaces
+                    .iter()
+                    .filter_map(|(a, b)| {
+                        if *a == c.as_str() {
+                            Some(b.clone())
+                        } else if *b == c.as_str() {
+                            Some(a.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Some(crate::grafo::GrafoDatos::local(
+                    c.to_string(),
+                    vecinos,
+                    &enlaces,
+                ))
+            })
+            .await
+            .ok()
+            .flatten();
+            // La nota pudo cambiar mientras tanto.
+            let sigue = this.0.current_entry.borrow().as_ref().map(|e| &e.path) == Some(&centro);
+            if !sigue {
+                return;
+            }
+            match datos {
+                Some(d) if d.rutas.len() > 1 => this.0.panel.set_grafo(Some(Rc::new(d)), ""),
+                Some(d) => this.0.panel.set_grafo(
+                    Some(Rc::new(d)),
+                    "Ninguna nota se conecta con esta todavía.",
+                ),
+                None => this
+                    .0
+                    .panel
+                    .set_grafo(None, "No se pudieron leer las conexiones."),
+            }
+        });
+    }
+
+    /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
+    /// el centro vacío (guardando antes lo pendiente).
+    fn setup_pestanas(&self) {
+        let weak = Rc::downgrade(&self.0);
+        self.0.pestanas.connect_elegir(move |clave, estado| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if clave == crate::pestanas::CONEXIONES {
+                w.ver_grafo();
+                return;
+            }
+            w.guardar_estado_pestana();
+            if let (Some(estado), Ok(path)) = (estado, RelPath::new(clave)) {
+                *w.0.estado_pendiente.borrow_mut() = Some((path, estado));
+            }
+            w.show_path(clave);
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.pestanas.connect_cerrar(move |clave, quedan| {
+            let Some(i) = weak.upgrade() else { return };
+            if quedan {
+                return;
+            }
+            let w = Window(i);
+            if clave == crate::pestanas::CONEXIONES && w.0.code_editor.current_path().is_some() {
+                // Quedó solo la nota del editor sin pestaña: se vuelve a ella.
+                if let Some(e) = w.0.current_entry.borrow().clone() {
+                    w.0.pestanas.abrir(e.path.as_str(), e.path.file_name());
+                }
+                w.0.content_stack.set_visible_child_name("codigo");
+                return;
+            }
+            glib::spawn_future_local(async move {
+                let editor = w.0.code_editor.clone();
+                editor.flush().await;
+                if editor.has_pending() {
+                    w.toast("La nota tiene cambios sin guardar: quedó abierta");
+                    if let Some(e) = w.0.current_entry.borrow().clone() {
+                        w.0.pestanas.abrir(e.path.as_str(), e.path.file_name());
+                    }
+                    return;
+                }
+                editor.close();
+                *w.0.current_entry.borrow_mut() = None;
+                *w.0.current_note.borrow_mut() = None;
+                w.0.content_title.set_title("");
+                w.0.content_title.set_subtitle("");
+                if let Some(model) = w.0.list_view.model().and_downcast::<gtk::SingleSelection>() {
+                    model.set_selected(gtk::INVALID_LIST_POSITION);
+                }
+                w.0.content_stack.set_visible_child_name("vacio");
+                w.refresh_backlinks();
+            });
+        });
     }
 
     /// Presenta la nota abierta como diapositivas (OnStage, 014): solo notas `.md`.
@@ -2688,6 +3506,7 @@ impl Window {
         if !i.right_split.shows_sidebar() {
             return;
         }
+        self.refresh_panel();
         let path = i
             .current_entry
             .borrow()
@@ -4416,13 +5235,16 @@ fn build_tree(entries: &[Entry]) -> Tree {
     tree
 }
 
-fn children_model(tree: &Tree, parent: &str) -> gio::ListStore {
+fn children_model(tree: &Tree, parent: &str, reversed: bool) -> gio::ListStore {
     let store = gio::ListStore::new::<gtk::StringObject>();
     if let Some(children) = tree.get(parent) {
-        let items: Vec<gtk::StringObject> = children
+        let mut items: Vec<gtk::StringObject> = children
             .iter()
             .map(|e| gtk::StringObject::new(e.path.as_str()))
             .collect();
+        if reversed {
+            items.reverse();
+        }
         store.extend_from_slice(&items);
     }
     store
@@ -4440,21 +5262,69 @@ fn icon_for(kind: EntryKind) -> &'static str {
     }
 }
 
-fn open_menu_button() -> gtk::MenuButton {
-    menu_button(
-        "folder-open-symbolic",
-        "Abrir",
-        &[
-            ("Abrir una carpeta…", "win.open", "Ctrl+O"),
-            (
-                "Abrir como bóveda de Orbital…",
-                "win.open-as",
-                "Ctrl+Mayús+O",
-            ),
-            ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
-            ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
-        ],
-    )
+/// Una sección plegable del explorador (maqueta: rótulo en mayúsculas con chevron). Devuelve la
+/// sección y su botón de encabezado.
+fn seccion_plegable(
+    titulo: &str,
+    contenido: &impl IsA<gtk::Widget>,
+    abierta: bool,
+    expandir: bool,
+) -> (gtk::Box, gtk::Button) {
+    let chevron = crate::iconos::Icono::new("abajo", 14);
+    let rotulo = gtk::Label::builder()
+        .label(titulo.to_uppercase())
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    let fila = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    fila.append(&rotulo);
+    fila.append(&chevron);
+    let boton = gtk::Button::builder()
+        .child(&fila)
+        .css_classes(["flat", "orbital-section"])
+        .build();
+    boton.update_property(&[gtk::accessible::Property::Label(titulo)]);
+    let revealer = gtk::Revealer::builder()
+        .child(contenido)
+        .reveal_child(abierta)
+        .vexpand(expandir && abierta)
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .build();
+    let marcar = {
+        let chevron = chevron.clone();
+        move |b: &gtk::Button, abierta: bool| {
+            b.update_state(&[gtk::accessible::State::Expanded(Some(abierta))]);
+            chevron.set_nombre(if abierta { "abajo" } else { "derecha" });
+        }
+    };
+    marcar(&boton, abierta);
+    let r = revealer.clone();
+    boton.connect_clicked(move |b| {
+        let abierta = !r.reveals_child();
+        r.set_reveal_child(abierta);
+        r.set_vexpand(expandir && abierta);
+        marcar(b, abierta);
+    });
+    let seccion = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["orbital-explorer-section"])
+        .build();
+    seccion.append(&boton);
+    seccion.append(&revealer);
+    (seccion, boton)
+}
+
+/// Nombre accesible y tooltip de un botón de barra plegable, según esté abierta o no
+/// («Ocultar barra izquierda (Ctrl+[)» / «Mostrar…»), como los `aria-label` de la maqueta.
+fn nombre_de_barra(boton: &gtk::ToggleButton, barra: &'static str, atajo: &'static str) {
+    let poner = move |b: &gtk::ToggleButton| {
+        let verbo = if b.is_active() { "Ocultar" } else { "Mostrar" };
+        let nombre = format!("{verbo} {barra}");
+        b.set_tooltip_text(Some(&format!("{nombre} ({atajo})")));
+        b.update_property(&[gtk::accessible::Property::Label(&nombre)]);
+    };
+    poner(boton);
+    boton.connect_active_notify(poner);
 }
 
 /// Botón con un menú hecho de botones planos.
@@ -5019,6 +5889,380 @@ mod search_open_tests {
             );
             window.0.window.destroy();
             std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod pestanas_tests {
+    use super::*;
+    use crate::pestanas::CONEXIONES;
+
+    async fn esperar(cond: impl Fn() -> bool) {
+        for _ in 0..150 {
+            if cond() {
+                return;
+            }
+            glib::timeout_future(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 025 US3: abrir notas crea pestañas; elegir una repone su nota con cursor y vista;
+    /// «Conexiones» es una pestaña; cerrar la última deja el centro vacío.
+    #[test]
+    #[ignore = "requiere GTK/DBus"]
+    fn us3_pestanas_editor_compartido() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.PestanasTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-025-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            let texto: String = (1..=60).map(|n| format!("línea {n}\n")).collect();
+            std::fs::write(root.join("wiki/a.md"), &texto).unwrap();
+            std::fs::write(root.join("wiki/b.md"), &texto).unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            let ruta = || window.0.code_editor.current_path().map(|p| p.to_string());
+
+            window.show_path("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            window.show_path("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            assert_eq!(window.0.pestanas.claves(), ["wiki/a.md", "wiki/b.md"]);
+            assert_eq!(window.0.pestanas.actual().as_deref(), Some("wiki/b.md"));
+
+            // Cursor en la línea 40 de b; ir a a y volver repone el cursor y la vista.
+            window.0.code_editor.restaurar_vista(
+                window
+                    .0
+                    .code_editor
+                    .buffer()
+                    .iter_at_line(39)
+                    .unwrap()
+                    .offset(),
+                0.0,
+                Some("dividida"),
+            );
+            window.0.pestanas.elegir("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            assert_eq!(ruta().as_deref(), Some("wiki/a.md"));
+            window.0.pestanas.elegir("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            esperar(|| window.0.code_editor.cursor_line() == 40).await;
+            assert_eq!(window.0.code_editor.cursor_line(), 40, "cursor repuesto");
+            assert_eq!(
+                window.0.code_editor.estado_vista().2.as_deref(),
+                Some("dividida"),
+                "vista repuesta"
+            );
+
+            // Conexiones como pestaña; cerrarla vuelve a la nota.
+            window.ver_grafo();
+            assert_eq!(
+                window.0.pestanas.claves(),
+                ["wiki/a.md", "wiki/b.md", CONEXIONES]
+            );
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("grafo")
+            );
+            window.cerrar_grafo();
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("codigo"))
+                .await;
+            assert_eq!(window.0.pestanas.claves(), ["wiki/a.md", "wiki/b.md"]);
+
+            // Cerrar la pestaña abierta abre la vecina; cerrar la última deja el centro vacío.
+            window.0.pestanas.cerrar("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            assert_eq!(ruta().as_deref(), Some("wiki/a.md"));
+            window.0.pestanas.cerrar("wiki/a.md");
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("vacio"))
+                .await;
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("vacio")
+            );
+            assert!(ruta().is_none());
+
+            // Una nota borrada afuera pierde su pestaña al recargar la lista.
+            window.show_path("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            window.show_path("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            std::fs::remove_file(root.join("wiki/a.md")).unwrap();
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            assert_eq!(window.0.pestanas.claves(), ["wiki/b.md"]);
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod medicion_pestanas {
+    use super::*;
+
+    /// SC-003 de la 025: cambiar de pestaña entre dos notas de 100 KB (hasta que el editor
+    /// tiene la otra nota cargada y a la vista). En release:
+    /// `cargo test --release --bin orbital sc3_cambio_pestana -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "medición; requiere GTK"]
+    fn sc3_cambio_pestana() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.MedirPestanas")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-sc3-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            let mut texto = String::from("---\ntype: atomo\n---\n# Grande\n\n");
+            let mut n = 0;
+            while texto.len() < 100 * 1024 {
+                texto.push_str(&format!(
+                    "Párrafo {n} con texto de prueba y una #etiqueta y [[otra]].\n\n"
+                ));
+                n += 1;
+            }
+            std::fs::write(root.join("wiki/a.md"), &texto).unwrap();
+            std::fs::write(root.join("wiki/b.md"), &texto).unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            let ruta = || window.0.code_editor.current_path().map(|p| p.to_string());
+            for nota in ["wiki/a.md", "wiki/b.md"] {
+                window.show_path(nota);
+                while ruta().as_deref() != Some(nota) {
+                    glib::timeout_future(std::time::Duration::from_millis(5)).await;
+                }
+            }
+            glib::timeout_future(std::time::Duration::from_millis(500)).await;
+            let mut ms = Vec::new();
+            for k in 0..10 {
+                let nota = if k % 2 == 0 { "wiki/a.md" } else { "wiki/b.md" };
+                let t = std::time::Instant::now();
+                window.0.pestanas.elegir(nota);
+                while ruta().as_deref() != Some(nota) {
+                    glib::timeout_future(std::time::Duration::from_millis(1)).await;
+                }
+                ms.push(t.elapsed().as_secs_f64() * 1000.0);
+                glib::timeout_future(std::time::Duration::from_millis(200)).await;
+            }
+            ms.sort_by(f64::total_cmp);
+            println!(
+                "PESTANA 100 KB: mediana {:.1} ms, máx {:.1} ms",
+                ms[ms.len() / 2],
+                ms[ms.len() - 1]
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod captura_v13 {
+    use super::*;
+
+    /// Captura de la interfaz v13 a 1440×900 con una nota y cada modo de la barra derecha:
+    /// `ORBITAL_CAPTURA_BOVEDA=<bóveda> ORBITAL_CAPTURA_NOTA=<ruta> ORBITAL_CAPTURA_DIR=<carpeta>`.
+    #[test]
+    #[ignore = "captura de desarrollo; requiere GTK"]
+    fn captura_modos_panel() {
+        let (Some(boveda), Some(nota), Some(dir)) = (
+            std::env::var_os("ORBITAL_CAPTURA_BOVEDA"),
+            std::env::var("ORBITAL_CAPTURA_NOTA").ok(),
+            std::env::var_os("ORBITAL_CAPTURA_DIR"),
+        ) else {
+            return;
+        };
+        adw::init().expect("se necesita acceso a GTK");
+        crate::style::apply();
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.CapturaV13")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.0.window.set_default_size(1440, 900);
+            let v = orbital_vault::open(std::path::Path::new(&boveda)).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            for _ in 0..100 {
+                if window.0.graph.borrow().is_some() {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(30)).await;
+            }
+            window.show_path(&nota);
+            glib::timeout_future(std::time::Duration::from_millis(900)).await;
+            for modo in ["propiedades", "contexto", "grafo"] {
+                window.0.panel.set_modo(modo);
+                glib::timeout_future(std::time::Duration::from_millis(700)).await;
+                let ancho = window.0.window.width();
+                let alto = window.0.window.height();
+                let pintable = gtk::WidgetPaintable::new(Some(&window.0.window));
+                let snap = gtk::Snapshot::new();
+                pintable.snapshot(&snap, f64::from(ancho), f64::from(alto));
+                let node = snap.to_node().expect("cuadro");
+                let png = std::path::Path::new(&dir).join(format!("v13-{modo}.png"));
+                window
+                    .0
+                    .window
+                    .renderer()
+                    .unwrap()
+                    .render_texture(&node, None)
+                    .save_to_png(png)
+                    .unwrap();
+            }
+            window.0.window.destroy();
+        });
+    }
+}
+
+#[cfg(test)]
+mod esqueleto_tests {
+    use super::*;
+
+    fn nombre(w: &impl IsA<gtk::Widget>) -> String {
+        w.tooltip_text().map(|t| t.to_string()).unwrap_or_default()
+    }
+
+    /// Busca en el árbol de widgets un botón por su tooltip (que coincide con el nombre accesible).
+    fn boton(raiz: &gtk::Widget, tooltip: &str) -> Option<gtk::Widget> {
+        let mut pila = vec![raiz.clone()];
+        while let Some(w) = pila.pop() {
+            if w.is::<gtk::Button>() && nombre(&w).starts_with(tooltip) {
+                return Some(w);
+            }
+            let mut hijo = w.first_child();
+            while let Some(h) = hijo {
+                pila.push(h.clone());
+                hijo = h.next_sibling();
+            }
+        }
+        None
+    }
+
+    /// 025 US1/US2: barras plegables con Ctrl+[ y Ctrl+] (y su nombre accesible), riel con Canva y
+    /// DB desactivados, modos de la barra izquierda y el desplegable de bóvedas recientes.
+    #[test]
+    #[ignore = "requiere GTK/DBus"]
+    fn us1_esqueleto() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.EsqueletoTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let base = std::env::temp_dir()
+                .join(format!("orbital-025-esq-{}", glib::uuid_string_random()));
+            let (a, b) = (base.join("una"), base.join("otra"));
+            for v in [&a, &b] {
+                std::fs::create_dir_all(v.join("wiki")).unwrap();
+                std::fs::create_dir_all(v.join("raw")).unwrap();
+            }
+            std::fs::write(b.join("wiki/nota.md"), "hola\n").unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.0.window.set_default_size(1440, 900);
+            window.open_path(a.clone()).await;
+            window.0.window.present();
+            glib::timeout_future(std::time::Duration::from_millis(200)).await;
+            let raiz = window.0.window.clone().upcast::<gtk::Widget>();
+
+            // Barras: abiertas al empezar; las acciones las pliegan y el nombre cambia.
+            assert!(window.0.split.shows_sidebar());
+            assert!(boton(&raiz, "Ocultar barra izquierda").is_some());
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-left", None)
+                .unwrap();
+            assert!(!window.0.split.shows_sidebar());
+            assert!(boton(&raiz, "Mostrar barra izquierda").is_some());
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-left", None)
+                .unwrap();
+            assert!(window.0.split.shows_sidebar());
+            let derecha = window.0.right_split.shows_sidebar();
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-right", None)
+                .unwrap();
+            assert_ne!(window.0.right_split.shows_sidebar(), derecha);
+
+            // Riel: Canva y DB desactivados; el resto, con su acción.
+            for (tooltip, activo) in [
+                ("Crear canva", false),
+                ("Crear base de datos", false),
+                ("Selector rápido", true),
+                ("Conexiones", true),
+                ("Paleta de comandos", true),
+                ("Configuración general", true),
+            ] {
+                let b = boton(&raiz, tooltip).unwrap_or_else(|| panic!("falta «{tooltip}»"));
+                assert_eq!(b.is_sensitive(), activo, "«{tooltip}»");
+            }
+            // Guardados: pendiente (desactivado). Búsqueda cambia la página de la barra.
+            assert!(!boton(&raiz, "Guardados").unwrap().is_sensitive());
+            boton(&raiz, "Búsqueda")
+                .and_downcast::<gtk::ToggleButton>()
+                .unwrap()
+                .set_active(true);
+            assert_eq!(
+                window.0.sidebar_stack.visible_child_name().as_deref(),
+                Some("busqueda")
+            );
+
+            // Desplegable de bóvedas: la abierta primero; elegir otra la abre.
+            window.open_path(b.clone()).await;
+            let rutas = window.0.pie_boveda.rutas();
+            assert_eq!(rutas.first(), Some(&b));
+            window.0.pie_boveda.set_boveda(&b, &[b.clone(), a.clone()]);
+            assert_eq!(window.0.pie_boveda.rutas(), [b.clone(), a.clone()]);
+            window.0.pie_boveda.elegir(1);
+            for _ in 0..100 {
+                if window
+                    .0
+                    .vault
+                    .borrow()
+                    .as_ref()
+                    .map(|v| v.root().to_path_buf())
+                    == Some(a.clone())
+                {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                window
+                    .0
+                    .vault
+                    .borrow()
+                    .as_ref()
+                    .map(|v| v.root().to_path_buf()),
+                Some(a.clone()),
+                "elegir otra bóveda la abre"
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(base).unwrap();
         });
     }
 }

@@ -2,11 +2,17 @@ mod editor;
 mod export;
 mod grafo;
 mod html_view;
+mod iconos;
+mod medir_arranque;
 mod onstage;
 mod open_dialog;
+mod panel_derecho;
+mod pestanas;
+mod pie_boveda;
 mod preferences;
 mod search_panel;
 mod state;
+mod status_bar;
 mod style;
 mod switcher;
 mod tag_panel;
@@ -73,6 +79,7 @@ fn parse_folder() -> Option<(PathBuf, bool)> {
 }
 
 fn main() -> glib::ExitCode {
+    medir_arranque::empezar();
     let capture = parse_capture();
     let folder = if capture.is_none() {
         parse_folder()
@@ -156,8 +163,11 @@ fn reopen_last(window: Window) {
 }
 
 fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(PathBuf, bool)>) {
+    medir_arranque::marca("activate");
     let window = Window::new(app);
+    medir_arranque::marca("Window::new");
     window.present();
+    medir_arranque::marca("present");
     if let Some(cap) = capture {
         window.set_persist(false);
         let app = app.clone();
@@ -204,9 +214,14 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
         let app = app.clone();
         glib::spawn_future_local(async move {
             window.open_path(path).await;
+            medir_arranque::marca("bóveda abierta");
             if exit_when_shown {
+                window.fases_del_proximo_cuadro();
                 // Sale después del próximo cuadro: la lista ya está dibujada.
-                window.after_next_frame(move || app.quit());
+                window.after_next_frame(move || {
+                    medir_arranque::marca("cuadro dibujado");
+                    app.quit()
+                });
             }
         });
         return;

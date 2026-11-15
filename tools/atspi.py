@@ -61,6 +61,12 @@ def find(role, name):
     a = app()
     if a is None:
         return None
+    # El cliente AT-SPI guarda en caché los hijos de cada nodo: sin limpiarla, una espera que
+    # empezó antes de que apareciera un diálogo nunca lo ve.
+    try:
+        a.clear_cache()
+    except Exception:
+        pass
     for node, _ in walk(a):
         try:
             r = node.get_role_name()
@@ -117,8 +123,21 @@ def main():
         if lista is None:
             print("No encontré la lista de la bóveda")
             return 1
-        # La lista es virtual: solo existen las filas visibles. Si no está, se desplaza hacia abajo
-        # con la acción «scroll-to» de la última fila visible.
+        # La lista es virtual: solo existen las filas visibles. Primero se sube hasta el principio
+        # (así el índice visible es la posición absoluta); si la fila no está, se baja con la
+        # acción «scroll-to» de la última fila visible.
+        for _ in range(50):
+            if lista.get_child_count() == 0:
+                break
+            primera = lista.get_child_at_index(0)
+            antes = primera.get_name()
+            accion = primera.get_action_iface()
+            if accion is None or (primera.get_attributes() or {}).get("posinset") == "1":
+                break
+            accion.do_action(0)
+            time.sleep(0.1)
+            if lista.get_child_at_index(0).get_name() == antes:
+                break
         for _ in range(50):
             nombres = [lista.get_child_at_index(i).get_name() for i in range(lista.get_child_count())]
             hits = [i for i, n in enumerate(nombres) if sys.argv[2].lower() in (n or "").lower()]
@@ -138,12 +157,38 @@ def main():
         # La interfaz de selección usa la posición absoluta en la lista. GTK informa `posinset`
         # dentro del nivel del árbol, así que no sirve con carpetas abiertas: se usa el índice
         # visible, que coincide con la posición absoluta mientras la lista no esté desplazada.
-        primera = lista.get_child_at_index(0)
-        desplazada = primera is not None and primera.get_attributes().get("posinset") != "1"
-        if desplazada:
-            print("Aviso: la lista está desplazada; el resultado puede no ser exacto.")
-        lista.get_selection_iface().select_child(hits[0])
-        print(f"Elegí {nombres[hits[0]]!r}")
+        # Con la lista desplazada, el índice visible no es la posición absoluta: se elige esa
+        # posición, se mira qué fila visible quedó elegida y de ahí sale el desplazamiento real.
+        seleccion = lista.get_selection_iface()
+        objetivo = nombres[hits[0]]
+        # «Nota x.md», «Archivo x.pdf, solo lectura», «Carpeta wiki» → «x.md».
+        archivo = objetivo.split(" ", 1)[-1].split(",")[0]
+
+        def abierta():
+            for n, _ in walk(app()):
+                try:
+                    if n.get_role_name() == "label" and (n.get_name() or "").split(" · ")[0].endswith("/" + archivo):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        # Con la lista desplazada, el índice visible no es la posición absoluta (que es mayor o
+        # igual): se prueba hasta que la barra de la nota muestre el archivo buscado.
+        desplazada = (lista.get_child_at_index(0).get_attributes() or {}).get("posinset") != "1"
+        for extra in range(0, 80 if desplazada else 1):
+            seleccion.select_child(hits[0] + extra)
+            for _ in range(10):
+                time.sleep(0.05)
+                if abierta():
+                    break
+            if abierta() or objetivo.startswith("Carpeta"):
+                break
+        else:
+            if desplazada:
+                print(f"No pude elegir {objetivo!r}")
+                return 1
+        print(f"Elegí {objetivo!r}")
         return 0
     role, name = sys.argv[2], sys.argv[3]
     deadline = time.time() + 10

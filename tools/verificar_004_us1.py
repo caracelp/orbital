@@ -96,7 +96,7 @@ def set_text(node, text):
 
 
 def switch_to_search():
-    tab = find_one("page tab", "Búsqueda", timeout=5.0)
+    tab = find_one("toggle button", "Búsqueda", timeout=5.0)
     if tab:
         do_action(tab)
         time.sleep(0.4)
@@ -107,20 +107,49 @@ def switch_to_search():
 
 
 def get_search_results_text():
-    """Obtiene los nombres/labels de todos los elementos visibles en la lista de resultados."""
+    """Nombres de todas las filas de la lista de resultados. La lista es virtual (solo existen
+    las filas visibles): se recorre bajando con la acción «scroll-to» de la última fila visible
+    y se vuelve arriba al terminar."""
     list_view = find_one("list", "Resultados de búsqueda", timeout=3.0)
     if not list_view:
         return []
+
+    def visibles():
+        out = []
+        for i in range(list_view.get_child_count()):
+            c = list_view.get_child_at_index(i)
+            if c:
+                names = [node.get_name() for node, _ in walk(c) if node.get_name()]
+                out.append(" | ".join(names))
+        return out
+
+    def scroll_to(index):
+        c = list_view.get_child_at_index(index)
+        act = c.get_action_iface() if c else None
+        if act and act.get_n_actions():
+            act.do_action(0)
+            time.sleep(0.12)
+
     items = []
-    for i in range(list_view.get_child_count()):
-        c = list_view.get_child_at_index(i)
-        if c:
-            names = []
-            for node, _ in walk(c):
-                nm = node.get_name() or ""
-                if nm:
-                    names.append(nm)
-            items.append(" | ".join(names))
+    for _ in range(30):
+        filas = visibles()
+        for f in filas:
+            if f not in items:
+                items.append(f)
+        if not filas:
+            break
+        antes = filas[-1]
+        scroll_to(len(filas) - 1)
+        if visibles()[-1:] == [antes]:
+            break
+    for _ in range(30):
+        filas = visibles()
+        if not filas:
+            break
+        antes = filas[0]
+        scroll_to(0)
+        if visibles()[:1] == [antes]:
+            break
     return items
 
 

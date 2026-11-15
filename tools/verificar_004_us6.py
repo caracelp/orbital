@@ -68,8 +68,9 @@ def label_text(fragment):
 
 
 wait_for(get_app, "No se encontró la instancia propia de Orbital")
-tab = next(node for node in find_all("page tab", "Etiquetas") if visible(node))
-assert do_action(tab, "click"), "No se pudo abrir la pestaña Etiquetas"
+# 025: las etiquetas son una sección del explorador (siempre a la vista en modo Explorador).
+tab = next(node for node in find_all("toggle button", "Explorador de archivos") if visible(node))
+do_action(tab, "click")
 
 # Diálogo de renombre: nombre nuevo accesible y con el viejo precargado.
 click("Renombrar #fisica")

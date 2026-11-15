@@ -19,6 +19,17 @@ compatible con otros editores. Ninguna función escribe HTML en tus notas.
 
 ## Características
 
+**Interfaz**
+
+- Riel de navegación, barras laterales plegables (Ctrl+[ y Ctrl+]) y barra inferior con totales de la
+  bóveda y contadores de la nota y de la selección.
+- Pestañas de notas que recuerdan cursor, desplazamiento y vista; el grafo global también abre en una
+  pestaña.
+- Explorador con secciones plegables (archivos, etiquetas, recientes) y desplegable de bóvedas
+  recientes.
+- Barra derecha con tres modos: propiedades y etiquetas de la nota, contexto (retroenlaces y enlaces
+  entrantes) y grafo local de la nota.
+
 **Núcleo**
 
 - Bóveda `raw/` (fuentes inmutables) + `wiki/` (trabajo) según OKF v0.2; una carpeta cualquiera se
@@ -82,6 +93,7 @@ de URL), con sesión efímera.
 | Selector rápido / paleta de comandos | `Ctrl+P` / `Ctrl+Mayús+P` |
 | Búsqueda global / buscar en la nota / reemplazar | `Ctrl+Mayús+F` / `Ctrl+F` / `Ctrl+H` |
 | Vistas Código / Lectura / Dividida | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
+| Barra izquierda / derecha | `Ctrl+[` / `Ctrl+]` |
 | Retroenlaces | `Ctrl+Mayús+B` |
 | Exportar HTML | `Ctrl+Mayús+E` |
 | Nota diaria | `Ctrl+Alt+D` |

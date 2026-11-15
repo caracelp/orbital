@@ -1505,6 +1505,34 @@ impl Editor {
         self.0.session.borrow().as_ref().map(|s| s.path().clone())
     }
 
+    /// Estado de vista de la nota abierta (025, pestañas): posición del cursor, desplazamiento
+    /// de Código y vista elegida.
+    pub fn estado_vista(&self) -> (i32, f64, Option<String>) {
+        let i = &self.0;
+        let cursor = i.buffer.iter_at_mark(&i.buffer.get_insert()).offset();
+        let scroll = i.code_scroller.vadjustment().value();
+        let vista = i.switcher.active_name().map(|n| n.to_string());
+        (cursor, scroll, vista)
+    }
+
+    /// Repone un estado de [`Editor::estado_vista`] después de cargar la nota. El desplazamiento
+    /// se aplica en un *idle*, cuando la vista ya calculó su alto.
+    pub fn restaurar_vista(&self, cursor: i32, scroll: f64, vista: Option<&str>) {
+        let i = &self.0;
+        if let Some(v) = vista.and_then(View::from_name) {
+            self.set_view(v);
+        }
+        let it = i.buffer.iter_at_offset(cursor);
+        i.buffer.place_cursor(&it);
+        let adj = i.code_scroller.vadjustment();
+        glib::idle_add_local_once(move || adj.set_value(scroll));
+    }
+
+    /// El texto de la nota (para los contadores de la barra inferior).
+    pub fn buffer(&self) -> &sourceview5::Buffer {
+        &self.0.buffer
+    }
+
     /// Línea del cursor en el texto (desde 1), para las pruebas.
     #[cfg(test)]
     pub fn cursor_line(&self) -> i32 {
@@ -2360,6 +2388,17 @@ impl Editor {
     pub async fn measure_typing(&self, chars: usize) -> Vec<f64> {
         use std::time::Instant;
         let view = self.0.view.clone();
+        // La medición es de la vista Código: con una configuración nueva la nota abre en
+        // Lectura y la vista de código no tiene reloj de cuadros (no está a la vista).
+        if view.frame_clock().is_none() {
+            self.set_view(View::Codigo);
+            for _ in 0..50 {
+                if view.frame_clock().is_some() {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(20)).await;
+            }
+        }
         let Some(clock) = view.frame_clock() else {
             return Vec::new();
         };

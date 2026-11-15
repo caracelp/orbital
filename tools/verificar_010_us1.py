@@ -83,8 +83,8 @@ def elegir_nota(nombre_fila):
     tab = next(
         (
             n
-            for n in helpers["find_all"]("page tab", "Archivos")
-            if n.get_name() == "Archivos" and visible(n)
+            for n in helpers["find_all"]("toggle button", "Explorador de archivos")
+            if n.get_name() == "Explorador de archivos" and visible(n)
         ),
         None,
     )

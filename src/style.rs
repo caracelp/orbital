@@ -25,6 +25,34 @@ pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
 /// Fondo de las transclusiones `![[nota]]` en la vista formateada (rosado muy oscuro).
 pub const EMBED_BG: Rgb = Rgb(0x23, 0x18, 0x20);
 
+// Interfaz v13 (025): tonos de la maqueta `orbital_estructura_base_v13.html`.
+/// Texto atenuado (etiquetas de sección, barra inferior, pestañas inactivas).
+pub const MUTED_FG: Rgb = Rgb(0x99, 0x94, 0x9e);
+/// Texto principal de la maqueta.
+pub const TEXT_FG: Rgb = Rgb(0xee, 0xe9, 0xed);
+/// Íconos en reposo.
+pub const ICON_FG: Rgb = Rgb(0xbd, 0xb7, 0xc0);
+/// Líneas divisorias.
+pub const LINE: Rgb = Rgb(0x30, 0x30, 0x36);
+/// Fondo del riel de navegación.
+pub const RAIL_BG: Rgb = Rgb(0x14, 0x13, 0x16);
+/// Botón de ícono bajo el puntero, presionado y elegido en el riel.
+pub const HOVER_BG: Rgb = Rgb(0x32, 0x25, 0x30);
+pub const PRESSED_BG: Rgb = Rgb(0x36, 0x23, 0x30);
+pub const RAIL_ACTIVE_BG: Rgb = Rgb(0x40, 0x23, 0x36);
+/// Fila elegida (árbol, resultados, menús).
+pub const SELECTED_BG: Rgb = Rgb(0x39, 0x25, 0x32);
+/// Texto de la fila elegida.
+pub const SELECTED_FG: Rgb = Rgb(0xff, 0xd2, 0xe6);
+
+/// Barra derecha (025): títulos de bloque, chips de etiquetas y tarjetas de contexto.
+pub const HEADING_FG: Rgb = Rgb(0xc5, 0xb9, 0xc5);
+pub const CHIP_BG: Rgb = Rgb(0x38, 0x25, 0x32);
+pub const CHIP_FG: Rgb = Rgb(0xff, 0xad, 0xd5);
+pub const CHIP_BORDER: Rgb = Rgb(0x6b, 0x3b, 0x56);
+pub const CARD_CTX_BG: Rgb = Rgb(0x21, 0x1c, 0x25);
+pub const CARD_CTX_BORDER: Rgb = Rgb(0x3e, 0x30, 0x40);
+
 /// Enlaces a notas existentes.
 pub const LINK_FG: Rgb = ACCENT_TEXT;
 /// Enlaces a notas pendientes o inexistentes (rosa atenuado con contraste WCAG AA ≥ 4,5:1).
@@ -156,6 +184,7 @@ fn css() -> String {
          popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
          listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
     );
+    out.push_str(&v13_css());
     for (name, c) in vars {
         out.push_str(&format!(
             "@define-color {} {};\n",
@@ -164,6 +193,80 @@ fn css() -> String {
         ));
     }
     out
+}
+
+/// Estilos de la interfaz v13 (025): medidas y tonos de la maqueta. Los pesos de letra son los
+/// estándar (normal y 700): pesos intermedios como 650 o 750, y `font-feature-settings`, obligan a
+/// cargar otras caras de la fuente en la primera disposición (≈ 50 ms de arranque, medido). Por lo
+/// mismo, el texto chico usa un solo tamaño (11 px) y el planeta de la marca es un ícono de trazo.
+fn v13_css() -> String {
+    format!(
+        "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; }}\n\
+         .orbital-brand {{ font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }}\n\
+         .orbital-planet {{ color: {pink}; }}\n\
+         .orbital-pink {{ color: {pink}; }}\n\
+         .orbital-left-modes {{ min-width: 250px; padding-left: 10px; }}\n\
+         button.orbital-iconbtn {{ min-width: 32px; min-height: 32px; padding: 0; border-radius: 9px; color: {icon}; }}\n\
+         button.orbital-iconbtn:hover {{ background: {hover}; color: {pink}; }}\n\
+         button.orbital-iconbtn:checked {{ background: {pressed}; color: {pink}; }}\n\
+         button.orbital-iconbtn:disabled {{ color: alpha({icon}, 0.4); }}\n\
+         .orbital-rail {{ min-width: 58px; background: {rail}; box-shadow: inset -1px 0 {line}; padding: 14px 0; }}\n\
+         .orbital-rail button.orbital-iconbtn {{ min-width: 38px; min-height: 38px; margin: 0 10px; }}\n\
+         .orbital-rail button.orbital-iconbtn:checked {{ background: {rail_active}; }}\n\
+         .orbital-left {{ background: {side}; }}\n\
+         .orbital-left-head {{ padding: 12px 10px 10px; box-shadow: inset 0 -1px {line}; }}\n\
+         .orbital-left-head button.orbital-iconbtn, .orbital-left-head menubutton > button {{ min-height: 34px; }}\n\
+         .orbital-vault-footer {{ padding: 12px; box-shadow: inset 0 1px {line}; }}\n\
+         .orbital-section {{ font-size: 11px; letter-spacing: 1.5px; color: {muted}; }}\n\
+         .orbital-section:hover {{ color: {pink}; }}\n\
+         .orbital-count {{ font-size: 11px; color: {muted}; }}\n\
+         .orbital-split > .sidebar-pane {{ box-shadow: inset -1px 0 {line}; }}\n\
+         .orbital-right > .sidebar-pane {{ background: {side}; box-shadow: inset 1px 0 {line}; }}\n\
+         headerbar.orbital-note-toolbar {{ background: transparent; box-shadow: none; min-height: 40px; padding: 0 9px; }}\n\
+         .orbital-note-path {{ color: {muted}; font-size: 11px; padding-left: 10px; }}\n\
+         .orbital-status {{ min-height: 34px; padding: 0 6px 0 16px; background: {top}; box-shadow: inset 0 1px {line}; font-size: 11px; color: {muted}; }}\n\
+         .orbital-status-tab {{ padding: 0 0 0 12px; background: {top}; border: 1px solid {line}; border-bottom: none; border-radius: 9px 9px 0 0; font-size: 11px; color: {muted}; margin-right: 4px; }}\n\
+         .navigation-sidebar > row:selected {{ background: {selected}; color: {selected_fg}; }}\n\
+         .orbital-right-head {{ padding: 12px 14px; box-shadow: inset 0 -1px {line}; }}\n\
+         .orbital-right-block {{ padding: 20px 20px 8px; }}\n\
+         .orbital-right-heading {{ font-size: 11px; font-weight: 700; letter-spacing: 1.2px; color: {heading}; }}\n\
+         .orbital-meta-row {{ padding: 13px 0; box-shadow: inset 0 -1px {line}; font-size: 11px; }}\n\
+         .orbital-meta-label {{ color: {muted}; }}\n\
+         .orbital-meta-value {{ color: {text}; font-weight: 700; }}\n\
+         .orbital-tag-chip {{ border: 1px solid {chip_border}; background: {chip_bg}; color: {chip_fg}; padding: 7px 10px; border-radius: 9px; font-size: 11px; }}\n\
+         button.orbital-context-card {{ border: 1px solid {card_border}; background: {card_bg}; color: {text}; border-radius: 10px; padding: 12px; font-weight: 700; font-size: 11px; }}\n\
+         button.orbital-context-card:hover {{ border-color: #9d577b; }}\n\
+         .orbital-context-empty {{ font-size: 11px; color: {muted}; }}\n\
+         tabbar.orbital-tabs > .box {{ background: {side}; box-shadow: none; min-height: 42px; padding: 0 12px; }}\n\
+         tabbar.orbital-tabs tab {{ border-radius: 9px 9px 0 0; color: {muted}; min-width: 110px; }}\n\
+         tabbar.orbital-tabs tab:selected {{ background: {view}; color: {text}; }}\n\
+         tabbar.orbital-tabs tab:hover:not(:selected) {{ background: {hover}; }}\n\
+         .orbital-explorer-section {{ padding: 6px 8px 4px; }}\n\
+         .orbital-explorer-section + .orbital-explorer-section {{ box-shadow: inset 0 1px {line}; }}\n\
+         button.orbital-section {{ min-height: 30px; padding: 0 6px; }}\n\
+         button.orbital-list-item {{ color: {text}; padding: 6px 7px; font-weight: normal; }}\n\
+         button.orbital-list-item:hover {{ background: {selected}; color: {pink}; }}\n",
+        top = HEADERBAR_BG.hex(),
+        line = LINE.hex(),
+        pink = ACCENT_TEXT.hex(),
+        icon = ICON_FG.hex(),
+        hover = HOVER_BG.hex(),
+        pressed = PRESSED_BG.hex(),
+        rail = RAIL_BG.hex(),
+        rail_active = RAIL_ACTIVE_BG.hex(),
+        side = SIDEBAR_BG.hex(),
+        muted = MUTED_FG.hex(),
+        selected = SELECTED_BG.hex(),
+        selected_fg = SELECTED_FG.hex(),
+        text = TEXT_FG.hex(),
+        view = VIEW_BG.hex(),
+        heading = HEADING_FG.hex(),
+        chip_bg = CHIP_BG.hex(),
+        chip_fg = CHIP_FG.hex(),
+        chip_border = CHIP_BORDER.hex(),
+        card_bg = CARD_CTX_BG.hex(),
+        card_border = CARD_CTX_BORDER.hex(),
+    )
 }
 
 /// Aplica la base oscura y el acento rosa a toda la app.
@@ -323,6 +426,32 @@ mod tests {
         for bg in [SIDEBAR_BG, CARD_BG] {
             let r = contrast_ratio(LINK_FG, bg);
             assert!(r >= 4.5, "etiqueta sobre {bg:?}: {r:.2} < 4.5");
+        }
+    }
+
+    /// 025: los tonos de la maqueta v13 cumplen WCAG AA (texto 4,5:1; íconos 3:1).
+    #[test]
+    fn v13_colors_meet_wcag_aa() {
+        for bg in [HEADERBAR_BG, SIDEBAR_BG, RAIL_BG, VIEW_BG, WINDOW_BG] {
+            for fg in [MUTED_FG, TEXT_FG, ICON_FG, ACCENT_TEXT] {
+                let r = contrast_ratio(fg, bg);
+                assert!(r >= 4.5, "{fg:?} sobre {bg:?}: {r:.2} < 4.5");
+            }
+        }
+        for bg in [HOVER_BG, PRESSED_BG, RAIL_ACTIVE_BG, SELECTED_BG] {
+            let r = contrast_ratio(ACCENT_TEXT, bg);
+            assert!(r >= 4.5, "rosa sobre {bg:?}: {r:.2} < 4.5");
+        }
+        let r = contrast_ratio(SELECTED_FG, SELECTED_BG);
+        assert!(r >= 4.5, "fila elegida: {r:.2} < 4.5");
+        for (fg, bg) in [
+            (HEADING_FG, SIDEBAR_BG),
+            (CHIP_FG, CHIP_BG),
+            (TEXT_FG, CARD_CTX_BG),
+            (MUTED_FG, CARD_CTX_BG),
+        ] {
+            let r = contrast_ratio(fg, bg);
+            assert!(r >= 4.5, "{fg:?} sobre {bg:?}: {r:.2} < 4.5");
         }
     }
 
