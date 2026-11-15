@@ -13,6 +13,7 @@ mod edicion_visual;
 pub mod find;
 mod guardado;
 pub mod html;
+mod ids_bloque;
 mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;
@@ -119,6 +120,9 @@ const VISUAL_SYNC: Duration = Duration::from_millis(300);
 /// Actualización de la vista formateada después de la última tecla (research R3).
 const RENDER_DELAY: Duration = Duration::from_millis(150);
 
+/// Los bloques con id de una nota, para las sugerencias de `[[nota#^` (026).
+type BloquesDeNota = Rc<Vec<orbital_vault::bloques::BloqueConId>>;
+
 struct Inner {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
@@ -164,6 +168,8 @@ struct Inner {
     /// Cada cambio sube la generación; un temporizador viejo no guarda.
     generation: Cell<u64>,
     saving: Cell<bool>,
+    /// Los cambios del buffer son ids de bloque que agrega el guardado (026): no son teclas.
+    asignando_ids: Cell<bool>,
     edited_during_save: Cell<bool>,
     on_status: RefCell<Option<StatusFn>>,
     on_error: RefCell<Option<ErrorFn>>,
@@ -178,6 +184,8 @@ struct Inner {
     completion_active_start: Cell<Option<i32>>,
     completion_is_tag: Cell<bool>,
     completion_is_marker: Cell<bool>,
+    /// Bloques de la nota de `[[nota#^` (026): `(nota, bloques)`; `None` mientras se lee.
+    completion_bloques: RefCell<Option<(String, Option<BloquesDeNota>)>>,
     /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
     /// dirección no se reutiliza, así que comparar punteros es seguro.
     completion_vault: RefCell<std::sync::Weak<Vault>>,
@@ -315,6 +323,7 @@ impl Editor {
             loading: Cell::new(false),
             generation: Cell::new(0),
             saving: Cell::new(false),
+            asignando_ids: Cell::new(false),
             edited_during_save: Cell::new(false),
             on_status: RefCell::new(None),
             on_error: RefCell::new(None),
@@ -326,6 +335,7 @@ impl Editor {
             completion_active_start: Cell::new(None),
             completion_is_tag: Cell::new(false),
             completion_is_marker: Cell::new(false),
+            completion_bloques: RefCell::new(None),
             completion_vault: RefCell::new(std::sync::Weak::new()),
             embed_deps: RefCell::new(Vec::new()),
             search_index: RefCell::new(None),

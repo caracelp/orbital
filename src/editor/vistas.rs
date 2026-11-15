@@ -152,6 +152,33 @@ impl Editor {
         }
     }
 
+    /// Lleva al bloque con ese id (`[[nota#^id]]`, 026) y lo resalta un momento. Devuelve si existe.
+    pub fn scroll_to_block(&self, id: &str) -> bool {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), false);
+        let Some((rango, linea)) =
+            orbital_vault::bloques::buscar(&text, id, i.format.get() == Format::Html)
+        else {
+            return false;
+        };
+        let inicio_linea = text[..rango.start].rfind('\n').map_or(0, |n| n + 1);
+        let fin = rango.end.min(text.len());
+        let lineas_fin = text[rango.start..fin].matches('\n').count();
+        let fin_linea = text[..fin].rfind('\n').map_or(0, |n| n + 1);
+        if let (Some(a), Some(z)) = (
+            b.iter_at_line_index(linea as i32, (rango.start - inicio_linea) as i32),
+            b.iter_at_line_index((linea + lineas_fin) as i32, (fin - fin_linea) as i32),
+        ) {
+            resaltar(b, &a, &z);
+        }
+        self.reveal_line(linea + 1);
+        if matches!(i.mode.get(), View::Lectura | View::Dividida) {
+            i.reader.resaltar_linea(linea);
+        }
+        true
+    }
+
     /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
     pub fn render_now(&self) {
         let i = &self.0;
@@ -303,4 +330,22 @@ impl Editor {
         }
         self.0.view.grab_focus();
     }
+}
+
+/// Resalta `a..b` 1,5 s (navegación a un bloque, 026). La etiqueta se crea la primera vez.
+pub(super) fn resaltar(buf: &impl IsA<gtk::TextBuffer>, a: &gtk::TextIter, b: &gtk::TextIter) {
+    let tabla = buf.tag_table();
+    let tag = tabla.lookup("bloque-resaltado").unwrap_or_else(|| {
+        let t = gtk::TextTag::builder()
+            .name("bloque-resaltado")
+            .paragraph_background_rgba(&gtk::gdk::RGBA::new(1.0, 0.55, 0.78, 0.18))
+            .build();
+        tabla.add(&t);
+        t
+    });
+    buf.apply_tag(&tag, a, b);
+    let buf = buf.clone().upcast::<gtk::TextBuffer>();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+        buf.remove_tag(&tag, &buf.start_iter(), &buf.end_iter());
+    });
 }

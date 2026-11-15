@@ -358,3 +358,51 @@ fn us5_webkit_markers() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// 026 T009: en Visual, al guardar cada `p`/`li`/… tiene un `id` único, también el que crea Enter
+/// (que copia el atributo del bloque partido).
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn webkit_ids_de_bloque() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-026-visual-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        let source = "<!doctype html><html><head><title>s</title></head><body><p id=\"fijo01\">Uno.</p><ul><li>ítem</li></ul><p>Dos.</p></body></html>";
+        fs::write(root.join("wiki/s.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/s.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        assert_eq!(editor.0.mode.get(), View::Visual);
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        // Partir «Uno.» con Enter: el párrafo nuevo hereda `id="fijo01"`.
+        eval(&web, "const p = document.querySelector('p'); const r = document.createRange(); r.setStart(p.firstChild, 2); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); document.execCommand('insertParagraph')").await;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/s.html")).unwrap();
+        let ids: Vec<&str> = saved
+            .split(" id=\"")
+            .skip(1)
+            .map(|r| &r[..r.find('"').unwrap()])
+            .collect();
+        assert_eq!(ids.len(), 4, "tres p y un li con id: {saved}");
+        assert_eq!(ids[0], "fijo01", "el id existente se conserva: {saved}");
+        let unicos: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unicos.len(), ids.len(), "ids repetidos: {saved}");
+        assert_eq!(editor.text(), saved);
+        println!("OK: Visual guarda ids únicos en cada bloque");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

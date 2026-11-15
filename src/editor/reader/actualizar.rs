@@ -196,6 +196,9 @@ impl Reader {
         if let Some(line) = i.pending_line.take() {
             self.scroll_to_line(line);
         }
+        if let Some(line) = i.pending_resaltar.take() {
+            self.resaltar_linea(line);
+        }
         if let Some(f) = i.on_rendered.borrow().as_ref() {
             f();
         }

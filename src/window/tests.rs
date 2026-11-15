@@ -218,6 +218,8 @@ mod tag_rename_tests {
             *window.0.vault.borrow_mut() = Some(vault.clone());
             window.0.vault_session.set(1);
             let editor = window.0.code_editor.clone();
+            // El guardado agrega ids de bloque (026): se comparan sin ellos.
+            let sin = |t: String| orbital_vault::bloques::sin_ids(&t).into_owned();
             editor.load(vault.clone(), &vault.read_note(&path).unwrap());
             let stale = vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path));
             editor.replace_text("#vieja con mis cambios\n");
@@ -225,17 +227,17 @@ mod tag_rename_tests {
                 .run_tag_edits(vault.clone(), 1, Arc::new(stale), false)
                 .await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#vieja con mis cambios\n"
             );
-            assert_eq!(editor.text(), "#vieja con mis cambios\n");
+            assert_eq!(sin(editor.text()), "#vieja con mis cambios\n");
 
             let plan =
                 Arc::new(vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path)));
             window
                 .run_tag_edits(vault.clone(), 1, plan.clone(), false)
                 .await;
-            assert_eq!(editor.text(), "#nueva con mis cambios\n");
+            assert_eq!(sin(editor.text()), "#nueva con mis cambios\n");
             let receipt = orbital_vault::WriteReceipt {
                 written: window
                     .0
@@ -252,15 +254,15 @@ mod tag_rename_tests {
                 .run_tag_edits(vault.clone(), 1, applied.clone(), true)
                 .await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#nueva con otros cambios\n"
             );
-            assert_eq!(editor.text(), "#nueva con otros cambios\n");
+            assert_eq!(sin(editor.text()), "#nueva con otros cambios\n");
             // Una nueva sesión no puede consumir el Deshacer de la anterior.
             window.0.vault_session.set(2);
             window.run_tag_edits(vault, 1, applied, true).await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#nueva con otros cambios\n"
             );
             window.0.window.destroy();
@@ -733,6 +735,71 @@ mod esqueleto_tests {
             );
             window.0.window.destroy();
             std::fs::remove_dir_all(base).unwrap();
+        });
+    }
+}
+
+mod enlaces_bloque_tests {
+    use super::super::*;
+
+    /// 026 US2: seguir `[[destino#^id]]` abre la nota con el cursor en el bloque (SC-004: < 300 ms),
+    /// y `[[#^id]]` va al bloque en la nota abierta.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn seguir_enlace_a_bloque() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.BloqueTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("orbital-026-us2-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            let mut destino: String = (1..=300).map(|n| format!("Párrafo {n}.\n\n")).collect();
+            destino.push_str("- ítem buscado ^k3x9a1\n\n");
+            destino.push_str("Final. ^fin001\n");
+            std::fs::write(root.join("wiki/destino.md"), &destino).unwrap();
+            std::fs::write(root.join("wiki/origen.md"), "Ver [[destino#^k3x9a1]].\n").unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let (vault, tree) = {
+                let v = orbital_vault::open(&root).unwrap();
+                let tree = build_tree(v.entries());
+                (v, tree)
+            };
+            window.show_vault(vault, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            window.show_path("wiki/origen.md");
+            glib::timeout_future(std::time::Duration::from_millis(300)).await;
+
+            let origen = RelPath::new("wiki/origen.md").unwrap();
+            let t0 = std::time::Instant::now();
+            window.open_link(Some(&origen), "[[destino#^k3x9a1]]");
+            let linea = || window.0.code_editor.cursor_line();
+            while linea() != 601 && t0.elapsed() < std::time::Duration::from_secs(3) {
+                glib::timeout_future(std::time::Duration::from_millis(5)).await;
+            }
+            let ms = t0.elapsed().as_millis();
+            assert_eq!(linea(), 601, "el cursor queda en el ítem con ^k3x9a1");
+            println!("SC-004: seguir el enlace al bloque tardó {ms} ms");
+            assert!(ms < 300, "SC-004: {ms} ms");
+
+            // `[[#^fin001]]`: en la nota abierta.
+            window.open_link(
+                Some(&RelPath::new("wiki/destino.md").unwrap()),
+                "[[#^fin001]]",
+            );
+            for _ in 0..100 {
+                if linea() == 603 {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(linea(), 603, "[[#^id]] va al bloque de la nota abierta");
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
         });
     }
 }

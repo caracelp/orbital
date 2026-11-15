@@ -171,6 +171,22 @@ pub fn filter_markers(candidates: &[MarkerCandidate], query: &str, limit: usize)
 /// Claves disponibles para autocompletar marcadores en la nota abierta: los campos inline
 /// `clave:: valor` de toda la nota (son los que ganan al resolver) y las claves del frontmatter
 /// (YAML Markdown o `<script>` de HTML). Una entrada por clave; inline primero.
+/// Los bloques cuyo id empieza con `query` o cuyo texto la contiene, en orden de la nota.
+pub fn filter_blocks<'a>(
+    bloques: &'a [orbital_vault::bloques::BloqueConId],
+    query: &str,
+    limit: usize,
+) -> Vec<&'a orbital_vault::bloques::BloqueConId> {
+    let q = orbital_vault::fold(query.trim());
+    bloques
+        .iter()
+        .filter(|b| {
+            q.is_empty() || b.id.starts_with(&q) || orbital_vault::fold(&b.resumen).contains(&q)
+        })
+        .take(limit)
+        .collect()
+}
+
 pub fn marker_candidates(text: &str, is_html: bool) -> Vec<MarkerCandidate> {
     let mut names: Vec<String> = Vec::new();
     let mut push = |key: &str| {
@@ -411,6 +427,28 @@ impl LinkCompletionPopover {
         self.show_suggestions(suggestions, "marcadores")
     }
 
+    /// Los bloques de `nota` cuyo id o texto contienen `query` (026).
+    pub fn filter_block_query(
+        &self,
+        nota: &str,
+        bloques: &[orbital_vault::bloques::BloqueConId],
+        query: &str,
+    ) -> usize {
+        let suggestions = filter_blocks(bloques, query, 8)
+            .into_iter()
+            .map(|b| Suggestion {
+                label: if b.resumen.is_empty() {
+                    format!("^{}", b.id)
+                } else {
+                    b.resumen.clone()
+                },
+                detail: format!("^{} · línea {}", b.id, b.linea + 1),
+                target: format!("{nota}#^{}", b.id),
+            })
+            .collect();
+        self.show_suggestions(suggestions, "bloques")
+    }
+
     fn show_suggestions(&self, matches: Vec<Suggestion>, kind: &str) -> usize {
         self.0
             .list
@@ -563,6 +601,22 @@ mod tests {
         assert_eq!(filter_tags(&tags, "", 1), ["Física"]);
         assert!(filter_tags(&tags, "ausente", 8).is_empty());
         assert_eq!(filter_tags(&tags, "", 8).len(), 4);
+    }
+
+    #[test]
+    fn bloques_por_id_o_texto() {
+        let texto = "La entropía mide. ^k3x9a1\n\n- Primer principio ^p2m8q4\n";
+        let b = orbital_vault::bloques::listar(texto, false);
+        let ids = |q: &str| -> Vec<String> {
+            filter_blocks(&b, q, 8)
+                .iter()
+                .map(|x| x.id.clone())
+                .collect()
+        };
+        assert_eq!(ids(""), ["k3x9a1", "p2m8q4"]);
+        assert_eq!(ids("p2"), ["p2m8q4"]);
+        assert_eq!(ids("ENTROPIA"), ["k3x9a1"]);
+        assert!(ids("nada").is_empty());
     }
 
     #[test]

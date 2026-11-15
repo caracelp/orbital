@@ -300,8 +300,41 @@
     wrapPendingMarkers();
   }
 
+  // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno
+  // (6 caracteres `a-z0-9`, como en Código). Enter en un bloque con id copia el atributo al bloque
+  // nuevo: los repetidos se reemplazan desde el segundo. El atributo no se ve, así que también lo
+  // recibe el bloque que se está escribiendo.
+  const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  function newId(used) {
+    const bytes = new Uint8Array(6);
+    for (;;) {
+      crypto.getRandomValues(bytes);
+      let id = '';
+      for (const b of bytes) id += ID_CHARS[b % 36];
+      if (!used.has(id)) {
+        used.add(id);
+        return id;
+      }
+    }
+  }
+  function assignBlockIds() {
+    const used = new Set();
+    document.body.querySelectorAll('[id]').forEach((e) => used.add(e.id));
+    const seen = new Set();
+    document.body.querySelectorAll('p, li, blockquote, table, pre, figure').forEach((e) => {
+      if (e.closest('[data-orbital-embed]')) return;
+      if (e.id && !seen.has(e.id)) {
+        seen.add(e.id);
+        return;
+      }
+      e.id = newId(used);
+      seen.add(e.id);
+    });
+  }
+
   // El cuerpo sin las tarjetas de transclusión; los marcadores vuelven a su fuente.
   function body() {
+    assignBlockIds();
     const copy = document.body.cloneNode(true);
     copy.querySelectorAll('[data-orbital-embed]').forEach((e) => e.remove());
     copy.querySelectorAll('[data-orbital-marker]').forEach((el) =>

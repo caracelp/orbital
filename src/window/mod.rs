@@ -108,6 +108,8 @@ struct Inner {
     graph_gen: Cell<u64>,
     /// Línea a mostrar cuando termine de abrirse la nota (al elegir un retroenlace).
     pending_line: Cell<Option<(RelPath, usize)>>,
+    /// Ancla (`encabezado` o `^id`) a mostrar cuando termine de abrirse la nota (026).
+    pending_ancla: RefCell<Option<(RelPath, String)>>,
     /// Panel lateral izquierdo: stack de páginas (Archivos, Búsqueda, Etiquetas).
     sidebar_stack: adw::ViewStack,
     /// Panel de búsqueda en toda la bóveda (US1 de la 004).
@@ -302,6 +304,7 @@ impl Window {
             graph: RefCell::new(None),
             graph_gen: Cell::new(0),
             pending_line: Cell::new(None),
+            pending_ancla: RefCell::new(None),
             sidebar_stack,
             search_panel: search_panel.clone(),
             search_index: RefCell::new(None),

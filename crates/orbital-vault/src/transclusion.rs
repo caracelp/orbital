@@ -79,9 +79,16 @@ impl Vault {
         };
         let mut blocks = render_markdown(&text).blocks;
         if let Some(a) = anchor {
-            match section(blocks, a) {
-                Some(s) => blocks = s,
-                None => return Embed::SectionMissing { path },
+            if let Some(id) = a.strip_prefix('^') {
+                match bloque(blocks, id) {
+                    Some(b) => blocks = vec![b],
+                    None => return Embed::BlockMissing { path },
+                }
+            } else {
+                match section(blocks, a) {
+                    Some(s) => blocks = s,
+                    None => return Embed::SectionMissing { path },
+                }
             }
         }
         visited.push(path.clone());
@@ -109,6 +116,46 @@ fn section(blocks: Vec<Block>, anchor: &str) -> Option<Vec<Block>> {
         .position(|b| matches!(b.kind, BlockKind::Heading { level: l, .. } if l <= level))
         .map_or(blocks.len(), |n| start + 1 + n);
     Some(blocks.into_iter().take(end).skip(start).collect())
+}
+
+/// El bloque con ese id (026), buscado también dentro de listas, citas y callouts. Un ítem de
+/// lista vuelve como una lista de un solo ítem (con sus subítems), para que se vea como ítem.
+fn bloque(blocks: Vec<Block>, id: &str) -> Option<Block> {
+    for b in blocks {
+        if b.id.as_deref() == Some(id) {
+            return Some(b);
+        }
+        match b.kind {
+            BlockKind::Quote(body) | BlockKind::Callout { body, .. } => {
+                if let Some(x) = bloque(body, id) {
+                    return Some(x);
+                }
+            }
+            BlockKind::List { start, items } => {
+                for item in items {
+                    if let Some(p) = item.blocks.first()
+                        && p.id.as_deref() == Some(id)
+                    {
+                        let (source, line) = (p.source.clone(), p.line);
+                        return Some(Block {
+                            kind: BlockKind::List {
+                                start,
+                                items: vec![item],
+                            },
+                            source,
+                            line,
+                            id: Some(id.to_owned()),
+                        });
+                    }
+                    if let Some(x) = bloque(item.blocks, id) {
+                        return Some(x);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Encabezados comparados sin mayúsculas, sin `#` al principio y con los espacios colapsados.
@@ -204,6 +251,13 @@ pub fn card_html(
         Embed::Html { path } => {
             title(&mut out, path, &shown);
             out.push_str(" <span class=\"orbital-embed-note\">es una nota HTML: abrila para verla</span></div>");
+        }
+        Embed::BlockMissing { path } => {
+            title(&mut out, path, target);
+            out.push_str(&format!(
+                " <span class=\"orbital-embed-note\">no tiene el bloque «{}»</span></div>",
+                escape(anchor.unwrap_or(""))
+            ));
         }
         Embed::SectionMissing { path } => {
             title(&mut out, path, target);

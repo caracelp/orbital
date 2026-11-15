@@ -7,6 +7,7 @@ un diálogo vacío. Restaurar por AT-SPI no es accionable (el contenido de AdwDi
 en libadwaita 1.10); lo cubre la prueba GTK `us2_historial_dialogo`.
 """
 import os
+import re
 import runpy
 import time
 from pathlib import Path
@@ -126,7 +127,8 @@ assert ed.set_text_contents("Primera edición con zanahoria\n")
 wait_for(lambda: any(versiones()), "El primer guardado no creó versión")
 assert ed.set_text_contents("Segunda edición\n")
 wait_for(lambda: len(versiones()) >= 2, "El segundo guardado no creó versión")
-v1, v2 = versiones()[0], versiones()[1]
+# El guardado agrega ids de bloque (026): las versiones se comparan sin ellos.
+v1, v2 = [(p, re.sub(r" \^[a-z0-9]{6}$", "", t, flags=re.M)) for p, t in versiones()[:2]]
 assert v1[1] == "prehistórico\n", f"La primera versión no es el contenido previo: {v1[1]!r}"
 assert v2[1] == "Primera edición con zanahoria\n", f"La segunda versión no es el contenido previo: {v2[1]!r}"
 assert v1[0].stat().st_mtime <= v2[0].stat().st_mtime, "El orden por mtime no es viejo → nuevo"

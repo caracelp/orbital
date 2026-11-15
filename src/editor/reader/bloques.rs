@@ -130,6 +130,7 @@ impl Reader {
                     },
                     source: g.source.clone(),
                     line: b.line,
+                    id: None,
                 },
                 depth,
             ),
@@ -205,6 +206,12 @@ impl Reader {
                 text(end, &dim, "Nota inexistente: ");
                 self.inlines(s, end, &[link(shown)], &title);
                 text(end, &dim, " (creala desde el enlace)");
+                buf.insert(end, "\n");
+            }
+            Embed::BlockMissing { .. } => {
+                self.inlines(s, end, &[link(t.target.clone())], &title);
+                let a = t.anchor.as_deref().unwrap_or("");
+                text(end, &dim, &format!(" no tiene el bloque «{a}»"));
                 buf.insert(end, "\n");
             }
             Embed::SectionMissing { .. } => {
