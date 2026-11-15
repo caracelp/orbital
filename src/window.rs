@@ -5167,7 +5167,7 @@ impl Window {
     }
 
     /// Desarrollo: latencia al escribir en la nota abierta (ver `Editor::measure_typing`).
-    pub async fn measure_typing(&self, chars: usize) -> Vec<f64> {
+    pub async fn measure_typing(&self, chars: usize) -> Vec<(f64, f64)> {
         self.0.code_editor.measure_typing(chars).await
     }
 

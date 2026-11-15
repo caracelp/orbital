@@ -225,6 +225,38 @@ pub struct Rects {
 }
 
 /// Calcula los rectángulos de los cursores extra en coordenadas del widget de la vista.
+/// Pasa rectángulos en coordenadas del buffer a coordenadas de `capa` (la capa de cursores, que
+/// cubre el scroller): primero a la ventana de la vista (que ya descuenta el desplazamiento) y
+/// después a la capa. Los que quedan fuera de lo visible igual se dibujan recortados por la capa.
+pub fn a_capa(rects: Rects, view: &impl IsA<gtk::TextView>, capa: &impl IsA<gtk::Widget>) -> Rects {
+    let punto = |x: f64, y: f64| {
+        let (wx, wy) =
+            view.buffer_to_window_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        view.upcast_ref::<gtk::TextView>()
+            .upcast_ref::<gtk::Widget>()
+            .compute_point(capa, &gtk::graphene::Point::new(wx as f32, wy as f32))
+            .map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())))
+    };
+    Rects {
+        barras: rects
+            .barras
+            .into_iter()
+            .map(|(x, y, h)| {
+                let (x, y) = punto(x, y);
+                (x, y, h)
+            })
+            .collect(),
+        selecciones: rects
+            .selecciones
+            .into_iter()
+            .map(|(x, y, w, h)| {
+                let (x, y) = punto(x, y);
+                (x, y, w, h)
+            })
+            .collect(),
+    }
+}
+
 pub fn rects_para_dibujar(
     view: &impl IsA<gtk::TextView>,
     buf: &impl IsA<gtk::TextBuffer>,
@@ -493,6 +525,69 @@ mod tests {
         }
         let (_, _, w, h) = rects.selecciones[0];
         assert!(w > 0.0 && h > 0.0);
+    }
+
+    /// Regla de CLAUDE.md: la vista de Código es hija directa de su `ScrolledWindow`. Envuelta en
+    /// otro widget (como pasó con la capa de cursores de la 006), GTK dispone el documento entero en
+    /// cada tecla: 8,6 ms con 100 KB contra 2,4 ms.
+    #[test]
+    #[ignore = "requiere acceso GTK"]
+    fn vista_de_codigo_directa_en_su_scroller() {
+        gtk::init().expect("se necesita acceso GTK");
+        let editor = super::super::Editor::new();
+        let padre = editor.0.view.parent().expect("la vista tiene padre");
+        assert!(
+            padre.is::<gtk::ScrolledWindow>(),
+            "la vista de Código cuelga de {}, no de un ScrolledWindow",
+            padre.type_().name()
+        );
+    }
+
+    /// La capa de los cursores va afuera del scroller (la vista sigue siendo hija directa del
+    /// `ScrolledWindow`): con la nota desplazada, un cursor de la línea de arriba de lo visible
+    /// queda arriba de la capa, no a la altura que tiene en el documento.
+    #[test]
+    #[ignore = "requiere acceso GTK"]
+    fn us6_capa_sigue_al_desplazamiento() {
+        gtk::init().expect("se necesita acceso GTK");
+        let buf = sourceview5::Buffer::new(None);
+        let texto: String = (0..400).map(|n| format!("línea {n}\n")).collect();
+        buf.set_text(&texto);
+        let view = gtk::TextView::with_buffer(&buf);
+        let scroller = gtk::ScrolledWindow::builder().child(&view).build();
+        let capa = gtk::Overlay::new();
+        capa.set_child(Some(&scroller));
+        let ventana = gtk::Window::builder()
+            .default_width(500)
+            .default_height(300)
+            .child(&capa)
+            .build();
+        ventana.present();
+        let ctx = glib::MainContext::default();
+        let pasar = || {
+            for _ in 0..40 {
+                ctx.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        pasar();
+        let linea = buf.iter_at_line(300).unwrap();
+        let y_doc = f64::from(view.iter_location(&linea).y());
+        scroller.vadjustment().set_value(y_doc);
+        pasar();
+        let mut extra = ExtraCursors::new();
+        extra.add_cursor(&buf, &linea);
+        let rects = a_capa(rects_para_dibujar(&view, &buf, &extra), &view, &capa);
+        let (_, y, _) = rects.barras[0];
+        assert!(
+            y_doc > 1000.0,
+            "la línea 300 está lejos del principio: {y_doc}"
+        );
+        assert!(
+            (0.0..40.0).contains(&y),
+            "el cursor queda arriba de lo visible (y = {y}), no en {y_doc}"
+        );
+        ventana.destroy();
     }
 }
 

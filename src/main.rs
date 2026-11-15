@@ -180,19 +180,31 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
             }
             if cap.measure {
                 glib::timeout_future(Duration::from_millis(1500)).await;
-                let mut ms = window.measure_typing(301).await;
+                let mut medidas = window.measure_typing(301).await;
                 // La primera tecla lleva el cursor al final y calcula la disposición de todo el
                 // texto; se informa aparte.
-                let first = if ms.is_empty() { 0.0 } else { ms.remove(0) };
+                let first = if medidas.is_empty() {
+                    0.0
+                } else {
+                    let (i, c) = medidas.remove(0);
+                    i + c
+                };
                 println!("Primera tecla (disposición de todo el texto): {first:.2} ms");
-                ms.sort_by(f64::total_cmp);
-                let at = |q: f64| ms[((ms.len() as f64 - 1.0) * q).round() as usize];
+                let mediana = |mut v: Vec<f64>| -> (f64, f64, f64) {
+                    if v.is_empty() {
+                        return (0.0, 0.0, 0.0);
+                    }
+                    v.sort_by(f64::total_cmp);
+                    let at = |q: f64| v[((v.len() as f64 - 1.0) * q).round() as usize];
+                    (at(0.5), at(0.99), v[v.len() - 1])
+                };
+                let (m, p99, max) = mediana(medidas.iter().map(|(i, c)| i + c).collect());
+                let (mi, _, _) = mediana(medidas.iter().map(|(i, _)| *i).collect());
+                let (mc, _, _) = mediana(medidas.iter().map(|(_, c)| *c).collect());
                 println!(
-                    "Latencia por tecla ({} de 300 medidas): mediana {:.2} ms, p99 {:.2} ms, máx {:.2} ms",
-                    ms.len(),
-                    at(0.5),
-                    at(0.99),
-                    ms.last().copied().unwrap_or(0.0)
+                    "Latencia por tecla ({} de 300 medidas): mediana {m:.2} ms, p99 {p99:.2} ms, máx {max:.2} ms \
+                     (mediana de la inserción {mi:.2} ms, del cuadro {mc:.2} ms)",
+                    medidas.len()
                 );
                 app.quit();
                 return;
