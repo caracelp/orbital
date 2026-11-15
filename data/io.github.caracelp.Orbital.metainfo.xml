@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.caracelp.Orbital</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Orbital</name>
+  <summary>Notas en Markdown y HTML sobre una bóveda de archivos comunes</summary>
+  <description>
+    <p>
+      Orbital guarda las notas como archivos .md y .html comunes en una carpeta (la bóveda): el disco
+      siempre tiene la verdad. Enlaces entre notas, retroenlaces, etiquetas, búsqueda con operadores,
+      transclusiones, historial de versiones y un grafo de enlaces, todo sin conexión.
+    </p>
+    <ul>
+      <li>Tres vistas de cada nota: Código, Lectura y Dividida; las notas HTML se editan en visual</li>
+      <li>Pestañas, barra de propiedades, contexto y grafo local de la nota abierta</li>
+      <li>Búsqueda en toda la bóveda, etiquetas anidadas y búsquedas guardadas</li>
+      <li>Importar PDF, DOCX y HTML a notas; anotar PDFs con enlaces a selecciones</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.caracelp.Orbital.desktop</launchable>
+  <url type="homepage">https://github.com/caracelp/orbital</url>
+  <url type="bugtracker">https://github.com/caracelp/orbital/issues</url>
+  <developer id="io.github.caracelp">
+    <name>caracelp</name>
+  </developer>
+  <branding>
+    <color type="primary" scheme_preference="light">#ffd2e6</color>
+    <color type="primary" scheme_preference="dark">#402336</color>
+  </branding>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-11-15"/>
+  </releases>
+</component>

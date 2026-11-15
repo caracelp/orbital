@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Orbital
+Comment=Notas en Markdown y HTML sobre una bóveda de archivos comunes
+Exec=orbital %f
+Icon=io.github.caracelp.Orbital
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+Keywords=notas;markdown;html;bóveda;wiki;conocimiento;
+StartupNotify=true
