@@ -573,19 +573,31 @@ mod tests {
         pasar();
         let linea = buf.iter_at_line(300).unwrap();
         let y_doc = f64::from(view.iter_location(&linea).y());
-        scroller.vadjustment().set_value(y_doc);
-        pasar();
+        // En una sesión lenta (Xvfb en el CI) la vista puede no tener todavía su alto completo:
+        // se insiste hasta que el desplazamiento llegue lejos.
+        let adj = scroller.vadjustment();
+        for _ in 0..50 {
+            adj.set_value(y_doc);
+            pasar();
+            if adj.value() > 1000.0 {
+                break;
+            }
+        }
+        let desplazado = adj.value();
+        assert!(
+            desplazado > 1000.0,
+            "la nota se desplazó lejos: {desplazado}"
+        );
         let mut extra = ExtraCursors::new();
         extra.add_cursor(&buf, &linea);
         let rects = a_capa(rects_para_dibujar(&view, &buf, &extra), &view, &capa);
         let (_, y, _) = rects.barras[0];
+        // En la capa, el cursor está donde está en el documento menos lo desplazado (más el
+        // margen de la vista), no a la altura que tiene en el documento.
+        let esperado = y_doc - desplazado;
         assert!(
-            y_doc > 1000.0,
-            "la línea 300 está lejos del principio: {y_doc}"
-        );
-        assert!(
-            (0.0..40.0).contains(&y),
-            "el cursor queda arriba de lo visible (y = {y}), no en {y_doc}"
+            (y - esperado).abs() < 40.0,
+            "el cursor queda en y = {y}; se esperaba ≈ {esperado} (documento {y_doc}, desplazado {desplazado})"
         );
         ventana.destroy();
     }

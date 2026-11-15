@@ -54,7 +54,8 @@ jobs:
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
         run: |
           dbus-uuidgen --ensure
-          dbus-run-session -- xvfb-run -a tools/pruebas-gtk.sh
+          # Pantalla grande: con la de 640×480 por defecto, las barras laterales se pliegan.
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" tools/pruebas-gtk.sh
 
       - name: Licencias y vulnerabilidades
         uses: taiki-e/install-action@v2
