@@ -1,0 +1,46 @@
+{
+  "id": "io.github.caracelp.Orbital",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "51",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": ["org.freedesktop.Sdk.Extension.rust-stable"],
+  "command": "orbital",
+  "finish-args": [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--share=ipc",
+    "--device=dri",
+    "--share=network",
+    "--filesystem=home"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "build-args": ["--share=network"],
+    "env": {
+      "CARGO_HOME": "/run/build/orbital/cargo",
+      "CARGO_NET_OFFLINE": "false"
+    }
+  },
+  "cleanup": ["/include", "/lib/pkgconfig", "*.a"],
+  "modules": [
+    {
+      "name": "orbital",
+      "buildsystem": "simple",
+      "build-commands": [
+        "cargo build --release --locked --bin orbital",
+        "install -Dm755 target/release/orbital /app/bin/orbital",
+        "install -Dm644 data/io.github.caracelp.Orbital.desktop /app/share/applications/io.github.caracelp.Orbital.desktop",
+        "install -Dm644 data/io.github.caracelp.Orbital.metainfo.xml /app/share/metainfo/io.github.caracelp.Orbital.metainfo.xml",
+        "install -Dm644 data/icons/hicolor/scalable/apps/io.github.caracelp.Orbital.svg /app/share/icons/hicolor/scalable/apps/io.github.caracelp.Orbital.svg",
+        "install -Dm644 data/icons/hicolor/symbolic/apps/io.github.caracelp.Orbital-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.caracelp.Orbital-symbolic.svg"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": ["target", ".git", "build-aux/flatpak/.flatpak-builder", "build-aux/flatpak/build"]
+        }
+      ]
+    }
+  ]
+}

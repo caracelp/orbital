@@ -151,12 +151,24 @@ etiquetas, enlaces, marcadores y bloques generados, y todo lo que vive en `.orbi
 búsquedas guardadas, URL asociadas, historial y papelera recuperable). Es la fuente de verdad: si el
 código y el documento no coinciden, el error está en el código.
 
+## Flatpak
+
+```sh
+build-aux/flatpak/construir.sh            # deja build-aux/flatpak/build/orbital.flatpak
+flatpak install --user build-aux/flatpak/build/orbital.flatpak
+```
+
+Usa el runtime de GNOME 51 y la extensión de Rust de Flathub (el script dice cómo instalarlos, sin
+`sudo`). El manifiesto para `flatpak-builder` está en
+[`build-aux/flatpak/io.github.caracelp.Orbital.json`](build-aux/flatpak/io.github.caracelp.Orbital.json).
+
 ## Specs y desarrollo
 
 El desarrollo sigue un flujo Spec Kit: cada especificación vive en `specs/NNN-nombre/` con
 `spec.md → plan.md → research.md → tasks.md`, más `quickstart.md` (resultados medidos) y
 `traspaso.md` (estado exacto y lecciones aprendidas). Las terminadas están fusionadas en `main`;
-la cola de trabajo vigente está en [specs/cola-autonoma.md](specs/cola-autonoma.md).
+la cola de trabajo vigente está en [specs/cola-autonoma.md](specs/cola-autonoma.md) y lo
+pendiente de cada bloque, en la [hoja de ruta](docs/hoja-de-ruta.md).
 
 Los principios del proyecto (rendimiento primero, la bóveda es del usuario, nativa de GNOME, local y
 privada) están en [.specify/memory/constitution.md](.specify/memory/constitution.md).
