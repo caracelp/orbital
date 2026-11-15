@@ -458,10 +458,7 @@ fn is_valid_tag(tag: &str) -> bool {
     }
     // No debe ser un color hex de 3, 6 u 8 dígitos
     let len = tag.len();
-    if (len == 3 || len == 6 || len == 8) && tag.chars().all(|c| c.is_ascii_hexdigit()) {
-        return false;
-    }
-    true
+    !((len == 3 || len == 6 || len == 8) && tag.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn extract_markdown_body_tags(text: &str) -> Vec<TagOccurrence> {

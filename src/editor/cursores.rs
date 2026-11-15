@@ -192,8 +192,7 @@ impl Editor {
             i.caren.limpiar();
             return;
         }
-        let rects = multi_cursor::rects_para_dibujar(&i.view, &i.buffer, &extra);
-        let rects = std::rc::Rc::new(multi_cursor::a_capa(rects, &i.view, &i.caren));
-        i.caren.set_rects(rects);
+        let rects = std::rc::Rc::new(multi_cursor::rects_para_dibujar(&i.view, &i.buffer, &extra));
+        i.caren.set_rects(&i.view, rects);
     }
 }

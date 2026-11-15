@@ -219,6 +219,7 @@ pub fn base_columna(
 }
 
 /// Rectángulos en coordenadas del widget de la vista para el overlay (research R2).
+#[derive(Clone)]
 pub struct Rects {
     pub barras: Vec<(f64, f64, f64)>,
     pub selecciones: Vec<(f64, f64, f64, f64)>,
@@ -339,7 +340,10 @@ pub mod imp {
 
     #[derive(Default)]
     pub struct CarenOverlay {
+        /// Rectángulos en coordenadas del buffer y la vista que los ubica: se pasan a
+        /// coordenadas de la capa al dibujar, cuando el desplazamiento de la vista ya está al día.
         pub rects: RefCell<Option<Rc<Rects>>>,
+        pub vista: RefCell<Option<gtk::TextView>>,
     }
 
     #[glib::object_subclass]
@@ -356,7 +360,10 @@ pub mod imp {
             let Some(rects) = self.rects.borrow().clone() else {
                 return;
             };
-            let rects = rects.as_ref();
+            let Some(vista) = self.vista.borrow().clone() else {
+                return;
+            };
+            let rects = &super::a_capa((*rects).clone(), &vista, &*self.obj());
             let color = super::color_rgba();
             // Selecciones primero (debajo de las barras).
             for (x, y, w, h) in &rects.selecciones {
@@ -393,7 +400,9 @@ impl CarenOverlay {
     }
 
     /// Rectángulos nuevos en coordenadas del widget; el overlay se redibuja solo.
-    pub fn set_rects(&self, rects: std::rc::Rc<Rects>) {
+    /// Rectángulos en coordenadas del buffer de `vista` (se ubican al dibujar).
+    pub fn set_rects(&self, vista: &impl IsA<gtk::TextView>, rects: std::rc::Rc<Rects>) {
+        *self.imp().vista.borrow_mut() = Some(vista.clone().upcast());
         *self.imp().rects.borrow_mut() = Some(rects);
         self.queue_draw();
     }
@@ -572,20 +581,29 @@ mod tests {
         };
         pasar();
         let linea = buf.iter_at_line(300).unwrap();
+        // `scroll_to_iter` valida el alto de las líneas hasta ahí (el `TextView` lo calcula de a
+        // poco; en Xvfb, `set_value` quedaba limitado por el alto calculado hasta ese momento).
+        let mut it = linea;
+        for _ in 0..50 {
+            view.scroll_to_iter(&mut it, 0.0, true, 0.0, 0.0);
+            pasar();
+            if view.visible_rect().y() > 1000 {
+                break;
+            }
+        }
+        let visible = f64::from(view.visible_rect().y());
+        assert!(visible > 1000.0, "la nota se desplazó lejos: {visible}");
         let y_doc = f64::from(view.iter_location(&linea).y());
-        scroller.vadjustment().set_value(y_doc);
-        pasar();
         let mut extra = ExtraCursors::new();
         extra.add_cursor(&buf, &linea);
         let rects = a_capa(rects_para_dibujar(&view, &buf, &extra), &view, &capa);
         let (_, y, _) = rects.barras[0];
+        // En la capa, el cursor está donde está en el documento menos lo desplazado (más el
+        // margen de la vista), no a la altura que tiene en el documento.
+        let esperado = y_doc - visible;
         assert!(
-            y_doc > 1000.0,
-            "la línea 300 está lejos del principio: {y_doc}"
-        );
-        assert!(
-            (0.0..40.0).contains(&y),
-            "el cursor queda arriba de lo visible (y = {y}), no en {y_doc}"
+            (y - esperado).abs() < 40.0,
+            "el cursor queda en y = {y}; se esperaba ≈ {esperado} (documento {y_doc}, visible desde {visible})"
         );
         ventana.destroy();
     }

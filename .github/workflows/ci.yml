@@ -18,7 +18,7 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, Rust, Xvfb y curl)
+      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, Rust, Xvfb, D-Bus, fuentes y curl)
         run: |
           pacman -Syu --noconfirm \
             curl \
@@ -28,6 +28,9 @@ jobs:
             gtksourceview5 \
             webkitgtk-6.0 \
             xorg-server-xvfb \
+            dbus \
+            cantarell-fonts \
+            ttf-dejavu \
             rust
 
       - uses: actions/checkout@v5
@@ -43,6 +46,16 @@ jobs:
       # Los tests de GTK necesitan un display: corren bajo Xvfb.
       - name: Tests
         run: xvfb-run -a cargo test
+
+      # Las pruebas GTK en proceso (`#[ignore]`): una por proceso, con D-Bus (la app se registra) y
+      # sin el sandbox de WebKit (el contenedor no permite los espacios de nombres que usa).
+      - name: Pruebas GTK en proceso
+        env:
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+        run: |
+          dbus-uuidgen --ensure
+          # Pantalla grande: con la de 640×480 por defecto, las barras laterales se pliegan.
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" tools/pruebas-gtk.sh
 
       - name: Licencias y vulnerabilidades
         uses: taiki-e/install-action@v2
