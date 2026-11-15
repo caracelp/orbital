@@ -138,13 +138,16 @@ fn repetidos_se_reemplazan_desde_el_segundo() {
 fn excluir_el_bloque_del_cursor() {
     let texto = "Primero\n\nSegundo en curso\n\nTercero\n";
     let cursor = texto.find("en curso").unwrap();
-    let ed = bloques::inserciones(texto, &[cursor..cursor]);
+    let ed = bloques::inserciones(texto, std::slice::from_ref(&(cursor..cursor)));
     let nuevo = bloques::aplicar(texto, &ed);
     assert!(nuevo.contains("Segundo en curso\n"));
     assert_eq!(ed.len(), 2);
     // Cursor al final del bloque (justo donde iría el id): tampoco.
     let fin = texto.find("Segundo en curso").unwrap() + "Segundo en curso".len();
-    assert_eq!(bloques::inserciones(texto, &[fin..fin]).len(), 2);
+    assert_eq!(
+        bloques::inserciones(texto, std::slice::from_ref(&(fin..fin))).len(),
+        2
+    );
 }
 
 #[test]

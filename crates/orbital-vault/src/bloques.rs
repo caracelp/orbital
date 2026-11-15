@@ -226,7 +226,7 @@ pub fn escanear(texto: &str) -> Vec<BloqueFuente> {
     let mut acepta_id: Option<usize> = None;
 
     let cerrar = |abierto: &mut Option<Abierto>, out: &mut Vec<BloqueFuente>, texto: &str| {
-        let Some(a) = abierto.take() else { return None };
+        let a = abierto.take()?;
         let (li, lf, sig) = a.ultima;
         let linea_propia = a.clase.linea_propia();
         let id = if linea_propia {
@@ -288,8 +288,8 @@ pub fn escanear(texto: &str) -> Vec<BloqueFuente> {
         }
 
         // Una línea `^id` justo debajo de una tabla, un código o un `$$`.
-        if let Some(r) = linea_de_id(&l) {
-            if let Some(n) = acepta_id.take().or_else(|| {
+        if let Some(r) = linea_de_id(&l)
+            && let Some(n) = acepta_id.take().or_else(|| {
                 // Tabla todavía abierta.
                 if abierto
                     .as_ref()
@@ -299,11 +299,11 @@ pub fn escanear(texto: &str) -> Vec<BloqueFuente> {
                 } else {
                     None
                 }
-            }) {
-                out[n].id = Some(r);
-                out[n].insertar_en = l.siguiente;
-                continue;
-            }
+            })
+        {
+            out[n].id = Some(r);
+            out[n].insertar_en = l.siguiente;
+            continue;
         }
         acepta_id = None;
 
