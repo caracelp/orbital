@@ -51,6 +51,26 @@ impl Pestanas {
         barra
             .upcast_ref::<gtk::Widget>()
             .update_property(&[gtk::accessible::Property::Label("Notas abiertas")]);
+        // `adw::TabBar` tiene dos listas internas (pestañas fijadas y comunes) sin nombre
+        // accesible: se nombran recorriendo sus hijos.
+        let mut pila = vec![barra.clone().upcast::<gtk::Widget>()];
+        let mut n = 0;
+        while let Some(w) = pila.pop() {
+            if w.accessible_role() == gtk::AccessibleRole::TabList {
+                let nombre = if n == 0 {
+                    "Notas abiertas"
+                } else {
+                    "Notas fijadas"
+                };
+                w.update_property(&[gtk::accessible::Property::Label(nombre)]);
+                n += 1;
+            }
+            let mut hijo = w.last_child();
+            while let Some(h) = hijo {
+                hijo = h.prev_sibling();
+                pila.push(h);
+            }
+        }
         let this = Self(Rc::new(Inner {
             vista,
             barra,

@@ -8,6 +8,7 @@ mod onstage;
 mod open_dialog;
 mod panel_derecho;
 mod pestanas;
+mod pie_boveda;
 mod preferences;
 mod search_panel;
 mod state;

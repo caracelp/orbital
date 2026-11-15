@@ -44,7 +44,7 @@ struct Inner {
     recientes_vistos: RefCell<Option<Vec<String>>>,
     /// «Cambiar orden» del explorador: árbol en orden inverso.
     tree_reversed: Cell<bool>,
-    sidebar_title: adw::WindowTitle,
+    pie_boveda: crate::pie_boveda::PieBoveda,
     content_title: adw::WindowTitle,
     banner: adw::Banner,
     list_view: gtk::ListView,
@@ -505,8 +505,6 @@ impl Window {
             .visible(false)
             .build();
 
-        let sidebar_title = adw::WindowTitle::new("Orbital", "");
-        sidebar_title.set_halign(gtk::Align::Start);
         // Cabecera de acciones del explorador (maqueta: crear nota, crear carpeta, cambiar orden,
         // mostrar archivo actual, colapsar carpetas).
         let new_button = menu_button("list-add-symbolic", "Crear nota", &[]);
@@ -547,24 +545,12 @@ impl Window {
         vault_button.add_css_class("flat");
         vault_button.add_css_class("orbital-iconbtn");
         vault_button.set_direction(gtk::ArrowType::Up);
-        let vault_footer = gtk::Box::builder()
-            .spacing(8)
-            .css_classes(["orbital-vault-footer"])
-            .build();
-        let vault_mark = gtk::Label::builder()
-            .label("◈")
-            .css_classes(["orbital-pink"])
-            .build();
-        vault_mark.set_accessible_role(gtk::AccessibleRole::Presentation);
-        sidebar_title.set_hexpand(true);
-        vault_footer.append(&vault_mark);
-        vault_footer.append(&sidebar_title);
-        vault_footer.append(&vault_button);
+        let pie_boveda = crate::pie_boveda::PieBoveda::new(&vault_button);
         let sidebar_view = adw::ToolbarView::new();
         sidebar_view.add_css_class("orbital-left");
         sidebar_view.add_top_bar(&left_head);
         sidebar_view.add_top_bar(&banner);
-        sidebar_view.add_bottom_bar(&vault_footer);
+        sidebar_view.add_bottom_bar(pie_boveda.widget());
         let gone_banner = adw::Banner::builder()
             .title("La bóveda no está disponible. Orbital no va a escribir nada.")
             .revealed(true)
@@ -779,7 +765,7 @@ impl Window {
             recientes: RefCell::new(Vec::new()),
             recientes_vistos: RefCell::new(None),
             tree_reversed: Cell::new(false),
-            sidebar_title,
+            pie_boveda,
             content_title,
             banner,
             list_view,
@@ -969,6 +955,26 @@ impl Window {
         this.setup_list();
         this.setup_status_counts();
         this.setup_pestanas();
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.pie_boveda.connect_elegir(move |ruta| {
+                let Some(i) = weak.upgrade() else { return };
+                let w = Window(i);
+                glib::spawn_future_local(async move {
+                    // Lo pendiente de la nota abierta se guarda antes de cambiar de bóveda.
+                    w.0.code_editor.flush().await;
+                    if w.0.code_editor.has_pending() {
+                        w.toast("La nota tiene cambios sin guardar: la bóveda no cambió");
+                        if let Some(v) = w.0.vault.borrow().clone() {
+                            w.0.pie_boveda
+                                .set_boveda(v.root(), &AppState::load().recent);
+                        }
+                        return;
+                    }
+                    w.open_path(ruta).await;
+                });
+            });
+        }
         {
             let weak = Rc::downgrade(&this.0);
             this.0.panel.connect_modo(move |_| {
@@ -1258,6 +1264,14 @@ impl Window {
             "Mostrar u ocultar los retroenlaces",
             "<Control><Shift>b",
         ));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar la barra izquierda",
+            "<Control>bracketleft",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Mostrar u ocultar la barra derecha",
+            "<Control>bracketright",
+        ));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -1468,9 +1482,8 @@ impl Window {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| vault.root().display().to_string());
-        i.sidebar_title.set_title(&name);
-        i.sidebar_title
-            .set_subtitle(&format!("{} elementos", vault.entries().len()));
+        i.pie_boveda
+            .set_boveda(vault.root(), &AppState::load().recent);
         i.window.set_title(Some(&format!("{name} — Orbital")));
 
         let incomplete = !vault.layout().is_complete();
@@ -2577,6 +2590,32 @@ impl Window {
             "Mostrar u ocultar los retroenlaces",
             "backlinks",
             Some("Ctrl+Mayús+B"),
+            false,
+        ),
+        (
+            "Alternar la barra izquierda",
+            "toggle-left",
+            Some("Ctrl+["),
+            false,
+        ),
+        (
+            "Alternar la barra derecha",
+            "toggle-right",
+            Some("Ctrl+]"),
+            false,
+        ),
+        ("Crear carpeta", "new-folder", None, false),
+        ("Cambiar el orden del explorador", "sort-tree", None, false),
+        (
+            "Ubicar la nota en el explorador",
+            "reveal-current",
+            None,
+            true,
+        ),
+        (
+            "Colapsar o expandir las carpetas",
+            "collapse-folders",
+            None,
             false,
         ),
         ("Abrir carpeta…", "open", Some("Ctrl+O"), false),
@@ -6098,6 +6137,132 @@ mod captura_v13 {
                     .unwrap();
             }
             window.0.window.destroy();
+        });
+    }
+}
+
+#[cfg(test)]
+mod esqueleto_tests {
+    use super::*;
+
+    fn nombre(w: &impl IsA<gtk::Widget>) -> String {
+        w.tooltip_text().map(|t| t.to_string()).unwrap_or_default()
+    }
+
+    /// Busca en el árbol de widgets un botón por su tooltip (que coincide con el nombre accesible).
+    fn boton(raiz: &gtk::Widget, tooltip: &str) -> Option<gtk::Widget> {
+        let mut pila = vec![raiz.clone()];
+        while let Some(w) = pila.pop() {
+            if w.is::<gtk::Button>() && nombre(&w).starts_with(tooltip) {
+                return Some(w);
+            }
+            let mut hijo = w.first_child();
+            while let Some(h) = hijo {
+                pila.push(h.clone());
+                hijo = h.next_sibling();
+            }
+        }
+        None
+    }
+
+    /// 025 US1/US2: barras plegables con Ctrl+[ y Ctrl+] (y su nombre accesible), riel con Canva y
+    /// DB desactivados, modos de la barra izquierda y el desplegable de bóvedas recientes.
+    #[test]
+    #[ignore = "requiere GTK/DBus"]
+    fn us1_esqueleto() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.EsqueletoTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let base = std::env::temp_dir()
+                .join(format!("orbital-025-esq-{}", glib::uuid_string_random()));
+            let (a, b) = (base.join("una"), base.join("otra"));
+            for v in [&a, &b] {
+                std::fs::create_dir_all(v.join("wiki")).unwrap();
+                std::fs::create_dir_all(v.join("raw")).unwrap();
+            }
+            std::fs::write(b.join("wiki/nota.md"), "hola\n").unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.0.window.set_default_size(1440, 900);
+            window.open_path(a.clone()).await;
+            window.0.window.present();
+            glib::timeout_future(std::time::Duration::from_millis(200)).await;
+            let raiz = window.0.window.clone().upcast::<gtk::Widget>();
+
+            // Barras: abiertas al empezar; las acciones las pliegan y el nombre cambia.
+            assert!(window.0.split.shows_sidebar());
+            assert!(boton(&raiz, "Ocultar barra izquierda").is_some());
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-left", None)
+                .unwrap();
+            assert!(!window.0.split.shows_sidebar());
+            assert!(boton(&raiz, "Mostrar barra izquierda").is_some());
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-left", None)
+                .unwrap();
+            assert!(window.0.split.shows_sidebar());
+            let derecha = window.0.right_split.shows_sidebar();
+            gtk::prelude::WidgetExt::activate_action(&window.0.window, "win.toggle-right", None)
+                .unwrap();
+            assert_ne!(window.0.right_split.shows_sidebar(), derecha);
+
+            // Riel: Canva y DB desactivados; el resto, con su acción.
+            for (tooltip, activo) in [
+                ("Crear canva", false),
+                ("Crear base de datos", false),
+                ("Selector rápido", true),
+                ("Conexiones", true),
+                ("Paleta de comandos", true),
+                ("Configuración general", true),
+            ] {
+                let b = boton(&raiz, tooltip).unwrap_or_else(|| panic!("falta «{tooltip}»"));
+                assert_eq!(b.is_sensitive(), activo, "«{tooltip}»");
+            }
+            // Guardados: pendiente (desactivado). Búsqueda cambia la página de la barra.
+            assert!(!boton(&raiz, "Guardados").unwrap().is_sensitive());
+            boton(&raiz, "Búsqueda")
+                .and_downcast::<gtk::ToggleButton>()
+                .unwrap()
+                .set_active(true);
+            assert_eq!(
+                window.0.sidebar_stack.visible_child_name().as_deref(),
+                Some("busqueda")
+            );
+
+            // Desplegable de bóvedas: la abierta primero; elegir otra la abre.
+            window.open_path(b.clone()).await;
+            let rutas = window.0.pie_boveda.rutas();
+            assert_eq!(rutas.first(), Some(&b));
+            window.0.pie_boveda.set_boveda(&b, &[b.clone(), a.clone()]);
+            assert_eq!(window.0.pie_boveda.rutas(), [b.clone(), a.clone()]);
+            window.0.pie_boveda.elegir(1);
+            for _ in 0..100 {
+                if window
+                    .0
+                    .vault
+                    .borrow()
+                    .as_ref()
+                    .map(|v| v.root().to_path_buf())
+                    == Some(a.clone())
+                {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(20)).await;
+            }
+            assert_eq!(
+                window
+                    .0
+                    .vault
+                    .borrow()
+                    .as_ref()
+                    .map(|v| v.root().to_path_buf()),
+                Some(a.clone()),
+                "elegir otra bóveda la abre"
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(base).unwrap();
         });
     }
 }
