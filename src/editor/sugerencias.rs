@@ -89,7 +89,9 @@ impl Editor {
                 let es_html = |p: &str| p.ends_with(".html") || p.ends_with(".htm");
                 if nota.is_empty() {
                     // La nota abierta: el texto ya está en el buffer.
-                    let texto = i.buffer.text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
+                    let texto = i
+                        .buffer
+                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
                     let b = Rc::new(orbital_vault::bloques::listar(
                         &texto,
                         i.format.get() == Format::Html,

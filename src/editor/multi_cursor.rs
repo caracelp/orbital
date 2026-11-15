@@ -39,7 +39,9 @@ impl ExtraCursors {
         &'a self,
         buf: &'a impl IsA<gtk::TextBuffer>,
     ) -> impl Iterator<Item = gtk::TextIter> + 'a {
-        self.cursors.iter().map(move |(insert, _)| buf.iter_at_mark(insert))
+        self.cursors
+            .iter()
+            .map(move |(insert, _)| buf.iter_at_mark(insert))
     }
 
     /// Quita todos los cursores extra (Esc, cambio de vista, nota o bóveda).

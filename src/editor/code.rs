@@ -158,7 +158,11 @@ pub fn block_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, St
         return None;
     }
     let (nombre, filtro) = after.split_once("#^")?;
-    if nombre.contains('#') || !filtro.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+    if nombre.contains('#')
+        || !filtro
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
         return None;
     }
     let start = line_start.offset() + line[..open].chars().count() as i32;

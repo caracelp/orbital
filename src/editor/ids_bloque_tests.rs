@@ -15,15 +15,20 @@ fn boveda(nombre: &str, texto: &str) -> (std::path::PathBuf, Arc<Vault>, RelPath
     fs::create_dir_all(root.join("raw")).unwrap();
     let rel = RelPath::new("wiki/nota.md").unwrap();
     fs::write(rel.to_path(&root), texto).unwrap();
-    (root.clone(), Arc::new(orbital_vault::open(&root).unwrap()), rel)
+    (
+        root.clone(),
+        Arc::new(orbital_vault::open(&root).unwrap()),
+        rel,
+    )
 }
 
 /// Cuántos ` ^xxxxxx` hay en un texto.
 fn ids(t: &str) -> usize {
     t.lines()
         .filter(|l| {
-            l.rsplit_once(" ^")
-                .is_some_and(|(_, id)| id.len() == 6 && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+            l.rsplit_once(" ^").is_some_and(|(_, id)| {
+                id.len() == 6 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
         })
         .count()
 }

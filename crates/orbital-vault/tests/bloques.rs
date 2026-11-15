@@ -195,16 +195,24 @@ fn sin_ids_conserva_lineas() {
 #[test]
 fn render_sin_ids() {
     use orbital_vault::render::{BlockKind, Inline, render_markdown};
-    let texto = "Un párrafo ^abc123\n\n- Ítem ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n\n> Cita ^cit001\n";
+    let texto =
+        "Un párrafo ^abc123\n\n- Ítem ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n\n> Cita ^cit001\n";
     let doc = render_markdown(texto);
-    assert_eq!(doc.blocks.len(), 4, "el párrafo `^tab001` se va: {:?}", doc.blocks);
+    assert_eq!(
+        doc.blocks.len(),
+        4,
+        "el párrafo `^tab001` se va: {:?}",
+        doc.blocks
+    );
     assert_eq!(doc.blocks[0].id.as_deref(), Some("abc123"));
     match &doc.blocks[0].kind {
         BlockKind::Paragraph(inl) => assert_eq!(inl, &vec![Inline::Text("Un párrafo".into())]),
         k => panic!("{k:?}"),
     }
     match &doc.blocks[1].kind {
-        BlockKind::List { items, .. } => assert_eq!(items[0].blocks[0].id.as_deref(), Some("def456")),
+        BlockKind::List { items, .. } => {
+            assert_eq!(items[0].blocks[0].id.as_deref(), Some("def456"))
+        }
         k => panic!("{k:?}"),
     }
     assert_eq!(doc.blocks[2].id.as_deref(), Some("tab001"));
@@ -214,7 +222,8 @@ fn render_sin_ids() {
 /// T015: buscar y listar, en `.md` y `.html`.
 #[test]
 fn buscar_y_listar() {
-    let md = "# T\n\nUn párrafo largo ^abc123\n\n- ítem uno ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n";
+    let md =
+        "# T\n\nUn párrafo largo ^abc123\n\n- ítem uno ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n";
     let (r, linea) = bloques::buscar(md, "def456", false).unwrap();
     assert_eq!(&md[r], "- ítem uno");
     assert_eq!(linea, 4);

@@ -218,6 +218,8 @@ mod tag_rename_tests {
             *window.0.vault.borrow_mut() = Some(vault.clone());
             window.0.vault_session.set(1);
             let editor = window.0.code_editor.clone();
+            // El guardado agrega ids de bloque (026): se comparan sin ellos.
+            let sin = |t: String| orbital_vault::bloques::sin_ids(&t).into_owned();
             editor.load(vault.clone(), &vault.read_note(&path).unwrap());
             let stale = vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path));
             editor.replace_text("#vieja con mis cambios\n");
@@ -225,17 +227,17 @@ mod tag_rename_tests {
                 .run_tag_edits(vault.clone(), 1, Arc::new(stale), false)
                 .await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#vieja con mis cambios\n"
             );
-            assert_eq!(editor.text(), "#vieja con mis cambios\n");
+            assert_eq!(sin(editor.text()), "#vieja con mis cambios\n");
 
             let plan =
                 Arc::new(vault.plan_tag_rename("vieja", "nueva", std::slice::from_ref(&path)));
             window
                 .run_tag_edits(vault.clone(), 1, plan.clone(), false)
                 .await;
-            assert_eq!(editor.text(), "#nueva con mis cambios\n");
+            assert_eq!(sin(editor.text()), "#nueva con mis cambios\n");
             let receipt = orbital_vault::WriteReceipt {
                 written: window
                     .0
@@ -252,15 +254,15 @@ mod tag_rename_tests {
                 .run_tag_edits(vault.clone(), 1, applied.clone(), true)
                 .await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#nueva con otros cambios\n"
             );
-            assert_eq!(editor.text(), "#nueva con otros cambios\n");
+            assert_eq!(sin(editor.text()), "#nueva con otros cambios\n");
             // Una nueva sesión no puede consumir el Deshacer de la anterior.
             window.0.vault_session.set(2);
             window.run_tag_edits(vault, 1, applied, true).await;
             assert_eq!(
-                std::fs::read_to_string(path.to_path(&root)).unwrap(),
+                sin(std::fs::read_to_string(path.to_path(&root)).unwrap()),
                 "#nueva con otros cambios\n"
             );
             window.0.window.destroy();
@@ -785,7 +787,10 @@ mod enlaces_bloque_tests {
             assert!(ms < 300, "SC-004: {ms} ms");
 
             // `[[#^fin001]]`: en la nota abierta.
-            window.open_link(Some(&RelPath::new("wiki/destino.md").unwrap()), "[[#^fin001]]");
+            window.open_link(
+                Some(&RelPath::new("wiki/destino.md").unwrap()),
+                "[[#^fin001]]",
+            );
             for _ in 0..100 {
                 if linea() == 603 {
                     break;

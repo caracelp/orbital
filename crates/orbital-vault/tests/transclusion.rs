@@ -225,7 +225,8 @@ fn incrustar_bloque() {
         ("wiki/n.md", origen),
         ("wiki/ciclo.md", "![[ciclo#^c00001]]\n\n^c00001\n"),
     ]);
-    let texto = "![[n#^par001]]\n\n![[n#^ite001]]\n\n![[n#^tab001]]\n\n![[n#^cit001]]\n\n![[n#^nohay1]]\n";
+    let texto =
+        "![[n#^par001]]\n\n![[n#^ite001]]\n\n![[n#^tab001]]\n\n![[n#^cit001]]\n\n![[n#^nohay1]]\n";
     let (e, deps) = embed(texto, &v, "wiki/c.md");
     let bloques = |x: &Embed| match x {
         Embed::Note { blocks, .. } => blocks.clone(),
@@ -246,7 +247,12 @@ fn incrustar_bloque() {
     }
     assert!(matches!(bloques(&e[2])[0].kind, BlockKind::Table { ref rows, .. } if rows.len() == 1));
     assert!(matches!(bloques(&e[3])[0].kind, BlockKind::Quote(_)));
-    assert_eq!(e[4], Embed::BlockMissing { path: rel("wiki/n.md") });
+    assert_eq!(
+        e[4],
+        Embed::BlockMissing {
+            path: rel("wiki/n.md")
+        }
+    );
     assert!(deps.contains(&rel("wiki/n.md")));
 
     // Ciclo: la nota se incrusta a sí misma por un bloque.
@@ -256,7 +262,10 @@ fn incrustar_bloque() {
         &dentro[0].kind,
         BlockKind::Transclusion(t) if matches!(t.content, Embed::Cycle { .. })
     );
-    assert!(hay_ciclo, "el bloque que se incrusta a sí mismo corta el ciclo: {dentro:?}");
+    assert!(
+        hay_ciclo,
+        "el bloque que se incrusta a sí mismo corta el ciclo: {dentro:?}"
+    );
 
     // La huella cambia si cambia el bloque de origen.
     let huella = |v: &Vault| {
@@ -265,6 +274,10 @@ fn incrustar_bloque() {
         fingerprint(&doc.blocks[0])
     };
     let antes = huella(&v);
-    fs::write(t.path().join("wiki/n.md"), origen.replace("buscado.", "cambiado.")).unwrap();
+    fs::write(
+        t.path().join("wiki/n.md"),
+        origen.replace("buscado.", "cambiado."),
+    )
+    .unwrap();
     assert_ne!(antes, huella(&v));
 }

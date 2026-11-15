@@ -706,7 +706,10 @@ pub fn buscar(texto: &str, id: &str, es_html: bool) -> Option<(Range<usize>, usi
         let (r, _, _) = etiquetas_html(texto)
             .into_iter()
             .find(|(_, i, _)| i.as_ref().is_some_and(|i| &texto[i.clone()] == id))?;
-        let linea = texto.as_bytes()[..r.start].iter().filter(|b| **b == b'\n').count();
+        let linea = texto.as_bytes()[..r.start]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
         return Some((r, linea));
     }
     escanear(texto)
@@ -724,7 +727,10 @@ pub fn listar(texto: &str, es_html: bool) -> Vec<BloqueConId> {
             .into_iter()
             .filter_map(|(r, id, _)| {
                 let id = id?;
-                linea += texto.as_bytes()[hasta..r.start].iter().filter(|b| **b == b'\n').count();
+                linea += texto.as_bytes()[hasta..r.start]
+                    .iter()
+                    .filter(|b| **b == b'\n')
+                    .count();
                 hasta = r.start;
                 Some(BloqueConId {
                     id: texto[id].to_owned(),
@@ -762,7 +768,11 @@ fn resumen_md(bloque: &str) -> String {
             .or_else(|| t.strip_prefix("+ "))
             .or_else(|| {
                 let n = t.bytes().take_while(u8::is_ascii_digit).count();
-                (n > 0).then(|| t[n..].strip_prefix(". ").or_else(|| t[n..].strip_prefix(") ")))?
+                (n > 0).then(|| {
+                    t[n..]
+                        .strip_prefix(". ")
+                        .or_else(|| t[n..].strip_prefix(") "))
+                })?
             })
             .unwrap_or(t);
         let t = t.trim();

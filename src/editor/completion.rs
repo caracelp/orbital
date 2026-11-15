@@ -180,7 +180,9 @@ pub fn filter_blocks<'a>(
     let q = orbital_vault::fold(query.trim());
     bloques
         .iter()
-        .filter(|b| q.is_empty() || b.id.starts_with(&q) || orbital_vault::fold(&b.resumen).contains(&q))
+        .filter(|b| {
+            q.is_empty() || b.id.starts_with(&q) || orbital_vault::fold(&b.resumen).contains(&q)
+        })
         .take(limit)
         .collect()
 }
@@ -606,7 +608,10 @@ mod tests {
         let texto = "La entropía mide. ^k3x9a1\n\n- Primer principio ^p2m8q4\n";
         let b = orbital_vault::bloques::listar(texto, false);
         let ids = |q: &str| -> Vec<String> {
-            filter_blocks(&b, q, 8).iter().map(|x| x.id.clone()).collect()
+            filter_blocks(&b, q, 8)
+                .iter()
+                .map(|x| x.id.clone())
+                .collect()
         };
         assert_eq!(ids(""), ["k3x9a1", "p2m8q4"]);
         assert_eq!(ids("p2"), ["p2m8q4"]);
