@@ -208,6 +208,12 @@ impl Reader {
                 text(end, &dim, " (creala desde el enlace)");
                 buf.insert(end, "\n");
             }
+            Embed::BlockMissing { .. } => {
+                self.inlines(s, end, &[link(t.target.clone())], &title);
+                let a = t.anchor.as_deref().unwrap_or("");
+                text(end, &dim, &format!(" no tiene el bloque «{a}»"));
+                buf.insert(end, "\n");
+            }
             Embed::SectionMissing { .. } => {
                 self.inlines(s, end, &[link(t.target.clone())], &title);
                 let a = t.anchor.as_deref().unwrap_or("");

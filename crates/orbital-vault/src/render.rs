@@ -133,6 +133,10 @@ pub enum Embed {
     SectionMissing {
         path: crate::RelPath,
     },
+    /// La nota existe pero no tiene un bloque con ese id (`![[nota#^id]]`, 026).
+    BlockMissing {
+        path: crate::RelPath,
+    },
     /// Una nota `.html`: no se incrusta en la vista formateada, se ofrece abrirla.
     Html {
         path: crate::RelPath,
@@ -464,6 +468,10 @@ fn extraer_ids(blocks: &mut Vec<Block>) {
                     t.truncate(corte);
                     if t.is_empty() {
                         inlines.pop();
+                        // `^id` solo en la última línea del párrafo: se va también el salto.
+                        if matches!(inlines.last(), Some(Inline::SoftBreak | Inline::HardBreak)) {
+                            inlines.pop();
+                        }
                     }
                 }
             }

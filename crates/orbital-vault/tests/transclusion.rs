@@ -215,3 +215,56 @@ fn card_html_for_html_notes() {
     let html = orbital_vault::transclusion::card_html("nada", None, &missing, &href);
     assert!(html.contains("Nota inexistente: «nada»"));
 }
+
+/// 026 T022: `![[nota#^id]]` incrusta solo ese bloque (párrafo, ítem con subítems, tabla), avisa si
+/// no existe, detecta ciclos y la huella cambia si cambia el bloque de origen.
+#[test]
+fn incrustar_bloque() {
+    let origen = "# T\n\nOtro párrafo.\n\nEl párrafo buscado. ^par001\n\n- uno\n- dos ^ite001\n  - sub\n\n| a |\n|---|\n| 1 |\n^tab001\n\n> cita ^cit001\n";
+    let (t, v) = vault(&[
+        ("wiki/n.md", origen),
+        ("wiki/ciclo.md", "![[ciclo#^c00001]]\n\n^c00001\n"),
+    ]);
+    let texto = "![[n#^par001]]\n\n![[n#^ite001]]\n\n![[n#^tab001]]\n\n![[n#^cit001]]\n\n![[n#^nohay1]]\n";
+    let (e, deps) = embed(texto, &v, "wiki/c.md");
+    let bloques = |x: &Embed| match x {
+        Embed::Note { blocks, .. } => blocks.clone(),
+        o => panic!("{o:?}"),
+    };
+    let p = bloques(&e[0]);
+    assert_eq!(p.len(), 1);
+    match &p[0].kind {
+        BlockKind::Paragraph(i) => assert_eq!(plain_text(i), "El párrafo buscado."),
+        k => panic!("{k:?}"),
+    }
+    match &bloques(&e[1])[0].kind {
+        BlockKind::List { items, .. } => {
+            assert_eq!(items.len(), 1, "solo el ítem buscado");
+            assert_eq!(items[0].blocks.len(), 2, "con su subítem");
+        }
+        k => panic!("{k:?}"),
+    }
+    assert!(matches!(bloques(&e[2])[0].kind, BlockKind::Table { ref rows, .. } if rows.len() == 1));
+    assert!(matches!(bloques(&e[3])[0].kind, BlockKind::Quote(_)));
+    assert_eq!(e[4], Embed::BlockMissing { path: rel("wiki/n.md") });
+    assert!(deps.contains(&rel("wiki/n.md")));
+
+    // Ciclo: la nota se incrusta a sí misma por un bloque.
+    let (e, _) = embed("![[ciclo#^c00001]]\n", &v, "wiki/c.md");
+    let dentro = bloques(&e[0]);
+    let hay_ciclo = matches!(
+        &dentro[0].kind,
+        BlockKind::Transclusion(t) if matches!(t.content, Embed::Cycle { .. })
+    );
+    assert!(hay_ciclo, "el bloque que se incrusta a sí mismo corta el ciclo: {dentro:?}");
+
+    // La huella cambia si cambia el bloque de origen.
+    let huella = |v: &Vault| {
+        let mut doc = render_markdown("![[n#^par001]]\n");
+        v.expand_transclusions(&rel("wiki/c.md"), &mut doc);
+        fingerprint(&doc.blocks[0])
+    };
+    let antes = huella(&v);
+    fs::write(t.path().join("wiki/n.md"), origen.replace("buscado.", "cambiado.")).unwrap();
+    assert_ne!(antes, huella(&v));
+}
