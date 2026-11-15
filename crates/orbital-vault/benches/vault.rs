@@ -422,3 +422,44 @@ fn render_interpolado_realista(bencher: divan::Bencher, kib: usize) {
         ))
     });
 }
+
+/// 026 SC-001: ids para todos los bloques de una nota de 100 KB sin ids (< 1 ms).
+#[divan::bench(sample_count = 50)]
+fn asignar_ids_100k(bencher: divan::Bencher) {
+    let unidad = "Un párrafo con algo de texto para medir el escáner de bloques.\n\n\
+- Un ítem de lista\n  - Un subítem\n- Otro ítem\n\n> Una cita\n> de dos líneas.\n\n\
+| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncódigo\n```\n\n";
+    let mut text = String::from("---\ntype: atomo\n---\n# Título\n\n");
+    while text.len() < 100 * 1024 {
+        text.push_str(unidad);
+    }
+    bencher.bench(|| orbital_vault::bloques::inserciones(divan::black_box(&text), &[]).len());
+}
+
+/// 026: solo el escáner de bloques sobre la misma nota (para separar su costo del de los ids).
+#[divan::bench(sample_count = 50)]
+fn escanear_bloques_100k(bencher: divan::Bencher) {
+    let unidad = "Un párrafo con algo de texto para medir el escáner de bloques.\n\n\
+- Un ítem de lista\n  - Un subítem\n- Otro ítem\n\n> Una cita\n> de dos líneas.\n\n\
+| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncódigo\n```\n\n";
+    let mut text = String::from("---\ntype: atomo\n---\n# Título\n\n");
+    while text.len() < 100 * 1024 {
+        text.push_str(unidad);
+    }
+    bencher.bench(|| orbital_vault::bloques::escanear(divan::black_box(&text)).len());
+}
+
+/// 026 SC-001 con una nota realista de 100 KB: párrafos de ~300 caracteres, alguna lista y alguna
+/// cita (≈ 450 bloques, contra ≈ 4900 de `asignar_ids_100k`).
+#[divan::bench(sample_count = 50)]
+fn asignar_ids_100k_realista(bencher: divan::Bencher) {
+    let parrafo = "La entropía de un sistema aislado nunca disminuye: es la forma más conocida del \
+segundo principio de la termodinámica. En notas de estudio, un párrafo así suele ocupar tres o \
+cuatro líneas, con algún enlace a [[otra nota]] y alguna #etiqueta para encontrarlo después.\n\n";
+    let unidad = format!("{parrafo}{parrafo}- Un ítem\n- Otro ítem\n\n{parrafo}> Una cita.\n\n");
+    let mut text = String::from("---\ntype: atomo\n---\n# Título\n\n");
+    while text.len() < 100 * 1024 {
+        text.push_str(&unidad);
+    }
+    bencher.bench(|| orbital_vault::bloques::inserciones(divan::black_box(&text), &[]).len());
+}
