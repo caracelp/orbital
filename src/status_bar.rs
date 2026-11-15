@@ -1,4 +1,4 @@
-//! Barra inferior de la interfaz v13 (025): versión, totales de la bóveda y contadores de la nota
+//! Barra inferior del diseño de interfaz (025): versión, totales de la bóveda y contadores de la nota
 //! (y de la selección). Plegable: plegada queda una pestañita con los contadores y el botón para
 //! volver a mostrarla, como en la maqueta.
 

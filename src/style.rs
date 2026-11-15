@@ -25,7 +25,7 @@ pub const CARD_BG: Rgb = Rgb(0x1e, 0x1e, 0x22);
 /// Fondo de las transclusiones `![[nota]]` en la vista formateada (rosado muy oscuro).
 pub const EMBED_BG: Rgb = Rgb(0x23, 0x18, 0x20);
 
-// Interfaz v13 (025): tonos de la maqueta `orbital_estructura_base_v13.html`.
+// Diseño de interfaz (025): tonos de la maqueta `orbital_estructura_base_v13.html`.
 /// Texto atenuado (etiquetas de sección, barra inferior, pestañas inactivas).
 pub const MUTED_FG: Rgb = Rgb(0x99, 0x94, 0x9e);
 /// Texto principal de la maqueta.
@@ -195,7 +195,7 @@ fn css() -> String {
     out
 }
 
-/// Estilos de la interfaz v13 (025): medidas y tonos de la maqueta. Los pesos de letra son los
+/// Estilos del diseño de interfaz (025): medidas y tonos de la maqueta. Los pesos de letra son los
 /// estándar (normal y 700): pesos intermedios como 650 o 750, y `font-feature-settings`, obligan a
 /// cargar otras caras de la fuente en la primera disposición (≈ 50 ms de arranque, medido). Por lo
 /// mismo, el texto chico usa un solo tamaño (11 px) y el planeta de la marca es un ícono de trazo.

@@ -553,7 +553,7 @@ mod medicion_pestanas {
 mod captura_v13 {
     use super::super::*;
 
-    /// Captura de la interfaz v13 a 1440×900 con una nota y cada modo de la barra derecha:
+    /// Captura del diseño de interfaz (025) a 1440×900 con una nota y cada modo de la barra derecha:
     /// `ORBITAL_CAPTURA_BOVEDA=<bóveda> ORBITAL_CAPTURA_NOTA=<ruta> ORBITAL_CAPTURA_DIR=<carpeta>`.
     #[test]
     #[ignore = "captura de desarrollo; requiere GTK"]

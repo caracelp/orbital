@@ -1,4 +1,4 @@
-//! Barra derecha de la interfaz v13 (025) con tres modos, como la maqueta:
+//! Barra derecha del diseño de interfaz (025) con tres modos, como la maqueta:
 //! - **Propiedades**: «Metadatos de la nota» (Nombre, Formato, Ubicación, Palabras) y «Etiquetas».
 //! - **Contexto**: retroenlaces con fragmento (el panel de la 003), «Enlaces entrantes» y
 //!   «Etiquetas».

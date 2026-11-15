@@ -1,4 +1,4 @@
-//! Íconos de trazo de la interfaz v13 (025): los mismos trazos SVG de 24×24 de la maqueta,
+//! Íconos de trazo del diseño de interfaz (025): los mismos trazos SVG de 24×24 de la maqueta,
 //! dibujados con `gsk::Path` en el color del texto del widget (como `currentColor`). Sin archivos
 //! ni recursos: cada trazo se interpreta una sola vez por hilo y se reutiliza.
 

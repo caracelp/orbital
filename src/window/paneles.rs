@@ -1,4 +1,4 @@
-//! Pestañas de notas y barra derecha de la interfaz v13 (025).
+//! Pestañas de notas y barra derecha del diseño de interfaz (025).
 
 use super::*;
 
