@@ -100,9 +100,12 @@ impl RightSidebar {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
         content.append(&header);
         content.append(&revealer);
+        // Va dentro del modo Contexto de la barra derecha (025), que ya desplaza: toma su alto
+        // natural en vez de encogerse a cero.
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
             .child(&content)
             .build();
         root.append(&scroller);

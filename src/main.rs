@@ -5,6 +5,8 @@ mod html_view;
 mod iconos;
 mod onstage;
 mod open_dialog;
+mod panel_derecho;
+mod pestanas;
 mod preferences;
 mod search_panel;
 mod state;

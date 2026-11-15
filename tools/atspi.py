@@ -61,6 +61,12 @@ def find(role, name):
     a = app()
     if a is None:
         return None
+    # El cliente AT-SPI guarda en caché los hijos de cada nodo: sin limpiarla, una espera que
+    # empezó antes de que apareciera un diálogo nunca lo ve.
+    try:
+        a.clear_cache()
+    except Exception:
+        pass
     for node, _ in walk(a):
         try:
             r = node.get_role_name()

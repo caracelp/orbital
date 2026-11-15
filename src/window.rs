@@ -34,6 +34,10 @@ struct Inner {
     status: crate::status_bar::StatusBar,
     /// Sección «Recientes» del explorador y sus rutas (las cinco últimas notas abiertas).
     recent_list: gtk::Box,
+    panel: crate::panel_derecho::PanelDerecho,
+    pestanas: crate::pestanas::Pestanas,
+    /// Estado de vista para reponer cuando cargue la nota de esa pestaña.
+    estado_pendiente: RefCell<Option<(RelPath, crate::pestanas::Estado)>>,
     recientes: RefCell<Vec<String>>,
     /// Lo que muestra la sección ahora: se reconstruye solo si cambia (reabrir la misma nota, o
     /// recargar la lista por un cambio en disco, no toca los widgets).
@@ -390,6 +394,9 @@ impl Window {
         }
         content_header.pack_end(&view_button);
         let content_view = adw::ToolbarView::new();
+        // Pestañas de notas (025) arriba de la barra de la nota.
+        let pestanas = crate::pestanas::Pestanas::new();
+        content_view.add_top_bar(pestanas.barra());
         content_view.add_top_bar(&content_header);
         // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.
         // Dos avisos fijos: AT-SPI (y Orca) no ven un botón que se agrega después de crear el aviso.
@@ -405,9 +412,11 @@ impl Window {
         content_view.add_top_bar(&note_banner);
         // Panel derecho de retroenlaces, debajo de la cabecera de la nota (Ctrl+Mayús+B).
         let right = crate::editor::right_sidebar::RightSidebar::new();
+        // Barra derecha de tres modos (025): Propiedades, Contexto (los retroenlaces) y Grafo.
+        let panel = crate::panel_derecho::PanelDerecho::new(&right);
         let right_split = adw::OverlaySplitView::builder()
             .content(&content_stack)
-            .sidebar(right.widget())
+            .sidebar(panel.widget())
             .sidebar_position(gtk::PackType::End)
             .show_sidebar(true)
             .min_sidebar_width(280.0)
@@ -765,6 +774,9 @@ impl Window {
             split,
             status,
             recent_list,
+            panel,
+            pestanas,
+            estado_pendiente: RefCell::new(None),
             recientes: RefCell::new(Vec::new()),
             recientes_vistos: RefCell::new(None),
             tree_reversed: Cell::new(false),
@@ -957,6 +969,21 @@ impl Window {
         this.setup_editor();
         this.setup_list();
         this.setup_status_counts();
+        this.setup_pestanas();
+        {
+            let weak = Rc::downgrade(&this.0);
+            this.0.panel.connect_modo(move |_| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).refresh_panel();
+                }
+            });
+            let weak = Rc::downgrade(&this.0);
+            this.0.panel.connect_abrir(move |ruta| {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).show_path(ruta);
+                }
+            });
+        }
         this
     }
 
@@ -1427,6 +1454,7 @@ impl Window {
             .is_none_or(|current| current.root() != vault.root())
         {
             self.0.vault_session.set(self.0.vault_session.get() + 1);
+            self.0.pestanas.limpiar();
         }
         let i = &self.0;
         self.fill_new_menu(&meta.templates);
@@ -1557,6 +1585,7 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        self.guardar_estado_pestana();
         let this = self.clone();
         glib::spawn_future_local(async move {
             // Antes de cambiar de nota, se guarda lo pendiente de la anterior (FR-002).
@@ -1594,6 +1623,8 @@ impl Window {
             };
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
+            i.pestanas
+                .abrir(entry.path.as_str(), entry.path.file_name());
             this.refresh_backlinks();
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();
@@ -1756,6 +1787,7 @@ impl Window {
             }
         }
         *i.current_note.borrow_mut() = Some(note);
+        self.refresh_panel();
     }
 
     /// Abre una nota `.md` en la vista Código. Si ya está abierta (por ejemplo, al recargar la
@@ -1778,12 +1810,24 @@ impl Window {
                 i.pending_line.set(Some((path, line)));
             }
         }
+        let pendiente = i.estado_pendiente.borrow_mut().take();
+        if let Some((path, (cursor, scroll, vista))) = pendiente
+            && path == note.path
+        {
+            i.code_editor
+                .restaurar_vista(cursor, scroll, vista.as_deref());
+        }
     }
 
     /// Arma el modelo del árbol de la bóveda (con el orden elegido) y conserva las carpetas que
     /// estaban abiertas.
     fn set_list_model(&self, tree: Rc<Tree>) {
         let i = &self.0;
+        // Pestañas de notas que ya no existen (borradas, archivadas o renombradas afuera).
+        {
+            let this = self.clone();
+            i.pestanas.quitar(move |clave| this.entry(clave).is_none());
+        }
         let reversed = i.tree_reversed.get();
         let root = children_model(&tree, "", reversed);
         let tree_model = gtk::TreeListModel::new(root, false, false, move |item| {
@@ -1861,6 +1905,11 @@ impl Window {
                         .selection_bounds()
                         .map(|(a, z)| crate::status_bar::contar(&b.text(&a, &z, false)));
                     i.status.set_contadores(total, seleccion);
+                    let en_editor = i.current_entry.borrow().as_ref().map(|e| &e.path)
+                        == i.code_editor.current_path().as_ref();
+                    if en_editor {
+                        i.panel.set_palabras(total.1);
+                    }
                 });
             }
         };
@@ -3016,6 +3065,8 @@ impl Window {
     /// Abre la página del grafo (008) y construye sus datos si no los tiene.
     pub fn ver_grafo(&self) {
         let i = &self.0;
+        self.guardar_estado_pestana();
+        i.pestanas.abrir(crate::pestanas::CONEXIONES, "Conexiones");
         if i.grafo_datos.borrow().is_none() {
             let graph = i.graph.borrow().clone();
             self.reconstruir_grafo_visual(graph.as_ref());
@@ -3025,7 +3076,210 @@ impl Window {
 
     /// Cierra el grafo y vuelve a la nota (Esc: SC-3, nada cambia).
     pub fn cerrar_grafo(&self) {
-        self.0.content_stack.set_visible_child_name("codigo");
+        // Cerrar el grafo es cerrar su pestaña: la barra elige la vecina (y la abre).
+        self.0.pestanas.cerrar(crate::pestanas::CONEXIONES);
+    }
+
+    /// Guarda el estado de vista de la nota del editor en su pestaña (antes de dejarla).
+    fn guardar_estado_pestana(&self) {
+        let i = &self.0;
+        if i.content_stack.visible_child_name().as_deref() != Some("codigo") {
+            return;
+        }
+        if let Some(path) = i.code_editor.current_path() {
+            i.pestanas
+                .guardar_estado(path.as_str(), i.code_editor.estado_vista());
+        }
+    }
+
+    /// Barra derecha (025): metadatos y etiquetas de la nota abierta, enlaces entrantes y, con
+    /// su modo a la vista, el grafo local (armado en segundo plano).
+    fn refresh_panel(&self) {
+        use crate::panel_derecho::Metadatos;
+        let i = &self.0;
+        if !i.right_split.shows_sidebar() {
+            return;
+        }
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            i.panel.set_nota(None);
+            i.panel.set_entrantes(&[]);
+            i.panel
+                .set_grafo(None, "Abrí una nota para ver sus conexiones.");
+            return;
+        };
+        let file = entry.path.file_name();
+        let formato = Format::from_name(file);
+        let meta = {
+            let note = i.current_note.borrow();
+            let note = note.as_ref().filter(|n| n.path == entry.path);
+            let nombre = note
+                .and_then(|n| n.prop("title"))
+                .and_then(|v| v.as_text())
+                .map(str::to_owned)
+                .unwrap_or_else(|| file.rsplit_once('.').map_or(file, |(s, _)| s).to_owned());
+            let palabras = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
+                let b = i.code_editor.buffer();
+                Some(crate::status_bar::contar(&b.text(&b.start_iter(), &b.end_iter(), false)).1)
+            } else {
+                note.map(|n| crate::status_bar::contar(&n.source).1)
+            };
+            let mut etiquetas: Vec<String> = Vec::new();
+            if let Some(n) = note {
+                for t in orbital_vault::tags::extract_tags(&n.source, n.format == Format::Html) {
+                    if !etiquetas.contains(&t.tag) {
+                        etiquetas.push(t.tag);
+                    }
+                }
+            }
+            Metadatos {
+                nombre,
+                formato: match formato {
+                    Some(Format::Md) => "Markdown".to_owned(),
+                    Some(Format::Html) => "HTML".to_owned(),
+                    None => file
+                        .rsplit_once('.')
+                        .map_or_else(|| "Archivo".to_owned(), |(_, e)| e.to_uppercase()),
+                },
+                ubicacion: entry
+                    .path
+                    .as_str()
+                    .rsplit_once('/')
+                    .map_or_else(|| "/".to_owned(), |(d, _)| d.to_owned()),
+                palabras,
+                etiquetas,
+            }
+        };
+        i.panel.set_nota(Some(meta));
+        let graph = i.graph.borrow().clone();
+        let Some(graph) = graph else {
+            i.panel.set_entrantes(&[]);
+            i.panel.set_grafo(None, "Armando las conexiones…");
+            return;
+        };
+        let mut entrantes: Vec<RelPath> = match graph.lock() {
+            Ok(g) => g
+                .backlinks_for(&entry.path)
+                .iter()
+                .map(|b| b.from.clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        entrantes.sort();
+        entrantes.dedup();
+        i.panel.set_entrantes(&entrantes);
+        if i.panel.modo() != "grafo" {
+            return;
+        }
+        if formato.is_none() {
+            i.panel
+                .set_grafo(None, "Los archivos que no son notas no tienen enlaces.");
+            return;
+        }
+        let this = self.clone();
+        let centro = entry.path.clone();
+        glib::spawn_future_local(async move {
+            let c = centro.clone();
+            let datos = gio::spawn_blocking(move || {
+                let g = graph.lock().ok()?;
+                let enlaces: Vec<(String, String)> = g
+                    .enlaces_resueltos()
+                    .into_iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect();
+                let vecinos: Vec<String> = enlaces
+                    .iter()
+                    .filter_map(|(a, b)| {
+                        if *a == c.as_str() {
+                            Some(b.clone())
+                        } else if *b == c.as_str() {
+                            Some(a.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Some(crate::grafo::GrafoDatos::local(
+                    c.to_string(),
+                    vecinos,
+                    &enlaces,
+                ))
+            })
+            .await
+            .ok()
+            .flatten();
+            // La nota pudo cambiar mientras tanto.
+            let sigue = this.0.current_entry.borrow().as_ref().map(|e| &e.path) == Some(&centro);
+            if !sigue {
+                return;
+            }
+            match datos {
+                Some(d) if d.rutas.len() > 1 => this.0.panel.set_grafo(Some(Rc::new(d)), ""),
+                Some(d) => this.0.panel.set_grafo(
+                    Some(Rc::new(d)),
+                    "Ninguna nota se conecta con esta todavía.",
+                ),
+                None => this
+                    .0
+                    .panel
+                    .set_grafo(None, "No se pudieron leer las conexiones."),
+            }
+        });
+    }
+
+    /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
+    /// el centro vacío (guardando antes lo pendiente).
+    fn setup_pestanas(&self) {
+        let weak = Rc::downgrade(&self.0);
+        self.0.pestanas.connect_elegir(move |clave, estado| {
+            let Some(i) = weak.upgrade() else { return };
+            let w = Window(i);
+            if clave == crate::pestanas::CONEXIONES {
+                w.ver_grafo();
+                return;
+            }
+            w.guardar_estado_pestana();
+            if let (Some(estado), Ok(path)) = (estado, RelPath::new(clave)) {
+                *w.0.estado_pendiente.borrow_mut() = Some((path, estado));
+            }
+            w.show_path(clave);
+        });
+        let weak = Rc::downgrade(&self.0);
+        self.0.pestanas.connect_cerrar(move |clave, quedan| {
+            let Some(i) = weak.upgrade() else { return };
+            if quedan {
+                return;
+            }
+            let w = Window(i);
+            if clave == crate::pestanas::CONEXIONES && w.0.code_editor.current_path().is_some() {
+                // Quedó solo la nota del editor sin pestaña: se vuelve a ella.
+                if let Some(e) = w.0.current_entry.borrow().clone() {
+                    w.0.pestanas.abrir(e.path.as_str(), e.path.file_name());
+                }
+                w.0.content_stack.set_visible_child_name("codigo");
+                return;
+            }
+            glib::spawn_future_local(async move {
+                let editor = w.0.code_editor.clone();
+                editor.flush().await;
+                if editor.has_pending() {
+                    w.toast("La nota tiene cambios sin guardar: quedó abierta");
+                    if let Some(e) = w.0.current_entry.borrow().clone() {
+                        w.0.pestanas.abrir(e.path.as_str(), e.path.file_name());
+                    }
+                    return;
+                }
+                editor.close();
+                *w.0.current_entry.borrow_mut() = None;
+                *w.0.current_note.borrow_mut() = None;
+                w.0.content_title.set_title("");
+                w.0.content_title.set_subtitle("");
+                if let Some(model) = w.0.list_view.model().and_downcast::<gtk::SingleSelection>() {
+                    model.set_selected(gtk::INVALID_LIST_POSITION);
+                }
+                w.0.content_stack.set_visible_child_name("vacio");
+                w.refresh_backlinks();
+            });
+        });
     }
 
     /// Presenta la nota abierta como diapositivas (OnStage, 014): solo notas `.md`.
@@ -3202,6 +3456,7 @@ impl Window {
         if !i.right_split.shows_sidebar() {
             return;
         }
+        self.refresh_panel();
         let path = i
             .current_entry
             .borrow()
@@ -5584,6 +5839,254 @@ mod search_open_tests {
             );
             window.0.window.destroy();
             std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod pestanas_tests {
+    use super::*;
+    use crate::pestanas::CONEXIONES;
+
+    async fn esperar(cond: impl Fn() -> bool) {
+        for _ in 0..150 {
+            if cond() {
+                return;
+            }
+            glib::timeout_future(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 025 US3: abrir notas crea pestañas; elegir una repone su nota con cursor y vista;
+    /// «Conexiones» es una pestaña; cerrar la última deja el centro vacío.
+    #[test]
+    #[ignore = "requiere GTK/DBus"]
+    fn us3_pestanas_editor_compartido() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.PestanasTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-025-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            let texto: String = (1..=60).map(|n| format!("línea {n}\n")).collect();
+            std::fs::write(root.join("wiki/a.md"), &texto).unwrap();
+            std::fs::write(root.join("wiki/b.md"), &texto).unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            let ruta = || window.0.code_editor.current_path().map(|p| p.to_string());
+
+            window.show_path("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            window.show_path("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            assert_eq!(window.0.pestanas.claves(), ["wiki/a.md", "wiki/b.md"]);
+            assert_eq!(window.0.pestanas.actual().as_deref(), Some("wiki/b.md"));
+
+            // Cursor en la línea 40 de b; ir a a y volver repone el cursor y la vista.
+            window.0.code_editor.restaurar_vista(
+                window
+                    .0
+                    .code_editor
+                    .buffer()
+                    .iter_at_line(39)
+                    .unwrap()
+                    .offset(),
+                0.0,
+                Some("dividida"),
+            );
+            window.0.pestanas.elegir("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            assert_eq!(ruta().as_deref(), Some("wiki/a.md"));
+            window.0.pestanas.elegir("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            esperar(|| window.0.code_editor.cursor_line() == 40).await;
+            assert_eq!(window.0.code_editor.cursor_line(), 40, "cursor repuesto");
+            assert_eq!(
+                window.0.code_editor.estado_vista().2.as_deref(),
+                Some("dividida"),
+                "vista repuesta"
+            );
+
+            // Conexiones como pestaña; cerrarla vuelve a la nota.
+            window.ver_grafo();
+            assert_eq!(
+                window.0.pestanas.claves(),
+                ["wiki/a.md", "wiki/b.md", CONEXIONES]
+            );
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("grafo")
+            );
+            window.cerrar_grafo();
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("codigo"))
+                .await;
+            assert_eq!(window.0.pestanas.claves(), ["wiki/a.md", "wiki/b.md"]);
+
+            // Cerrar la pestaña abierta abre la vecina; cerrar la última deja el centro vacío.
+            window.0.pestanas.cerrar("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            assert_eq!(ruta().as_deref(), Some("wiki/a.md"));
+            window.0.pestanas.cerrar("wiki/a.md");
+            esperar(|| window.0.content_stack.visible_child_name().as_deref() == Some("vacio"))
+                .await;
+            assert_eq!(
+                window.0.content_stack.visible_child_name().as_deref(),
+                Some("vacio")
+            );
+            assert!(ruta().is_none());
+
+            // Una nota borrada afuera pierde su pestaña al recargar la lista.
+            window.show_path("wiki/a.md");
+            esperar(|| ruta().as_deref() == Some("wiki/a.md")).await;
+            window.show_path("wiki/b.md");
+            esperar(|| ruta().as_deref() == Some("wiki/b.md")).await;
+            std::fs::remove_file(root.join("wiki/a.md")).unwrap();
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            assert_eq!(window.0.pestanas.claves(), ["wiki/b.md"]);
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod medicion_pestanas {
+    use super::*;
+
+    /// SC-003 de la 025: cambiar de pestaña entre dos notas de 100 KB (hasta que el editor
+    /// tiene la otra nota cargada y a la vista). En release:
+    /// `cargo test --release --bin orbital sc3_cambio_pestana -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "medición; requiere GTK"]
+    fn sc3_cambio_pestana() {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.MedirPestanas")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-sc3-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            std::fs::create_dir_all(root.join("raw")).unwrap();
+            let mut texto = String::from("---\ntype: atomo\n---\n# Grande\n\n");
+            let mut n = 0;
+            while texto.len() < 100 * 1024 {
+                texto.push_str(&format!(
+                    "Párrafo {n} con texto de prueba y una #etiqueta y [[otra]].\n\n"
+                ));
+                n += 1;
+            }
+            std::fs::write(root.join("wiki/a.md"), &texto).unwrap();
+            std::fs::write(root.join("wiki/b.md"), &texto).unwrap();
+            let window = Window::new(&app);
+            window.set_persist(false);
+            let v = orbital_vault::open(&root).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            let ruta = || window.0.code_editor.current_path().map(|p| p.to_string());
+            for nota in ["wiki/a.md", "wiki/b.md"] {
+                window.show_path(nota);
+                while ruta().as_deref() != Some(nota) {
+                    glib::timeout_future(std::time::Duration::from_millis(5)).await;
+                }
+            }
+            glib::timeout_future(std::time::Duration::from_millis(500)).await;
+            let mut ms = Vec::new();
+            for k in 0..10 {
+                let nota = if k % 2 == 0 { "wiki/a.md" } else { "wiki/b.md" };
+                let t = std::time::Instant::now();
+                window.0.pestanas.elegir(nota);
+                while ruta().as_deref() != Some(nota) {
+                    glib::timeout_future(std::time::Duration::from_millis(1)).await;
+                }
+                ms.push(t.elapsed().as_secs_f64() * 1000.0);
+                glib::timeout_future(std::time::Duration::from_millis(200)).await;
+            }
+            ms.sort_by(f64::total_cmp);
+            println!(
+                "PESTANA 100 KB: mediana {:.1} ms, máx {:.1} ms",
+                ms[ms.len() / 2],
+                ms[ms.len() - 1]
+            );
+            window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+#[cfg(test)]
+mod captura_v13 {
+    use super::*;
+
+    /// Captura de la interfaz v13 a 1440×900 con una nota y cada modo de la barra derecha:
+    /// `ORBITAL_CAPTURA_BOVEDA=<bóveda> ORBITAL_CAPTURA_NOTA=<ruta> ORBITAL_CAPTURA_DIR=<carpeta>`.
+    #[test]
+    #[ignore = "captura de desarrollo; requiere GTK"]
+    fn captura_modos_panel() {
+        let (Some(boveda), Some(nota), Some(dir)) = (
+            std::env::var_os("ORBITAL_CAPTURA_BOVEDA"),
+            std::env::var("ORBITAL_CAPTURA_NOTA").ok(),
+            std::env::var_os("ORBITAL_CAPTURA_DIR"),
+        ) else {
+            return;
+        };
+        adw::init().expect("se necesita acceso a GTK");
+        crate::style::apply();
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.CapturaV13")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.0.window.set_default_size(1440, 900);
+            let v = orbital_vault::open(std::path::Path::new(&boveda)).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            for _ in 0..100 {
+                if window.0.graph.borrow().is_some() {
+                    break;
+                }
+                glib::timeout_future(std::time::Duration::from_millis(30)).await;
+            }
+            window.show_path(&nota);
+            glib::timeout_future(std::time::Duration::from_millis(900)).await;
+            for modo in ["propiedades", "contexto", "grafo"] {
+                window.0.panel.set_modo(modo);
+                glib::timeout_future(std::time::Duration::from_millis(700)).await;
+                let ancho = window.0.window.width();
+                let alto = window.0.window.height();
+                let pintable = gtk::WidgetPaintable::new(Some(&window.0.window));
+                let snap = gtk::Snapshot::new();
+                pintable.snapshot(&snap, f64::from(ancho), f64::from(alto));
+                let node = snap.to_node().expect("cuadro");
+                let png = std::path::Path::new(&dir).join(format!("v13-{modo}.png"));
+                window
+                    .0
+                    .window
+                    .renderer()
+                    .unwrap()
+                    .render_texture(&node, None)
+                    .save_to_png(png)
+                    .unwrap();
+            }
+            window.0.window.destroy();
         });
     }
 }
