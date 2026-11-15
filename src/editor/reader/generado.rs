@@ -54,6 +54,7 @@ pub fn complete_generated(
                     task: None,
                     blocks: vec![Block {
                         line: 0,
+                        id: None,
                         source: 0..0,
                         kind: BlockKind::Paragraph(vec![Inline::Link {
                             url: url.to_owned(),
@@ -66,6 +67,7 @@ pub fn complete_generated(
                         task: None,
                         blocks: vec![Block {
                             line: 0,
+                            id: None,
                             source: 0..0,
                             kind: BlockKind::Paragraph(vec![Inline::Text(description.to_owned())]),
                         }],
@@ -76,6 +78,7 @@ pub fn complete_generated(
                         task: None,
                         blocks: vec![Block {
                             line: 0,
+                            id: None,
                             source: 0..0,
                             kind: BlockKind::Paragraph(vec![Inline::Text(host.to_owned())]),
                         }],
@@ -189,6 +192,7 @@ pub(super) fn toc_items(
             task: None,
             blocks: vec![Block {
                 line: 0,
+                id: None,
                 source: 0..0,
                 kind: BlockKind::Paragraph(vec![Inline::Link {
                     url: format!("/{}#{}", ruta_sin_wiki(path), titulo),
@@ -200,6 +204,7 @@ pub(super) fn toc_items(
             let cerrada = pilas.pop().expect("verificada no vacía");
             let lista = Block {
                 line: 0,
+                id: None,
                 source: 0..0,
                 kind: BlockKind::List {
                     start: None,
@@ -232,6 +237,7 @@ pub(super) fn toc_items(
         let cerrada = pilas.pop().expect("verificada no vacía");
         let lista = Block {
             line: 0,
+            id: None,
             source: 0..0,
             kind: BlockKind::List {
                 start: None,
@@ -271,6 +277,7 @@ pub(super) fn indice_items(
         }
         let mut blocks = vec![Block {
             line: 0,
+            id: None,
             source: 0..0,
             kind: BlockKind::Paragraph(vec![Inline::Link {
                 url: format!("orbital-tag:{}", child.path),
@@ -279,6 +286,7 @@ pub(super) fn indice_items(
         }];
         blocks.push(Block {
             line: 0,
+            id: None,
             source: 0..0,
             kind: BlockKind::List {
                 start: None,
@@ -294,6 +302,7 @@ pub(super) fn indice_items(
 pub(super) fn nota_item(path: &orbital_vault::RelPath) -> Block {
     Block {
         line: 0,
+        id: None,
         source: 0..0,
         kind: BlockKind::Paragraph(vec![Inline::Link {
             url: format!("/{}", ruta_sin_wiki(path)),

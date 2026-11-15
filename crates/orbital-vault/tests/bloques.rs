@@ -179,3 +179,34 @@ fn html_atributo_id() {
     assert!(nuevo.contains("<div>No</div>"));
     assert!(bloques::inserciones_html(&nuevo, &[]).is_empty());
 }
+
+/// FR-014: el texto para la búsqueda no tiene ids y conserva las líneas.
+#[test]
+fn sin_ids_conserva_lineas() {
+    let con = bloques::aplicar(NOTA, &bloques::inserciones(NOTA, &[]));
+    let sin = bloques::sin_ids(&con);
+    assert_eq!(sin.lines().count(), con.lines().count());
+    assert!(!sin.contains('^') || !sin.lines().any(|l| l.trim_start().starts_with('^')));
+    assert!(sin.contains("de un sistema aislado.\n"));
+    assert!(sin.contains("- Primer principio\n"));
+}
+
+/// El render guarda el id en el bloque y no lo muestra.
+#[test]
+fn render_sin_ids() {
+    use orbital_vault::render::{BlockKind, Inline, render_markdown};
+    let texto = "Un párrafo ^abc123\n\n- Ítem ^def456\n\n| a |\n|---|\n| 1 |\n^tab001\n\n> Cita ^cit001\n";
+    let doc = render_markdown(texto);
+    assert_eq!(doc.blocks.len(), 4, "el párrafo `^tab001` se va: {:?}", doc.blocks);
+    assert_eq!(doc.blocks[0].id.as_deref(), Some("abc123"));
+    match &doc.blocks[0].kind {
+        BlockKind::Paragraph(inl) => assert_eq!(inl, &vec![Inline::Text("Un párrafo".into())]),
+        k => panic!("{k:?}"),
+    }
+    match &doc.blocks[1].kind {
+        BlockKind::List { items, .. } => assert_eq!(items[0].blocks[0].id.as_deref(), Some("def456")),
+        k => panic!("{k:?}"),
+    }
+    assert_eq!(doc.blocks[2].id.as_deref(), Some("tab001"));
+    assert_eq!(doc.blocks[3].id.as_deref(), Some("cit001"));
+}

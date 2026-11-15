@@ -139,7 +139,7 @@ fn fin_frontmatter(texto: &str) -> usize {
 }
 
 /// `^id` al final de la línea (separado por un espacio): bytes del id sin el `^`.
-fn id_al_final(linea: &str, base: usize) -> Option<Range<usize>> {
+pub(crate) fn id_al_final(linea: &str, base: usize) -> Option<Range<usize>> {
     let t = linea.trim_end();
     let inicio = t.rfind('^')?;
     let id = &t[inicio + 1..];
@@ -504,6 +504,37 @@ pub fn inserciones(texto: &str, excluir: &[Range<usize>]) -> Vec<Edicion> {
     // Los bloques salen en orden: de atrás hacia adelante es darlos vuelta.
     out.reverse();
     out
+}
+
+/// El texto de una nota `.md` sin los identificadores de bloque, con las mismas líneas (una línea que
+/// era solo `^id` queda vacía): para la búsqueda, que no tiene que encontrarlos (FR-014).
+pub fn sin_ids(texto: &str) -> std::borrow::Cow<'_, str> {
+    let mut quitar: Vec<Range<usize>> = escanear(texto)
+        .into_iter()
+        .filter_map(|b| b.id)
+        .map(|r| {
+            // Desde el espacio antes de `^` (o desde `^` si está solo en su línea).
+            let caret = r.start - 1;
+            let desde = if caret > 0 && texto.as_bytes()[caret - 1] == b' ' {
+                caret - 1
+            } else {
+                caret
+            };
+            desde..r.end
+        })
+        .collect();
+    if quitar.is_empty() {
+        return std::borrow::Cow::Borrowed(texto);
+    }
+    quitar.sort_by_key(|r| r.start);
+    let mut out = String::with_capacity(texto.len());
+    let mut desde = 0;
+    for r in quitar {
+        out.push_str(&texto[desde..r.start]);
+        desde = r.end;
+    }
+    out.push_str(&texto[desde..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// Aplica ediciones (ordenadas de atrás hacia adelante) a un texto.

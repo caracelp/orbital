@@ -499,7 +499,8 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
     let content = if is_html {
         html_text(text)
     } else {
-        text.to_string()
+        // Los identificadores de bloque (`^id`, 026) no cuentan para la búsqueda.
+        crate::bloques::sin_ids(text).into_owned()
     };
 
     let folded = fold(&content);

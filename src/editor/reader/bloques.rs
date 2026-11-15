@@ -130,6 +130,7 @@ impl Reader {
                     },
                     source: g.source.clone(),
                     line: b.line,
+                    id: None,
                 },
                 depth,
             ),

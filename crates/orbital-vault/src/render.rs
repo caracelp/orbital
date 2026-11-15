@@ -24,6 +24,8 @@ pub struct Block {
     pub source: Range<usize>,
     /// Línea (desde 0) donde empieza el bloque.
     pub line: usize,
+    /// Identificador de bloque (`^id`, 026): se quita del texto que se muestra.
+    pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -431,8 +433,85 @@ fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc
         tags,
     };
     let mut i = 0;
-    let blocks = parse_blocks(&ctx, &events, &mut i, None);
+    let mut blocks = parse_blocks(&ctx, &events, &mut i, None);
+    extraer_ids(&mut blocks);
     RenderDoc { blocks }
+}
+
+/// Saca los identificadores de bloque (`^id`, 026) del texto que se muestra y los guarda en cada
+/// bloque: ` ^id` al final de un párrafo (también dentro de ítems, citas y callouts) y los párrafos
+/// que son solo `^id`, que pasan su id al bloque anterior (tablas, código).
+fn extraer_ids(blocks: &mut Vec<Block>) {
+    let mut n = 0;
+    while n < blocks.len() {
+        let b = &mut blocks[n];
+        match &mut b.kind {
+            BlockKind::Paragraph(inlines) => {
+                if let [Inline::Text(t)] = inlines.as_slice()
+                    && let Some(id) = solo_id(t)
+                {
+                    if n > 0 {
+                        blocks[n - 1].id = Some(id);
+                    }
+                    blocks.remove(n);
+                    continue;
+                }
+                if let Some(Inline::Text(t)) = inlines.last_mut()
+                    && let Some(r) = crate::bloques::id_al_final(t, 0)
+                {
+                    b.id = Some(t[r.clone()].to_owned());
+                    let corte = t[..r.start - 1].trim_end().len();
+                    t.truncate(corte);
+                    if t.is_empty() {
+                        inlines.pop();
+                    }
+                }
+            }
+            BlockKind::Quote(body) | BlockKind::Callout { body, .. } => {
+                extraer_ids(body);
+                // El id del último párrafo de una cita o un callout es el de todo el bloque.
+                if let Some(id) = body.last().and_then(|p| p.id.clone()) {
+                    b.id = Some(id);
+                }
+            }
+            BlockKind::List { items, .. } => {
+                for item in items {
+                    extraer_ids(&mut item.blocks);
+                }
+            }
+            // En GFM, una línea `^id` pegada a la tabla es su última fila: una sola celda con el id.
+            BlockKind::Table { rows, .. } => {
+                if let Some(fila) = rows.last()
+                    && let Some(id) = fila_de_id(fila)
+                {
+                    b.id = Some(id);
+                    rows.pop();
+                }
+            }
+            _ => {}
+        }
+        n += 1;
+    }
+}
+
+/// Una fila de tabla cuya primera celda es solo `^id` y las demás están vacías.
+fn fila_de_id(fila: &[Vec<Inline>]) -> Option<String> {
+    let (primera, resto) = fila.split_first()?;
+    if !resto.iter().all(Vec::is_empty) {
+        return None;
+    }
+    match primera.as_slice() {
+        [Inline::Text(t)] => solo_id(t),
+        _ => None,
+    }
+}
+
+/// Un texto que es solo `^id`.
+fn solo_id(t: &str) -> Option<String> {
+    let t = t.trim();
+    let id = t.strip_prefix('^')?;
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .then(|| id.to_owned())
 }
 
 fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> Vec<Block> {
@@ -564,6 +643,7 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
             kind,
             source: abs,
             line,
+            id: None,
         });
     }
     out
@@ -600,6 +680,7 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
                     line: ctx.line(r.start),
                     source: r,
                     kind: BlockKind::Paragraph(std::mem::take(loose)),
+                    id: None,
                 });
             }
         };
