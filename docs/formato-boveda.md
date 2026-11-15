@@ -118,7 +118,7 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
 
 ## 6. Enlaces
 
-- Wikilinks: `[[nombre]]`, `[[nombre|alias]]`, `[[nombre#encabezado]]`. Se resuelven por nombre de archivo
+- Wikilinks: `[[nombre]]`, `[[nombre|alias]]`, `[[nombre#encabezado]]`, `[[nombre#^bloque]]`. Se resuelven por nombre de archivo
   dentro de `wiki/`. Si `nombre` coincide con un `.md` y un `.html`, el enlace es ambiguo; `[[nombre.html]]`
   lo resuelve.
 - Markdown estándar: `[texto](/ruta.md)` relativo a la raíz de `wiki/` (forma recomendada por OKF §6.1) o
@@ -129,6 +129,42 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
   formateada. Se resuelven como los wikilinks. Se anidan hasta 3 niveles; una referencia circular se muestra
   como aviso. En las notas `.html` el archivo guarda solo el texto `![[…]]`: la tarjeta la dibuja Orbital y
   nunca se escribe en el archivo.
+- Identificadores de bloque (026): al guardar una nota de `wiki/`, Orbital le pone un id a cada bloque que
+  no lo tiene (párrafos, cada ítem de lista, citas, callouts, tablas, bloques de código y `$$`). El bloque
+  donde está el cursor lo recibe al guardar con el cursor en otro bloque o al dejar la nota. Abrir y dejar
+  una nota sin cambios no la modifica; `raw/` nunca se toca. En Código y en el archivo se ven; en Lectura,
+  la búsqueda, exportar y OnStage, no.
+
+  ~~~markdown
+  La entropía mide el desorden de un sistema. ^k3x9a1
+
+  - Primer principio ^p2m8q4
+    - Un subítem ^r5t1w9
+
+  > Una cita de varias líneas
+  > que termina acá. ^c8h2n6
+
+  | a | b |
+  |---|---|
+  | 1 | 2 |
+  ^t9y3u1
+
+  ```rust
+  fn main() {}
+  ```
+  ^q1w2e3
+  ~~~
+
+  - El id es `^` + letras, dígitos o guiones (Orbital genera 6 caracteres `a-z0-9`), separado por un
+    espacio al final del bloque; en tablas, código y `$$`, solo en la línea siguiente. Un id escrito a
+    mano (o por Obsidian) se respeta; si se repite en la nota, Orbital reemplaza los siguientes.
+  - Los encabezados se enlazan por su texto (`[[nota#Encabezado]]`) y no llevan id; el frontmatter
+    tampoco.
+  - En las notas `.html` el id es el atributo `id` de `p`, `li`, `blockquote`, `table`, `pre` y `figure`
+    (`<p id="k3x9a1">…</p>`), también desde la vista Visual.
+  - `[[nota#^k3x9a1]]` (o `[texto](/ruta/nota.md#^k3x9a1)`) lleva al bloque y lo resalta; `[[#^k3x9a1]]`
+    es un bloque de la misma nota. `![[nota#^k3x9a1]]`, solo en su párrafo, incrusta ese bloque (un ítem,
+    con sus subítems). Al escribir `[[nota#^` se sugieren los bloques de esa nota con su texto.
 - Al renombrar o mover una nota, Orbital ofrece actualizar los enlaces que **resuelven** a ella (no los que
   solo comparten el nombre). De cada enlace cambia solo la ruta, en el mismo estilo (con o sin carpeta o
   extensión, `/…` o relativa); alias, anclas y el resto del archivo quedan iguales.
