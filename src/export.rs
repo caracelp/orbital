@@ -30,7 +30,9 @@ fn titulo(texto: &str, defecto: &str) -> String {
 /// HTML autónomo de una nota `.md`: cuerpo renderizado sin frontmatter (FR-3), con las mismas
 /// extensiones que Lectura (tablas, tachado, casillas).
 pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
-    let cuerpo = cuerpo_sin_frontmatter(texto);
+    // Los ids de bloque (`^id`, 026) no se exportan.
+    let cuerpo = orbital_vault::bloques::sin_ids(cuerpo_sin_frontmatter(texto));
+    let cuerpo = cuerpo.as_ref();
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -91,6 +93,15 @@ mod tests {
         assert!(out.contains("<style>"), "{out}");
         assert!(!out.contains("http://"), "{out}");
         assert!(!out.contains("https://"), "{out}");
+    }
+
+    #[test]
+    fn exporta_sin_ids_de_bloque() {
+        let nota = "Un párrafo ^abc123\n\n| a |\n|---|\n| 1 |\n^tab001\n\n- ítem ^def456\n";
+        let out = html_md(nota, "n.md");
+        assert!(!out.contains('^'), "{out}");
+        assert!(out.contains("<p>Un párrafo</p>"), "{out}");
+        assert!(!out.contains("tab001"), "{out}");
     }
 
     #[test]

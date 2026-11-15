@@ -173,7 +173,7 @@ impl Editor {
 
     pub(super) fn on_changed(&self) {
         let i = &self.0;
-        if i.loading.get() {
+        if i.loading.get() || i.asignando_ids.get() {
             return;
         }
         if let Some(f) = i.on_text_changed.borrow().as_ref() {
@@ -223,7 +223,7 @@ impl Editor {
         let this = self.clone();
         glib::timeout_add_local_once(delay, move || {
             if this.0.generation.get() == generation {
-                glib::spawn_future_local(async move { this.save_now().await });
+                glib::spawn_future_local(async move { this.save_now(true).await });
             }
         });
     }
@@ -240,10 +240,12 @@ impl Editor {
             glib::timeout_future(Duration::from_millis(20)).await;
         }
         self.0.generation.set(self.0.generation.get() + 1);
-        self.save_now().await;
+        self.save_now(false).await;
     }
 
-    pub(super) async fn save_now(&self) {
+    /// `cursores`: el bloque de cada cursor todavía no recibe id (autoguardado); al dejar la nota,
+    /// sí (026).
+    pub(super) async fn save_now(&self, cursores: bool) {
         let i = &self.0;
         if i.saving.get() {
             return;
@@ -251,14 +253,24 @@ impl Editor {
         let Some(vault) = i.vault.borrow().clone() else {
             return;
         };
-        let text = i
-            .buffer
-            .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
-            .to_string();
-        let job = match i.session.borrow_mut().as_mut() {
+        let texto_buffer = || {
+            i.buffer
+                .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
+                .to_string()
+        };
+        let mut text = texto_buffer();
+        let mut job = match i.session.borrow_mut().as_mut() {
             Some(s) => s.prepare_save(&text),
             None => return,
         };
+        // Solo si hay algo que guardar: abrir o dejar una nota sin tocarla no la modifica.
+        if job.is_some() && self.asignar_ids(&text, cursores) {
+            text = texto_buffer();
+            job = match i.session.borrow_mut().as_mut() {
+                Some(s) => s.prepare_save(&text),
+                None => return,
+            };
+        }
         let Some(job) = job else {
             let state = i.session.borrow().as_ref().map(|s| s.state().clone());
             if let Some(SessionState::Clean) = state {

@@ -34,6 +34,14 @@ impl ExtraCursors {
         self.cursors.is_empty()
     }
 
+    /// Dónde está la inserción de cada cursor extra.
+    pub fn inserciones<'a>(
+        &'a self,
+        buf: &'a impl IsA<gtk::TextBuffer>,
+    ) -> impl Iterator<Item = gtk::TextIter> + 'a {
+        self.cursors.iter().map(move |(insert, _)| buf.iter_at_mark(insert))
+    }
+
     /// Quita todos los cursores extra (Esc, cambio de vista, nota o bóveda).
     pub fn clear(&mut self, buf: &impl IsA<gtk::TextBuffer>) {
         for (insert, bound) in self.cursors.drain(..) {

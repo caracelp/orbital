@@ -12,6 +12,7 @@ mod cursores;
 mod edicion_visual;
 pub mod find;
 mod guardado;
+mod ids_bloque;
 pub mod html;
 mod medicion;
 pub mod multi_cursor;
@@ -164,6 +165,8 @@ struct Inner {
     /// Cada cambio sube la generación; un temporizador viejo no guarda.
     generation: Cell<u64>,
     saving: Cell<bool>,
+    /// Los cambios del buffer son ids de bloque que agrega el guardado (026): no son teclas.
+    asignando_ids: Cell<bool>,
     edited_during_save: Cell<bool>,
     on_status: RefCell<Option<StatusFn>>,
     on_error: RefCell<Option<ErrorFn>>,
@@ -315,6 +318,7 @@ impl Editor {
             loading: Cell::new(false),
             generation: Cell::new(0),
             saving: Cell::new(false),
+            asignando_ids: Cell::new(false),
             edited_during_save: Cell::new(false),
             on_status: RefCell::new(None),
             on_error: RefCell::new(None),
