@@ -19,7 +19,7 @@ impl Reader {
         let (heading, nivel) = match &block.kind {
             BlockKind::Heading { inlines, level } => (
                 Some(orbital_vault::render::plain_text(inlines)),
-                Some(*level as u8),
+                Some(*level),
             ),
             _ => (None, None),
         };

@@ -42,7 +42,7 @@ impl Window {
                 .unwrap_or_else(|| file.rsplit_once('.').map_or(file, |(s, _)| s).to_owned());
             let palabras = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
                 let b = i.code_editor.buffer();
-                Some(crate::status_bar::contar(&b.text(&b.start_iter(), &b.end_iter(), false)).1)
+                Some(crate::status_bar::contar(&b.text(&b.start_iter(), &b.end_iter(), true)).1)
             } else {
                 note.map(|n| crate::status_bar::contar(&n.source).1)
             };

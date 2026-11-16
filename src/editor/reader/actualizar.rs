@@ -118,6 +118,7 @@ impl Reader {
     }
 
     /// Arma todo en un buffer nuevo por tramos y lo pone al final: la vista no parpadea.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rebuild(
         &self,
         doc: RenderDoc,

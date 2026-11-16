@@ -821,7 +821,7 @@ mod listas_tests {
     use orbital_vault::Lista;
     use std::time::{Duration, Instant};
 
-    fn app(nombre: &str) -> adw::Application {
+    pub(super) fn app(nombre: &str) -> adw::Application {
         adw::init().expect("se necesita acceso a GTK");
         let app = adw::Application::builder()
             .application_id(format!("io.github.caracelp.Orbital.Listas{nombre}"))
@@ -831,7 +831,7 @@ mod listas_tests {
         app
     }
 
-    async fn esperar(que: &str, cond: impl Fn() -> bool) {
+    pub(super) async fn esperar(que: &str, cond: impl Fn() -> bool) {
         let t0 = Instant::now();
         while !cond() {
             assert!(t0.elapsed() < Duration::from_secs(5), "no pasó: {que}");
@@ -878,7 +878,7 @@ mod listas_tests {
         window
     }
 
-    async fn abrir(window: &Window, ruta: &str) {
+    pub(super) async fn abrir(window: &Window, ruta: &str) {
         window.show_path(ruta);
         esperar(&format!("se abre {ruta}"), || {
             window
@@ -1242,7 +1242,7 @@ mod listas_tests {
     }
 
     /// Pulsa el «Deshacer» del último aviso.
-    async fn deshacer(window: &Window) {
+    pub(super) async fn deshacer(window: &Window) {
         let raiz = window.0.toasts.clone().upcast::<gtk::Widget>();
         let t0 = Instant::now();
         loop {
@@ -1583,5 +1583,247 @@ mod listas_tests {
             }
         }
         out
+    }
+}
+
+mod plegado_tests {
+    //! 028 US3 (T027): el plegado se recuerda en `.orbital/plegado.yaml`.
+    use super::super::*;
+    use super::listas_tests::{abrir, app, deshacer, esperar};
+    use std::time::Duration;
+
+    const NOTA: &str =
+        "# Nota\nintro\n\n## Historia\nTexto.\n- Frutas\n  - Manzana\n\n## Ejemplos\nuno\n";
+    const HISTORIA: u32 = 3;
+    const FRUTAS: u32 = 5;
+
+    fn boveda(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("orbital-028-{tag}-{}", glib::uuid_string_random()));
+        std::fs::create_dir_all(root.join("wiki/sub")).unwrap();
+        std::fs::create_dir_all(root.join("raw")).unwrap();
+        std::fs::write(root.join("wiki/outline.md"), NOTA).unwrap();
+        std::fs::write(root.join("wiki/otra.md"), "# Otra\n\nNada.\n").unwrap();
+        root
+    }
+
+    fn sumas(root: &Path) -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        let mut pila = vec![root.join("wiki"), root.join("raw")];
+        while let Some(d) = pila.pop() {
+            for e in std::fs::read_dir(d).unwrap() {
+                let e = e.unwrap();
+                if e.path().is_dir() {
+                    pila.push(e.path());
+                } else {
+                    let bytes = std::fs::read(e.path()).unwrap();
+                    out.push((
+                        e.path().display().to_string(),
+                        orbital_vault::write::hash(&bytes),
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn en_disco(root: &Path) -> String {
+        std::fs::read_to_string(root.join(".orbital/plegado.yaml")).unwrap_or_default()
+    }
+
+    async fn ventana(app: &adw::Application, root: &Path) -> Window {
+        let window = Window::new(app);
+        window.set_persist(false);
+        window.0.window.set_default_size(1200, 900);
+        window.0.window.present();
+        window.open_path(root.to_path_buf()).await;
+        window
+    }
+
+    fn editor(w: &Window) -> &Editor {
+        &w.0.code_editor
+    }
+
+    async fn sin_escrituras(w: &Window) {
+        esperar("se escribe el plegado", || !w.plegado_escribiendo()).await;
+    }
+
+    const DOS: &str = "format_version: 1\nnotas:\n  - ruta: wiki/outline.md\n    plegados:\n      - encabezado: Historia\n      - item: Frutas\n";
+
+    /// Escenarios 8, 9 y 12: plegar dos elementos, cambiar de nota y volver, reabrir la bóveda;
+    /// sin `.orbital/` hasta plegar; las notas no cambian (SC-004); con el texto cambiado desde
+    /// Orbital, siguen plegados (SC-006).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn us3_se_recuerda() {
+        let app = app("Plegado1");
+        glib::MainContext::default().block_on(async {
+            let root = boveda("recuerda");
+            let antes = sumas(&root);
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/otra.md").await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("se lee el estado", || w.plegado_cargado_ya()).await;
+            glib::timeout_future(Duration::from_millis(100)).await;
+            assert!(!root.join(".orbital").exists(), "abrir y navegar no crea .orbital/");
+            assert!(editor(&w).plegar(HISTORIA));
+            // Con la acción de la ventana, como desde el menú o la paleta.
+            editor(&w).buffer().place_cursor(&editor(&w).buffer().iter_at_line(FRUTAS as i32).unwrap());
+            editor(&w).desplegar(HISTORIA);
+            WidgetExt::activate_action(&w.0.window, "win.alternar-plegado", None).unwrap();
+            assert!(editor(&w).plegar(HISTORIA));
+            assert!(editor(&w).esta_plegado(FRUTAS));
+            esperar("se escriben los dos", || en_disco(&root) == DOS).await;
+            abrir(&w, "wiki/otra.md").await;
+            abrir(&w, "wiki/outline.md").await;
+            assert_eq!(editor(&w).lineas_plegadas(), [HISTORIA, FRUTAS]);
+            sin_escrituras(&w).await;
+            w.0.window.destroy();
+
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("se pliega al reabrir", || editor(&w).lineas_plegadas() == [HISTORIA, FRUTAS]).await;
+            assert_eq!(en_disco(&root), DOS, "reabrir no reescribe");
+            assert_eq!(sumas(&root), antes, "ninguna nota cambió");
+
+            // El texto del encabezado y del ítem cambian desde Orbital (escribiendo en sus líneas,
+            // que se ven): siguen plegados.
+            let e = editor(&w).clone();
+            let b = e.buffer().clone();
+            let escribir_al_final = |linea: u32, texto: &str| {
+                let mut it = b.iter_at_line(linea as i32).unwrap();
+                it.forward_to_line_end();
+                b.place_cursor(&it);
+                b.insert_at_cursor(texto);
+            };
+            assert!(e.desplegar(HISTORIA));
+            escribir_al_final(FRUTAS, " y más");
+            escribir_al_final(HISTORIA, " nueva");
+            assert!(e.plegar(HISTORIA));
+            assert_eq!(e.lineas_plegadas(), [HISTORIA, FRUTAS]);
+            esperar("se reconcilia", || {
+                let c = w.plegado_de(&RelPath::new("wiki/outline.md").unwrap());
+                c.iter().any(|c| matches!(c, orbital_vault::Clave::Encabezado { texto, .. } if texto == "Historia nueva"))
+                    && c.iter().any(|c| matches!(c, orbital_vault::Clave::Item { texto, .. } if texto == "Frutas y más"))
+            })
+            .await;
+            e.flush().await;
+            sin_escrituras(&w).await;
+            w.0.window.destroy();
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("siguen plegados con el texto nuevo", || editor(&w).lineas_plegadas() == [HISTORIA, FRUTAS]).await;
+            w.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    /// FR-010: renombrar y mover desde Orbital conserva el plegado (también el deshacer); la
+    /// papelera lo descarta y su «Deshacer» lo repone.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn us3_renombrar_mover_y_borrar() {
+        let app = app("Plegado2");
+        glib::MainContext::default().block_on(async {
+            let root = boveda("renombrar");
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("se lee el estado", || w.plegado_cargado_ya()).await;
+            assert!(editor(&w).plegar(HISTORIA));
+            let ruta = |s: &str| RelPath::new(s).unwrap();
+            w.do_rename(ruta("wiki/outline.md"), ruta("wiki/sub/movida.md"), true)
+                .await;
+            assert_eq!(w.plegado_de(&ruta("wiki/sub/movida.md")).len(), 1);
+            assert!(w.plegado_de(&ruta("wiki/outline.md")).is_empty());
+            esperar("la nota movida se abre plegada", || {
+                editor(&w).esta_plegado(HISTORIA)
+            })
+            .await;
+            deshacer(&w).await;
+            esperar("el deshacer la devuelve", || {
+                !w.plegado_de(&ruta("wiki/outline.md")).is_empty()
+            })
+            .await;
+            // Una carpeta entera.
+            w.do_rename(ruta("wiki/outline.md"), ruta("wiki/sub/x.md"), false)
+                .await;
+            w.do_rename(ruta("wiki/sub"), ruta("wiki/otra-carpeta"), false)
+                .await;
+            assert_eq!(w.plegado_de(&ruta("wiki/otra-carpeta/x.md")).len(), 1);
+            // Papelera y deshacer.
+            w.do_trash(ruta("wiki/otra-carpeta/x.md")).await;
+            assert!(w.plegado_de(&ruta("wiki/otra-carpeta/x.md")).is_empty());
+            sin_escrituras(&w).await;
+            assert!(!en_disco(&root).contains("x.md"));
+            deshacer(&w).await;
+            esperar("se repone", || {
+                w.plegado_de(&ruta("wiki/otra-carpeta/x.md")).len() == 1
+            })
+            .await;
+            sin_escrituras(&w).await;
+            assert!(
+                en_disco(&root).contains("wiki/otra-carpeta/x.md"),
+                "{}",
+                en_disco(&root)
+            );
+            w.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    /// Escenarios 10 y 11: un elemento borrado del texto no pliega nada ni avisa, y su clave se va
+    /// con el próximo cambio; un archivo dañado avisa, abre desplegado, queda intacto y se
+    /// respalda al primer cambio.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn us3_borrado_y_danado() {
+        let app = app("Plegado3");
+        glib::MainContext::default().block_on(async {
+            let root = boveda("danado");
+            std::fs::create_dir_all(root.join(".orbital")).unwrap();
+            // Una clave que ya no existe y una que sí.
+            std::fs::write(
+                root.join(".orbital/plegado.yaml"),
+                "format_version: 1\nnotas:\n  - ruta: wiki/outline.md\n    plegados:\n      - encabezado: Borrada\n      - item: Frutas\n",
+            )
+            .unwrap();
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("se pliega Frutas", || editor(&w).lineas_plegadas() == [FRUTAS]).await;
+            assert!(editor(&w).plegar(HISTORIA));
+            esperar("la clave perdida se va", || {
+                let d = en_disco(&root);
+                !d.contains("Borrada") && d.contains("Historia")
+            })
+            .await;
+            w.0.window.destroy();
+
+            let danado = "notas: [\n";
+            std::fs::write(root.join(".orbital/plegado.yaml"), danado).unwrap();
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+            esperar("se lee el estado", || w.plegado_cargado_ya()).await;
+            glib::timeout_future(Duration::from_millis(100)).await;
+            assert!(!editor(&w).tiene_pliegues(), "dañado: desplegado");
+            assert_eq!(en_disco(&root), danado, "intacto");
+            assert!(editor(&w).plegar(FRUTAS));
+            sin_escrituras(&w).await;
+            esperar("se reemplaza", || en_disco(&root).contains("item: Frutas")).await;
+            let mut copias = 0;
+            let mut pila = vec![root.join(".orbital/respaldo")];
+            while let Some(d) = pila.pop() {
+                for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+                    if e.path().is_dir() {
+                        pila.push(e.path());
+                    } else if std::fs::read_to_string(e.path()).ok().as_deref() == Some(danado) {
+                        copias += 1;
+                    }
+                }
+            }
+            assert_eq!(copias, 1, "una copia del dañado");
+            w.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
     }
 }

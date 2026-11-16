@@ -41,6 +41,7 @@ mod listas;
 mod nota;
 mod operaciones;
 mod paneles;
+mod plegado;
 mod propiedades;
 #[cfg(test)]
 mod tests;
@@ -171,6 +172,15 @@ struct Inner {
     listas_sesion: Cell<u64>,
     /// Monitor de `.orbital/listas.yaml` (cambios hechos afuera, FR-012).
     listas_watcher: RefCell<Option<crate::watcher::ListasWatcher>>,
+    /// Lo leído de `.orbital/plegado.yaml` con los cambios en memoria (028); `None` hasta que carga.
+    plegado: RefCell<Option<orbital_vault::PlegadoSnapshot>>,
+    /// La lectura del plegado ya se pidió en esta sesión de bóveda.
+    plegado_pedido: Cell<bool>,
+    plegado_sesion: Cell<u64>,
+    plegado_escribiendo: Cell<bool>,
+    plegado_pendiente: Cell<bool>,
+    /// Cambios que no llegaron al disco, para repetirlos tras un `Conflict`.
+    plegado_acciones: RefCell<Vec<plegado::AccionPlegado>>,
 }
 
 /// Ventana de Orbital.
@@ -372,6 +382,12 @@ impl Window {
             listas_eco: Cell::new(None),
             listas_sesion: Cell::new(0),
             listas_watcher: RefCell::new(None),
+            plegado: RefCell::new(None),
+            plegado_pedido: Cell::new(false),
+            plegado_sesion: Cell::new(0),
+            plegado_escribiendo: Cell::new(false),
+            plegado_pendiente: Cell::new(false),
+            plegado_acciones: RefCell::new(Vec::new()),
         }));
         conexiones::conectar(&this, app);
         this
