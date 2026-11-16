@@ -147,11 +147,21 @@ impl Reader {
                 buf.insert_with_tags(end, "\n", &space.iter().collect::<Vec<_>>());
             }
             BlockKind::Html(text) => {
-                let mut tags = base.clone();
-                tags.extend(table.lookup("code"));
-                let refs: Vec<&gtk::TextTag> = tags.iter().collect();
-                buf.insert_with_tags(end, text.trim_end(), &refs);
-                buf.insert(end, "\n");
+                // Ocultar en Lectura los delimitadores de bloque `<!-- block ... -->` y `<!---->` (040).
+                let filtrado: Vec<&str> = text
+                    .lines()
+                    .filter(|l| !crate::grafo::ramas_libres::es_delimitador_bloque_comentario(l))
+                    .collect();
+                if !filtrado.is_empty() {
+                    let limpio = filtrado.join("\n");
+                    if !limpio.trim().is_empty() {
+                        let mut tags = base.clone();
+                        tags.extend(table.lookup("code"));
+                        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+                        buf.insert_with_tags(end, limpio.trim_end(), &refs);
+                        buf.insert(end, "\n");
+                    }
+                }
             }
             BlockKind::Transclusion(t) => self.transclusion(s, end, t, depth, &base),
         }
@@ -482,8 +492,10 @@ impl Reader {
         for inl in inlines {
             match inl {
                 Inline::Text(t) => {
-                    let refs: Vec<&gtk::TextTag> = tags.iter().collect();
-                    buf.insert_with_tags(end, t, &refs);
+                    if !crate::grafo::ramas_libres::es_delimitador_bloque_comentario(t) {
+                        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+                        buf.insert_with_tags(end, t, &refs);
+                    }
                 }
                 Inline::FootnoteRef(nombre) => {
                     // Superíndice con tooltip del contenido (012, US1).

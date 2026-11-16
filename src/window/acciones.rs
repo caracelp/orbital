@@ -136,6 +136,8 @@ impl Window {
             simple("nuevo-canvas", Window::ask_new_canvas),
             simple("ver-mapa-mental", Window::ver_mapa_mental),
             simple("cerrar-mapa-mental", Window::cerrar_mapa_mental),
+            simple("ver-ramas-libres", Window::ver_ramas_libres),
+            simple("cerrar-ramas-libres", Window::cerrar_ramas_libres),
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
@@ -418,6 +420,7 @@ impl Window {
         ("Ver la brújula de la nota", "ver-brujula", None, false),
         ("Nuevo lienzo (Canvas)…", "nuevo-canvas", None, false),
         ("Ver mapa mental de la nota", "ver-mapa-mental", None, true),
+        ("Ramas libres de la nota", "ver-ramas-libres", None, true),
         ("Historial de versiones…", "historial", None, true),
         (
             "Renumerar notas al pie",

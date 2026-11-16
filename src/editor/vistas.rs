@@ -152,14 +152,17 @@ impl Editor {
         }
     }
 
-    /// Lleva al bloque con ese id (`[[nota#^id]]`, 026) y lo resalta un momento. Devuelve si existe.
+    /// Lleva al bloque con ese id (`[[nota#^id]]`, 026 / 040) y lo resalta un momento. Devuelve si existe.
     pub fn scroll_to_block(&self, id: &str) -> bool {
         let i = &self.0;
         let b = &i.buffer;
         let text = b.text(&b.start_iter(), &b.end_iter(), false);
-        let Some((rango, linea)) =
-            orbital_vault::bloques::buscar(&text, id, i.format.get() == Format::Html)
-        else {
+        let es_html = i.format.get() == Format::Html;
+        let hallado = (!es_html)
+            .then(|| crate::grafo::ramas_libres::buscar_bloque_delimitado(&text, id))
+            .flatten()
+            .or_else(|| orbital_vault::bloques::buscar(&text, id, es_html));
+        let Some((rango, linea)) = hallado else {
             return false;
         };
         let inicio_linea = text[..rango.start].rfind('\n').map_or(0, |n| n + 1);

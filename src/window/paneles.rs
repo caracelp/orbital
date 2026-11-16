@@ -350,9 +350,76 @@ impl Window {
         self.0.pestanas.cerrar(crate::pestanas::MAPA_MENTAL);
     }
 
+    /// Abre el editor de Ramas libres de la nota abierta (040).
+    pub fn ver_ramas_libres(&self) {
+        let i = &self.0;
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            self.toast("Abrí una nota antes de abrir sus ramas libres");
+            return;
+        };
+        if Format::from_name(entry.path.file_name()) != Some(Format::Md) {
+            self.toast("Las ramas libres están disponibles para notas Markdown (.md)");
+            return;
+        };
+        let Some(vista) =
+            crate::grafo::ramas_libres::VistaRamasLibres::desde_stack(&i.content_stack)
+        else {
+            return;
+        };
+        self.guardar_estado_pestana();
+        let (fuente, id_sug) = {
+            let note = i.current_note.borrow();
+            let note = note.as_ref().filter(|n| n.path == entry.path);
+            let tipo = note
+                .and_then(|n| n.prop("type"))
+                .and_then(|v| v.as_text())
+                .unwrap_or("atomo");
+            let id_existente = note
+                .and_then(|n| n.prop("id"))
+                .and_then(|v| v.as_text())
+                .map(str::to_owned);
+            let id_sug = id_existente.unwrap_or_else(|| {
+                format!("{}-001", crate::grafo::ramas_libres::prefijo_de_tipo(tipo))
+            });
+            let fuente = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
+                i.code_editor.text()
+            } else {
+                note.map(|n| n.source.clone()).unwrap_or_default()
+            };
+            (fuente, id_sug)
+        };
+        vista.cargar_nota(entry.path.as_str(), &fuente, Some(&id_sug));
+        i.pestanas
+            .abrir(crate::pestanas::RAMAS_LIBRES, "Ramas libres");
+        i.content_stack.set_visible_child_name("ramas-libres");
+    }
+
+    /// Cierra la pestaña de Ramas libres y vuelve a la nota.
+    pub fn cerrar_ramas_libres(&self) {
+        self.0.pestanas.cerrar(crate::pestanas::RAMAS_LIBRES);
+    }
+
     /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
     /// el centro vacío (guardando antes lo pendiente).
     pub(super) fn setup_pestanas(&self) {
+        if let Some(vista_rl) =
+            crate::grafo::ramas_libres::VistaRamasLibres::desde_stack(&self.0.content_stack)
+        {
+            let weak_s = Rc::downgrade(&self.0);
+            vista_rl.connect_sincronizar(move |nuevo_md| {
+                if let Some(i) = weak_s.upgrade()
+                    && i.code_editor.current_path().is_some()
+                {
+                    i.code_editor.replace_text(&nuevo_md);
+                }
+            });
+            let weak_x = Rc::downgrade(&self.0);
+            vista_rl.connect_cerrar(move || {
+                if let Some(i) = weak_x.upgrade() {
+                    Window(i).cerrar_ramas_libres();
+                }
+            });
+        }
         if let Some(vista_mm) =
             crate::grafo::mapa_mental::VistaMapaMental::desde_stack(&self.0.content_stack)
         {
@@ -493,6 +560,10 @@ impl Window {
                 w.ver_mapa_mental();
                 return;
             }
+            if clave == crate::pestanas::RAMAS_LIBRES {
+                w.ver_ramas_libres();
+                return;
+            }
             w.guardar_estado_pestana();
             if let (Some(estado), Ok(path)) = (estado, RelPath::new(clave)) {
                 *w.0.estado_pendiente.borrow_mut() = Some((path, estado));
@@ -508,7 +579,8 @@ impl Window {
             let w = Window(i);
             if (clave == crate::pestanas::CONEXIONES
                 || clave == crate::pestanas::BRUJULA
-                || clave == crate::pestanas::MAPA_MENTAL)
+                || clave == crate::pestanas::MAPA_MENTAL
+                || clave == crate::pestanas::RAMAS_LIBRES)
                 && w.0.code_editor.current_path().is_some()
             {
                 // Quedó solo la nota del editor sin pestaña: se vuelve a ella.

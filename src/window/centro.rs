@@ -249,6 +249,10 @@ pub(super) fn construir_centro() -> Centro {
     let mapa_mental_vista = crate::grafo::mapa_mental::VistaMapaMental::new();
     content_stack.add_named(mapa_mental_vista.widget(), Some("mapa-mental"));
 
+    // Ramas libres de la nota abierta (040).
+    let ramas_libres_vista = crate::grafo::ramas_libres::VistaRamasLibres::new();
+    content_stack.add_named(ramas_libres_vista.widget(), Some("ramas-libres"));
+
     let content_title = adw::WindowTitle::new("", "");
     // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
     // cabecera única de arriba).
@@ -282,6 +286,7 @@ pub(super) fn construir_centro() -> Centro {
             ("Agregar a favoritos", "win.alternar-favorito", ""),
             ("Guardar en…", "win.guardar-en", ""),
             ("Ver como mapa mental", "win.ver-mapa-mental", ""),
+            ("Escribir en ramas libres", "win.ver-ramas-libres", ""),
             ("Renombrar o mover…", "win.rename", "F2"),
             ("Archivar", "win.archive", "Ctrl+Mayús+A"),
             (

@@ -87,15 +87,21 @@ impl Editor {
             Some((n, None)) if n == nota => return, // se está leyendo
             _ => {
                 let es_html = |p: &str| p.ends_with(".html") || p.ends_with(".htm");
+                let listar_todos = |t: &str, html: bool| {
+                    if !html {
+                        let delim = crate::grafo::ramas_libres::listar_bloques_delimitados(t);
+                        if !delim.is_empty() {
+                            return delim;
+                        }
+                    }
+                    orbital_vault::bloques::listar(t, html)
+                };
                 if nota.is_empty() {
                     // La nota abierta: el texto ya está en el buffer.
                     let texto = i
                         .buffer
                         .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
-                    let b = Rc::new(orbital_vault::bloques::listar(
-                        &texto,
-                        i.format.get() == Format::Html,
-                    ));
+                    let b = Rc::new(listar_todos(&texto, i.format.get() == Format::Html));
                     *i.completion_bloques.borrow_mut() = Some((nota.clone(), Some(b.clone())));
                     b
                 } else {
@@ -113,7 +119,7 @@ impl Editor {
                         let html = es_html(path.as_str());
                         let leidos = gio::spawn_blocking(move || {
                             std::fs::read_to_string(path.to_path(vault.root()))
-                                .map(|t| orbital_vault::bloques::listar(&t, html))
+                                .map(|t| listar_todos(&t, html))
                                 .unwrap_or_default()
                         })
                         .await
