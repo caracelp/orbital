@@ -4,11 +4,21 @@ use super::*;
 
 impl Reader {
     pub(super) fn all_link_items(&self) -> Vec<LinkItem> {
+        // Lo plegado y lo fuera del enfoque no se recorren con Tab (028).
+        let buf = self.buffer();
+        let table = buf.tag_table();
+        let oculto = table.lookup("plegado");
+        let fuera = table.lookup("fuera-de-enfoque");
         self.0
             .blocks
             .borrow()
             .iter()
             .flat_map(|b| b.links.iter().cloned())
+            .filter(|l| {
+                let it = buf.iter_at_mark(&l.start);
+                oculto.as_ref().is_none_or(|t| !it.has_tag(t))
+                    && fuera.as_ref().is_none_or(|t| !it.has_tag(t))
+            })
             .collect()
     }
 
@@ -46,6 +56,19 @@ impl Reader {
             let Some(iter) = i.view.iter_at_location(bx, by) else {
                 return;
             };
+            // Una flechita del plegado (028).
+            let reader = Reader(i.clone());
+            if iter
+                .buffer()
+                .tag_table()
+                .lookup("flecha")
+                .is_some_and(|t| iter.has_tag(&t))
+                && let Some(linea) = reader.flecha_en(&iter)
+            {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                reader.plegar(linea);
+                return;
+            }
             for tag in iter.tags() {
                 let url = i.links.borrow().get(&tag).cloned();
                 if let (Some(url), Some(f)) = (url, i.on_link.borrow().as_ref()) {
@@ -64,11 +87,34 @@ impl Reader {
                 return glib::Propagation::Proceed;
             };
             let reader = Reader(i.clone());
+            let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
+            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if alt && !ctrl && !is_shift {
+                if keyval == gtk::gdk::Key::Left && i.enfoque.borrow().is_some() {
+                    if let Some(f) = i.on_subir_enfoque.borrow().as_ref() {
+                        f();
+                    }
+                    return glib::Propagation::Stop;
+                }
+                if keyval == gtk::gdk::Key::Right
+                    && let Some(idx) = i.focused_link.get()
+                    && let Some(item) = reader.all_link_items().get(idx)
+                    && let Some(l) = item
+                        .url
+                        .strip_prefix(super::plegado::URL_PLEGAR)
+                        .and_then(|s| s.parse().ok())
+                {
+                    if let Some(f) = i.on_enfocar.borrow().as_ref() {
+                        f(Some(l));
+                    }
+                    return glib::Propagation::Stop;
+                }
+            }
             let items = reader.all_link_items();
             if items.is_empty() {
                 return glib::Propagation::Proceed;
             }
-            let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
             if keyval == gtk::gdk::Key::Tab || keyval == gtk::gdk::Key::ISO_Left_Tab {
                 let cur = i.focused_link.get();
                 let next = if is_shift {
@@ -113,6 +159,14 @@ impl Reader {
         let Some(item) = self.all_link_items().get(index).cloned() else {
             return false;
         };
+        if let Some(linea) = item
+            .url
+            .strip_prefix(super::plegado::URL_PLEGAR)
+            .and_then(|l| l.parse().ok())
+        {
+            self.plegar(linea);
+            return true;
+        }
         if let Some(f) = self.0.on_link.borrow().as_ref() {
             f(&item.url);
         }

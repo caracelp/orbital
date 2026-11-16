@@ -147,6 +147,7 @@ impl Window {
             }
             // Favoritos y Guardados valen para cualquier archivo abierto, también de raw/.
             this.habilitar_acciones_listas(true);
+            this.habilitar_acciones_plegado();
         });
     }
 
@@ -223,6 +224,8 @@ impl Window {
             && let Some(vault) = i.vault.borrow().clone()
         {
             i.code_editor.load(vault, note);
+            // Antes de ir a una línea o a un ancla: la navegación despliega lo que la oculta.
+            self.plegado_al_abrir(&note.path);
         }
         // Las propiedades se ven en el texto (Código) o arriba de la vista formateada.
         i.props_list.set_visible(false);
@@ -271,10 +274,10 @@ impl Window {
                     let Some(i) = weak.upgrade() else { return };
                     let b = i.code_editor.buffer();
                     let (start, end) = b.bounds();
-                    let total = crate::status_bar::contar(&b.text(&start, &end, false));
+                    let total = crate::status_bar::contar(&b.text(&start, &end, true));
                     let seleccion = b
                         .selection_bounds()
-                        .map(|(a, z)| crate::status_bar::contar(&b.text(&a, &z, false)));
+                        .map(|(a, z)| crate::status_bar::contar(&b.text(&a, &z, true)));
                     i.status.set_contadores(total, seleccion);
                     let en_editor = i.current_entry.borrow().as_ref().map(|e| &e.path)
                         == i.code_editor.current_path().as_ref();

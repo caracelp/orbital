@@ -3,6 +3,11 @@
 use super::*;
 
 impl Editor {
+    /// Vista activa del editor.
+    pub fn current_view(&self) -> View {
+        self.0.mode.get()
+    }
+
     /// Cambia de vista (FR-008). Al pasar a Lectura o Dividida, la vista formateada se actualiza.
     pub fn set_view(&self, v: View) {
         let i = &self.0;
@@ -132,23 +137,31 @@ impl Editor {
         if wanted.is_empty() {
             return;
         }
+        let buf = &self.0.buffer;
+        let wanted_lower = wanted.to_lowercase();
+        // Un encabezado plegable se busca en el árbol del núcleo (que salta los bloques de
+        // código); si no, cualquier línea `#` (un encabezado sin contenido).
+        let (texto, ps) = self.arbol();
+        let linea = ps
+            .iter()
+            .find(|p| !p.es_item() && texto[p.texto.clone()].to_lowercase() == wanted_lower)
+            .map(|p| p.linea as usize)
+            .or_else(|| {
+                texto.lines().position(|line| {
+                    let trimmed = line.trim();
+                    trimmed.starts_with('#')
+                        && trimmed.trim_start_matches('#').trim().to_lowercase() == wanted_lower
+                })
+            });
+        // Lo que está plegado alrededor del destino se despliega antes de ir (FR-011).
+        if let Some(l) = linea {
+            self.revelar_linea(l as u32);
+        }
         if self.0.reader.scroll_to_heading(wanted) {
             return;
         }
-        let buf = &self.0.buffer;
-        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-        let wanted_lower = wanted.to_lowercase();
-        for (idx, line) in text.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') {
-                let title = trimmed.trim_start_matches('#').trim().to_lowercase();
-                if title == wanted_lower {
-                    if let Some(mut it) = buf.iter_at_line(idx as i32) {
-                        self.0.view.scroll_to_iter(&mut it, 0.0, true, 0.0, 0.0);
-                    }
-                    break;
-                }
-            }
+        if let Some(mut it) = linea.and_then(|l| buf.iter_at_line(l as i32)) {
+            self.0.view.scroll_to_iter(&mut it, 0.0, true, 0.0, 0.0);
         }
     }
 
@@ -156,7 +169,7 @@ impl Editor {
     pub fn scroll_to_block(&self, id: &str) -> bool {
         let i = &self.0;
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false);
+        let text = b.text(&b.start_iter(), &b.end_iter(), true);
         let es_html = i.format.get() == Format::Html;
         let hallado = (!es_html)
             .then(|| crate::grafo::ramas_libres::buscar_bloque_delimitado(&text, id))
@@ -165,6 +178,8 @@ impl Editor {
         let Some((rango, linea)) = hallado else {
             return false;
         };
+        // El bloque (y lo que lo contiene) se despliega antes de resaltarlo (FR-011).
+        self.revelar_linea(linea as u32);
         let inicio_linea = text[..rango.start].rfind('\n').map_or(0, |n| n + 1);
         let fin = rango.end.min(text.len());
         let lineas_fin = text[rango.start..fin].matches('\n').count();
@@ -192,7 +207,7 @@ impl Editor {
         i.render_generation.set(generation);
         let text = i
             .buffer
-            .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
+            .text(&i.buffer.start_iter(), &i.buffer.end_iter(), true)
             .to_string();
         let this = self.clone();
         let place = (i.vault.borrow().clone(), self.current_path());
@@ -213,6 +228,8 @@ impl Editor {
                     (Some(v), Some(from)) => reader::Prepared::with_vault(&text, v, from, yaml),
                     _ => reader::Prepared::new(&text, yaml),
                 };
+                // Las flechitas del plegado (028), en el mismo hilo que el análisis.
+                prepared.con_plegables(&orbital_vault::plegado::plegables(&text));
                 // Los codeblocks generados (`indice`, `toc`) se completan con el índice y la ruta
                 // de la nota (005, T015/T019); los rangos y casillas quedan intactos.
                 let idx = index.as_deref().and_then(|i| i.read().ok());
@@ -264,7 +281,7 @@ impl Editor {
     /// Marca o desmarca una casilla: cambia un solo carácter del texto (FR-011).
     pub(super) fn toggle_task(&self, offset: usize) {
         let b = &self.0.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let Some(prefix) = text.get(..offset) else {
             return;
         };
@@ -311,6 +328,7 @@ impl Editor {
     pub fn reveal_line(&self, line: usize) {
         let i = &self.0;
         let target = line.saturating_sub(1);
+        self.revelar_linea(target as u32);
         if let Some(it) = i.buffer.iter_at_line(target as i32) {
             i.buffer.place_cursor(&it);
             i.view
@@ -324,6 +342,7 @@ impl Editor {
     /// Pasa a la vista Código y pone el cursor en una línea.
     pub fn show_code_line(&self, line: i32) {
         self.set_view(View::Codigo);
+        self.revelar_linea(line.max(0) as u32);
         let b = &self.0.buffer;
         if let Some(it) = b.iter_at_line(line) {
             b.place_cursor(&it);

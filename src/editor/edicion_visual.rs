@@ -37,7 +37,7 @@ impl Editor {
             return;
         }
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let Some(spliced) = orbital_vault::html_edit::splice_body(&text, &body) else {
             self.error("La nota no tiene <body>: editala en Código");
             return;
@@ -57,7 +57,7 @@ impl Editor {
     pub(super) fn show_visual(&self) {
         let i = &self.0;
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         if orbital_vault::html_edit::body_range(&text).is_none()
             || orbital_vault::html_edit::upsert_orbital_style(&text, "/* comprobar head */")
                 .is_none()
@@ -93,7 +93,7 @@ impl Editor {
     pub(super) fn visual_markers(&self) {
         let i = &self.0;
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let this = self.clone();
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || {
@@ -118,7 +118,7 @@ impl Editor {
             return;
         };
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let this = self.clone();
         glib::spawn_future_local(async move {
             let from_c = from.clone();
@@ -171,7 +171,7 @@ impl Editor {
     pub(super) fn visual_header(&self) {
         let i = &self.0;
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let note = i.meta.borrow().as_ref().and_then(|m| m.reparse(text).ok());
         let Some(note) = note else { return };
         let (entries, error) = match note.props {

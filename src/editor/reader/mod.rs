@@ -38,6 +38,9 @@ type ToggleFn = Box<dyn Fn(usize)>;
 type LinkFn = Box<dyn Fn(&str)>;
 type IsMissingFn = Rc<dyn Fn(&str) -> bool>;
 type RenderedFn = Box<dyn Fn()>;
+type PlegarFn = Box<dyn Fn(u32)>;
+type EnfocarFn = Box<dyn Fn(Option<u32>)>;
+type SubirEnfoqueFn = Box<dyn Fn()>;
 
 #[derive(Clone)]
 struct LinkItem {
@@ -61,6 +64,11 @@ struct BlockInfo {
     heading: Option<String>,
     /// Enlaces contenidos en el bloque (para navegación por teclado).
     links: Vec<LinkItem>,
+    /// Nivel si el bloque es un encabezado (las secciones plegadas llegan hasta el próximo de
+    /// nivel menor o igual, 028).
+    nivel: Option<u8>,
+    /// Elementos plegables del bloque (028).
+    plegables: Vec<plegado::PlegableLector>,
 }
 
 struct Inner {
@@ -95,6 +103,13 @@ struct Inner {
     on_link: RefCell<Option<LinkFn>>,
     is_missing: RefCell<Option<IsMissingFn>>,
     on_rendered: RefCell<Option<RenderedFn>>,
+    /// Líneas fuente de los elementos plegados (028); la verdad está en el buffer de Código.
+    plegado: RefCell<Rc<Vec<u32>>>,
+    on_plegar: RefCell<Option<PlegarFn>>,
+    /// Rango `linea..=ultima` del elemento enfocado en el editor (028, T032).
+    enfoque: RefCell<Option<(u32, u32)>>,
+    on_enfocar: RefCell<Option<EnfocarFn>>,
+    on_subir_enfoque: RefCell<Option<SubirEnfoqueFn>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +130,8 @@ pub struct Prepared {
     pub header: u64,
     /// Notas incrustadas con `![[…]]`: si una cambia, hay que volver a dibujar (US5).
     pub deps: Vec<orbital_vault::RelPath>,
+    /// Líneas fuente de los elementos plegables (028); vacío fuera del editor (OnStage).
+    pub plegables: Vec<u32>,
 }
 
 impl Reader {
@@ -159,6 +176,11 @@ impl Reader {
             on_link: RefCell::new(None),
             is_missing: RefCell::new(None),
             on_rendered: RefCell::new(None),
+            plegado: RefCell::new(Rc::new(Vec::new())),
+            on_plegar: RefCell::new(None),
+            enfoque: RefCell::new(None),
+            on_enfocar: RefCell::new(None),
+            on_subir_enfoque: RefCell::new(None),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -346,6 +368,7 @@ mod bloques;
 mod enlaces;
 mod etiquetas;
 mod generado;
+mod plegado;
 use bloques::*;
 pub use generado::complete_generated;
 

@@ -12,12 +12,16 @@ impl Reader {
     ) -> BlockInfo {
         let mark = s.buffer.create_mark(None, end, true);
         let base = Rc::new(Cell::new(block.source.start));
+        s.plegables_lector.borrow_mut().clear();
         *s.block_base.borrow_mut() = base.clone();
         s.block_start.set(block.source.start);
         self.block(s, end, block, 0);
-        let heading = match &block.kind {
-            BlockKind::Heading { inlines, .. } => Some(orbital_vault::render::plain_text(inlines)),
-            _ => None,
+        let (heading, nivel) = match &block.kind {
+            BlockKind::Heading { inlines, level } => (
+                Some(orbital_vault::render::plain_text(inlines)),
+                Some(*level),
+            ),
+            _ => (None, None),
         };
         BlockInfo {
             hash,
@@ -27,6 +31,8 @@ impl Reader {
             tags: std::mem::take(&mut *s.tags.borrow_mut()),
             heading,
             links: std::mem::take(&mut *s.link_items.borrow_mut()),
+            nivel,
+            plegables: std::mem::take(&mut *s.plegables_lector.borrow_mut()),
         }
     }
 
@@ -50,6 +56,10 @@ impl Reader {
             BlockKind::Heading { level, inlines } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup(&format!("h{level}")));
+                // Un encabezado de primer nivel del documento con contenido: flechita (028).
+                if depth == 0 && s.es_plegable(b.line) {
+                    self.glifos(s, end, b.line as u32, &tags, " ");
+                }
                 self.inlines(s, end, inlines, &tags);
                 buf.insert(end, "\n");
             }
@@ -63,9 +73,25 @@ impl Reader {
                     let mut tags = base.clone();
                     tags.push(tag.clone());
                     let item_start = end.offset();
+                    // Un ítem con subítems: la flechita reemplaza a la viñeta (028).
+                    let plegable = item
+                        .blocks
+                        .first()
+                        .map(|b| b.line)
+                        .filter(|l| s.es_plegable(*l));
+                    let indice = s.plegables_lector.borrow().len();
+                    if let Some(l) = plegable {
+                        let espacio = if item.task.is_some() || start.is_some() {
+                            " "
+                        } else {
+                            "  "
+                        };
+                        self.glifos(s, end, l as u32, &tags, espacio);
+                    }
+                    let mut desde: Option<gtk::TextMark> = None;
                     if let Some(task) = item.task {
                         self.task(s, end, item, task);
-                    } else {
+                    } else if plegable.is_none() || start.is_some() {
                         let bullet = match start {
                             Some(s) => format!("{}. ", s + n as u64),
                             None => "•  ".to_owned(),
@@ -82,9 +108,15 @@ impl Reader {
                             }
                             _ => self.block(s, end, sub, depth + 1),
                         }
+                        if k == 0 && plegable.is_some() {
+                            desde = Some(buf.create_mark(None, end, true));
+                        }
                     }
                     if item.blocks.is_empty() {
                         buf.insert(end, "\n");
+                    }
+                    if let Some(d) = desde {
+                        s.cerrar_item(indice, d, buf.create_mark(None, end, true));
                     }
                     // La sangría cubre también la casilla anclada al principio de la línea.
                     let first = buf.iter_at_offset(item_start);
@@ -633,4 +665,8 @@ pub(super) struct RenderState {
     pub(super) block_start: Cell<usize>,
     /// Profundidad dentro de transclusiones (lo incrustado no se edita desde acá).
     pub(super) embedded: Cell<u32>,
+    /// Líneas fuente de los elementos plegables (028).
+    pub(super) plegables: Rc<Vec<u32>>,
+    /// Elementos plegables del bloque de primer nivel en curso.
+    pub(super) plegables_lector: RefCell<Vec<super::plegado::PlegableLector>>,
 }

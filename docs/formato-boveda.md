@@ -269,6 +269,63 @@ Formato de OKF v0.2 §8 y §9.
     como faltante.
   - Ninguna nota ni archivo de `raw/` se modifica.
 
+- `.orbital/plegado.yaml` (028): qué partes de cada nota están plegadas (outliner plegable). Viaja
+  con la carpeta: sincronizarla o copiarla lo lleva. Las notas nunca cambian por plegar.
+
+  ```yaml
+  format_version: 1
+  notas:
+    - ruta: wiki/entropia.md
+      plegados:
+        - encabezado: Historia
+        - encabezado: Ejemplos
+          aparicion: 2
+        - bloque: p2m8q4
+        - item: Comprar pan
+    - ruta: "wiki/proyectos/tesis: capítulo 2.md"
+      plegados:
+        - encabezado: Bibliografía
+  ```
+
+  - `format_version`: entero, hoy `1`. Si falta se asume `1`; uno mayor que el que Orbital entiende
+    se trata como archivo dañado y no se pisa.
+  - `notas`: lista de mapas con `ruta` y `plegados`, ordenada por ruta. Solo aparecen las notas con
+    algo plegado.
+  - `ruta`: relativa a la raíz de la bóveda, con `/`, sin componentes ocultos ni `..`; una nota
+    `.md`. Una ruta repetida daña el archivo.
+  - `plegados`: lista (no vacía) de pliegues, en el orden en que aparecen en la nota. Cada pliegue
+    es un mapa con **una** de estas claves:
+    - `bloque: <id>`: el ítem de lista cuya primera línea termina en `^<id>` (el identificador de
+      bloque de la 026). Es la forma preferida: sobrevive a cambios en el texto del ítem.
+    - `item: <texto>`: un ítem de lista sin identificador, por el texto de su primera línea (sin el
+      marcador `-`/`*`/`+`/`1.`, sin la casilla `[ ]` y recortado).
+    - `encabezado: <texto>`: una sección, por el texto de su encabezado (sin los `#`, recortado).
+    - `aparicion: <n>` (opcional, con `item` o `encabezado`; entero ≥ 1, por defecto 1): cuál de los
+      elementos con ese mismo texto, contando desde el principio de la nota.
+  - Un pliegue que ya no corresponde a nada de la nota no pliega nada; Orbital lo quita la próxima
+    vez que escribe el estado de esa nota. Nunca pliega otro elemento en su lugar.
+
+  Cómo lo trata Orbital:
+
+  - Lo lee en segundo plano al abrir la primera nota `.md` de la bóveda (no en el arranque).
+  - Lo crea (y crea `.orbital/`) recién al plegar algo por primera vez.
+  - Escritura atómica. Antes de escribir encima de un contenido que no escribió esta misma sesión de
+    Orbital (el que había al abrir la bóveda, uno cambiado por fuera o uno dañado), lo copia a
+    `.orbital/respaldo/<fecha>/.orbital/plegado.<hora>.yaml`. Plegar y desplegar muchas veces en la
+    misma sesión no deja más copias.
+  - Al escribir, quita las notas que ya no existen en la bóveda.
+  - Si el archivo tiene errores (YAML inválido, claves desconocidas, una ruta inválida o repetida,
+    un pliegue sin clave o con dos, `aparicion` no entero o menor que 1), Orbital avisa una vez,
+    abre las notas desplegadas y no lo sobrescribe hasta que la usuaria pliegue o despliegue algo;
+    ese cambio respalda primero el archivo dañado.
+  - Si cambió en disco entre la lectura y una escritura (otra computadora, un editor), lo vuelve a
+    leer y repite el cambio sobre lo nuevo. No hay vigilante: un cambio de afuera se ve la próxima
+    vez que se abre la bóveda.
+  - Renombrar o mover una nota o una carpeta desde Orbital actualiza las rutas; borrar desde Orbital
+    quita las entradas (y «Deshacer» las repone). Lo que se borra o mueve por fuera se descarta al
+    escribir.
+  - El enfoque (ver solo un elemento) no se guarda.
+
 ## 10. Borrar y papelera
 
 Borrar nunca es definitivo: el archivo va a la papelera del sistema y, si ese disco no tiene (tmpfs, FAT),

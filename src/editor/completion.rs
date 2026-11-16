@@ -691,13 +691,13 @@ mod tests {
         popover.select_next();
         assert!(popover.activate_selected());
         assert_eq!(
-            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
             format!("{nota}😀 [%estado]")
         );
         use sourceview5::prelude::*;
         buffer.undo();
         assert_eq!(
-            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
             texto
         );
         popover.0.popover.unparent();
@@ -753,13 +753,13 @@ mod tests {
         popover.select_next();
         assert!(popover.activate_selected());
         assert_eq!(
-            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
             "😀 #Física/Termodinámica"
         );
         use sourceview5::prelude::*;
         buffer.undo();
         assert_eq!(
-            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
             "😀 #fis"
         );
         popover.0.popover.unparent();

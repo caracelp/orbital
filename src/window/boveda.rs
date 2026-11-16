@@ -189,6 +189,7 @@ impl Window {
         crate::medir_arranque::marca("show_vault: recientes");
         // Favoritos y Guardados (027): se cargan después del primer cuadro.
         self.listas_en_show_vault();
+        self.plegado_en_show_vault();
         self.set_list_model(tree);
         crate::medir_arranque::marca("show_vault: lista");
 

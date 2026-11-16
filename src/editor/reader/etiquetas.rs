@@ -121,6 +121,20 @@ impl Reader {
             .name("embed")
             .paragraph_background(crate::style::EMBED_BG.hex())
             .build());
+        // Plegado (028): compartidas por todos los bloques (nunca con `new_tag`, que las borraría
+        // de la tabla con su bloque).
+        add(gtk::TextTag::builder()
+            .name("flecha")
+            .foreground("rgba(255,255,255,0.70)")
+            .build());
+        add(gtk::TextTag::builder()
+            .name("plegado")
+            .invisible(true)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("fuera-de-enfoque")
+            .invisible(true)
+            .build());
     }
 
     /// Etiqueta de sangría: se recalcula con el margen de la columna.

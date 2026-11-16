@@ -31,7 +31,7 @@ fn fin_de(buf: &impl IsA<gtk::TextBuffer>, linea: i32) -> gtk::TextIter {
 fn texto_de(buf: &impl IsA<gtk::TextBuffer>, linea: i32) -> String {
     let inicio = inicio_de(buf, linea);
     let fin = fin_de(buf, linea);
-    buf.text(&inicio, &fin, false).to_string()
+    buf.text(&inicio, &fin, true).to_string()
 }
 
 /// Un ítem de lista detectado. `inicio`/`fin` son offsets absolutos del texto de la línea;
@@ -169,23 +169,40 @@ pub fn enter(buf: &impl IsA<gtk::TextBuffer>) -> bool {
         buf.end_user_action();
         return true;
     }
-    let marcador = if item
-        .marcador
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_digit())
-    {
-        marcador_continuacion(&item)
-    } else if item.tarea {
-        "- [ ] ".to_owned()
-    } else {
-        item.marcador.clone()
-    };
+    let marcador = marcador_siguiente(&item);
     let indent = " ".repeat(item.indent);
     let mut en = buf.iter_at_mark(&buf.get_insert());
     buf.insert(&mut en, &format!("\n{indent}{marcador}"));
     buf.end_user_action();
     true
+}
+
+/// El marcador del ítem que sigue a `item` (numeración +1, tarea sin marcar).
+pub fn marcador_siguiente(item: &Item) -> String {
+    if item
+        .marcador
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
+    {
+        marcador_continuacion(item)
+    } else if item.tarea {
+        "- [ ] ".to_owned()
+    } else {
+        item.marcador.clone()
+    }
+}
+
+/// Lo que movería [`mover_item`]: `(primera, última)` del bloque del ítem del cursor y del
+/// hermano con el que se intercambia (el plegado de la 028 reubica sus pliegues con esto).
+pub fn plan_mover(
+    buf: &impl IsA<gtk::TextBuffer>,
+    hacia_arriba: bool,
+) -> Option<((i32, i32), (i32, i32))> {
+    let item = item_en_cursor(buf)?;
+    let bloque = rango_bloque(buf, &item);
+    let hermano = hermano_de(buf, &item, hacia_arriba)?;
+    Some((bloque, rango_bloque(buf, &hermano)))
 }
 
 /// Tab: indenta el ítem (y sus subítems) dos espacios. Shift+Tab: desindenta (mínimo 0).

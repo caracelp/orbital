@@ -279,6 +279,8 @@ impl Window {
                 // en el deshacer, que llama a `do_rename` al revés. Si no se pueden escribir,
                 // `aplicar_listas` lo avisa aparte.
                 self.seguir_renombre_en_listas(&from, &to);
+                // El plegado también (028).
+                self.seguir_renombre_en_plegado(&from, &to);
                 if let Some(error) = enlaces_err {
                     self.toast(&format!("No se pudo migrar la URL asociada: {error}"));
                 }
@@ -435,6 +437,7 @@ impl Window {
         self.reload(None).await;
         // Sale de Favoritos y de las colecciones (027, FR-008); «Deshacer» la repone.
         let quitadas = self.quitar_de_listas(&path);
+        let quitadas_plegado = self.quitar_de_plegado(&path);
         let msg = match &in_vault {
             None => format!("«{}» se movió a la papelera", path.file_name()),
             Some(_) => format!(
@@ -444,12 +447,13 @@ impl Window {
         };
         let this = self.clone();
         self.toast_undo(&msg, move || {
-            let (this, plan, abs, in_vault, quitadas) = (
+            let (this, plan, abs, in_vault, quitadas, quitadas_plegado) = (
                 this.clone(),
                 plan.clone(),
                 abs.clone(),
                 in_vault.clone(),
                 quitadas.clone(),
+                quitadas_plegado.clone(),
             );
             glib::spawn_future_local(async move {
                 let repuesta = match in_vault {
@@ -458,6 +462,7 @@ impl Window {
                 };
                 if repuesta {
                     this.reponer_en_listas(&quitadas);
+                    this.reponer_en_plegado(&quitadas_plegado);
                 }
             });
         });

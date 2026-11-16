@@ -44,7 +44,7 @@ impl Editor {
                     // Es un recorrido lineal del texto, chico al escribir.
                     let text = i
                         .buffer
-                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
+                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), true);
                     i.completion.set_markers(completion::marker_candidates(
                         &text,
                         i.format.get() == Format::Html,
@@ -100,7 +100,7 @@ impl Editor {
                     // La nota abierta: el texto ya está en el buffer.
                     let texto = i
                         .buffer
-                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false);
+                        .text(&i.buffer.start_iter(), &i.buffer.end_iter(), true);
                     let b = Rc::new(listar_todos(&texto, i.format.get() == Format::Html));
                     *i.completion_bloques.borrow_mut() = Some((nota.clone(), Some(b.clone())));
                     b

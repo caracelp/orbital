@@ -84,15 +84,15 @@ impl std::fmt::Debug for TextoCorto {
 }
 
 /// Una línea sin el salto: `inicio..fin` en bytes; `siguiente` es el comienzo de la próxima.
-struct Linea<'a> {
-    texto: &'a str,
-    inicio: usize,
-    fin: usize,
-    siguiente: usize,
-    numero: usize,
+pub(crate) struct Linea<'a> {
+    pub(crate) texto: &'a str,
+    pub(crate) inicio: usize,
+    pub(crate) fin: usize,
+    pub(crate) siguiente: usize,
+    pub(crate) numero: usize,
 }
 
-fn lineas(texto: &str) -> impl Iterator<Item = Linea<'_>> {
+pub(crate) fn lineas(texto: &str) -> impl Iterator<Item = Linea<'_>> {
     let mut inicio = 0;
     let mut numero = 0;
     std::iter::from_fn(move || {
@@ -122,7 +122,7 @@ fn lineas(texto: &str) -> impl Iterator<Item = Linea<'_>> {
 }
 
 /// Fin del frontmatter (`---` … `---`) si la nota empieza con uno.
-fn fin_frontmatter(texto: &str) -> usize {
+pub(crate) fn fin_frontmatter(texto: &str) -> usize {
     let cuerpo = texto.strip_prefix('\u{feff}').unwrap_or(texto);
     let bom = texto.len() - cuerpo.len();
     let mut ls = lineas(cuerpo);
@@ -164,7 +164,7 @@ fn linea_de_id(l: &Linea) -> Option<Range<usize>> {
 }
 
 /// Marcador de ítem de lista (`- `, `* `, `+ `, `1. `, `1) `, tareas): sangría si lo es.
-fn es_item(linea: &str) -> bool {
+pub(crate) fn es_item(linea: &str) -> bool {
     let t = linea.trim_start();
     if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") {
         return true;
@@ -176,12 +176,12 @@ fn es_item(linea: &str) -> bool {
         && t[digitos + 1..].starts_with(' ')
 }
 
-fn es_encabezado(t: &str) -> bool {
+pub(crate) fn es_encabezado(t: &str) -> bool {
     let n = t.bytes().take_while(|b| *b == b'#').count();
     (1..=6).contains(&n) && (t.len() == n || t.as_bytes()[n] == b' ')
 }
 
-fn es_regla(t: &str) -> bool {
+pub(crate) fn es_regla(t: &str) -> bool {
     let mut marca = 0u8;
     let mut n = 0;
     for b in t.bytes() {
@@ -197,7 +197,7 @@ fn es_regla(t: &str) -> bool {
     n >= 3
 }
 
-fn cerca(t: &str) -> Option<(u8, usize)> {
+pub(crate) fn cerca(t: &str) -> Option<(u8, usize)> {
     let c = *t.as_bytes().first()?;
     if c != b'`' && c != b'~' {
         return None;

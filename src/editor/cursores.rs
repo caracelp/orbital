@@ -93,6 +93,40 @@ impl Editor {
                 let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
                 let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
                 let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                // Plegado (028): Ctrl+Arriba/Abajo sobre un elemento plegable y Enter al final de
+                // un elemento plegado; en cualquier otra línea, lo de siempre.
+                if ctrl && !alt && !shift {
+                    let plegar = match keyval {
+                        gtk::gdk::Key::Up => Some(true),
+                        gtk::gdk::Key::Down => Some(false),
+                        _ => None,
+                    };
+                    if let Some(p) = plegar
+                        && this.tecla_plegar(p)
+                    {
+                        return glib::Propagation::Stop;
+                    }
+                }
+                // Enfoque (028): Alt+Derecha enfoca el elemento del cursor; Alt+Izquierda sube o
+                // sale del enfoque.
+                if alt && !ctrl && !shift {
+                    let hecho = match keyval {
+                        gtk::gdk::Key::Right => this.enfocar_en_cursor(),
+                        gtk::gdk::Key::Left => this.subir_enfoque(),
+                        _ => false,
+                    };
+                    if hecho {
+                        return glib::Propagation::Stop;
+                    }
+                }
+                if matches!(keyval, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter)
+                    && !ctrl
+                    && !alt
+                    && !shift
+                    && this.enter_en_plegado()
+                {
+                    return glib::Propagation::Stop;
+                }
                 let en_lista = outliner::item_en_cursor(&inner.buffer).is_some();
                 let intervenir = match (keyval, ctrl, alt, shift) {
                     (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, false, false, _)
@@ -108,10 +142,10 @@ impl Editor {
                     (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, _) => {
                         outliner::enter(&inner.buffer)
                     }
-                    (gtk::gdk::Key::Tab, false) => outliner::indentar(&inner.buffer, true),
-                    (gtk::gdk::Key::ISO_Left_Tab, true) => outliner::indentar(&inner.buffer, false),
-                    (gtk::gdk::Key::Up, _) => outliner::mover_item(&inner.buffer, true),
-                    (gtk::gdk::Key::Down, _) => outliner::mover_item(&inner.buffer, false),
+                    (gtk::gdk::Key::Tab, false) => this.indentar_plegado(true),
+                    (gtk::gdk::Key::ISO_Left_Tab, true) => this.indentar_plegado(false),
+                    (gtk::gdk::Key::Up, _) => this.mover_item_plegado(true),
+                    (gtk::gdk::Key::Down, _) => this.mover_item_plegado(false),
                     _ => false,
                 };
                 return if hecho {
@@ -129,13 +163,7 @@ impl Editor {
                     gtk::gdk::Key::Down => 1,
                     _ => return glib::Propagation::Proceed,
                 };
-                let base = multi_cursor::base_columna(&inner.buffer, &inner.extra.borrow(), delta);
-                if let Some(it) = multi_cursor::iter_columna_adyacente(&inner.buffer, &base, delta)
-                {
-                    inner.extra.borrow_mut().add_cursor(&inner.buffer, &it);
-                    this.actualizar_carenes();
-                    return glib::Propagation::Stop;
-                }
+                this.cursor_en_columna(delta);
                 return glib::Propagation::Stop;
             }
             if alt {
@@ -178,6 +206,24 @@ impl Editor {
             glib::Propagation::Stop
         });
         i.view.add_controller(teclas);
+    }
+
+    /// Ctrl+Alt+Arriba/Abajo: un cursor extra en la línea de arriba o de abajo (006). Un cursor
+    /// extra no queda en texto oculto (028): lo que oculta esa línea se despliega antes.
+    pub(super) fn cursor_en_columna(&self, delta: i32) -> bool {
+        let inner = &self.0;
+        let base = multi_cursor::base_columna(&inner.buffer, &inner.extra.borrow(), delta);
+        let Some(it) = multi_cursor::iter_columna_adyacente(&inner.buffer, &base, delta) else {
+            return false;
+        };
+        let offset = it.offset();
+        if plegado::oculto(&it, &inner.tag_plegado) {
+            self.revelar_linea(it.line() as u32);
+        }
+        let it = inner.buffer.iter_at_offset(offset);
+        inner.extra.borrow_mut().add_cursor(&inner.buffer, &it);
+        self.actualizar_carenes();
+        true
     }
 
     /// Recalcula los rectángulos de los cursores extra para el overlay (research R2).

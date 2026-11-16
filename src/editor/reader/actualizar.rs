@@ -79,8 +79,10 @@ impl Reader {
             doc,
             hashes,
             header: header_hash,
+            plegables,
             ..
         } = prepared;
+        let plegables = Rc::new(plegables);
         let in_place = {
             let old = i.blocks.borrow();
             let p = old
@@ -100,12 +102,23 @@ impl Reader {
             (!old.is_empty() && changed <= MAX_IN_PLACE).then_some((p, s))
         };
         match in_place {
-            Some((p, s)) => self.update(doc, hashes, header_hash, header, base_dir, p, s),
-            None => self.rebuild(doc, hashes, header_hash, header, base_dir, generation),
+            Some((p, s)) => {
+                self.update(doc, hashes, header_hash, header, base_dir, plegables, p, s)
+            }
+            None => self.rebuild(
+                doc,
+                hashes,
+                header_hash,
+                header,
+                base_dir,
+                plegables,
+                generation,
+            ),
         }
     }
 
     /// Arma todo en un buffer nuevo por tramos y lo pone al final: la vista no parpadea.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn rebuild(
         &self,
         doc: RenderDoc,
@@ -113,6 +126,7 @@ impl Reader {
         header_hash: u64,
         header: impl FnOnce() -> Option<gtk::Widget>,
         base_dir: Option<PathBuf>,
+        plegables: Rc<Vec<u32>>,
         generation: u64,
     ) {
         let table = self.buffer().tag_table();
@@ -128,6 +142,8 @@ impl Reader {
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
             embedded: Cell::new(0),
+            plegables,
+            plegables_lector: RefCell::new(Vec::new()),
         });
         if let Some(h) = header() {
             let mut end = state.buffer.end_iter();
@@ -191,6 +207,8 @@ impl Reader {
         *i.pending.borrow_mut() = std::mem::take(&mut *s.children.borrow_mut());
         *i.blocks.borrow_mut() = blocks;
         i.header.set(Some(header_hash));
+        // Lo plegado (028) antes del primer cuadro del buffer nuevo.
+        self.aplicar_plegado();
         // La disposición todavía no está calculada: se ancla lo visible en el próximo reposo.
         self.schedule_attach();
         if let Some(line) = i.pending_line.take() {
@@ -213,6 +231,7 @@ impl Reader {
         header_hash: u64,
         header: impl FnOnce() -> Option<gtk::Widget>,
         base_dir: Option<PathBuf>,
+        plegables: Rc<Vec<u32>>,
         p: usize,
         s: usize,
     ) {
@@ -230,6 +249,8 @@ impl Reader {
             block_base: RefCell::new(Rc::new(Cell::new(0))),
             block_start: Cell::new(0),
             embedded: Cell::new(0),
+            plegables,
+            plegables_lector: RefCell::new(Vec::new()),
         };
         i.focused_link.set(None);
         let mut old = std::mem::take(&mut *i.blocks.borrow_mut());
@@ -254,6 +275,12 @@ impl Reader {
                     buffer.delete_mark(&item.start);
                     buffer.delete_mark(&item.end);
                 }
+                for p in &b.plegables {
+                    if let Some((d, h)) = &p.contenido {
+                        buffer.delete_mark(d);
+                        buffer.delete_mark(h);
+                    }
+                }
                 buffer.delete_mark(&b.mark);
             }
         }
@@ -271,6 +298,12 @@ impl Reader {
         // La marca del primer bloque que queda tiene gravedad izquierda: quedó antes de lo insertado.
         if let Some(b) = suffix.first() {
             buffer.move_mark(&b.mark, &end);
+            // Lo mismo con la flechita del plegado (028) si estaba al comienzo del bloque.
+            for p in &b.plegables {
+                if buffer.iter_at_mark(&p.glifo).offset() < end.offset() {
+                    buffer.move_mark(&p.glifo, &end);
+                }
+            }
         }
         i.links
             .borrow_mut()
@@ -300,6 +333,8 @@ impl Reader {
             i.header.set(Some(header_hash));
         }
         *i.blocks.borrow_mut() = blocks;
+        // Lo que se insertó en el sitio no tiene la etiqueta de lo plegado (028).
+        self.aplicar_plegado();
         if let Some(f) = i.on_rendered.borrow().as_ref() {
             f();
         }
