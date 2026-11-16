@@ -57,6 +57,15 @@ def walk(node, depth=0):
             yield from walk(c, depth + 1)
 
 
+def limpiar_cache(nodo):
+    """El cliente AT-SPI guarda en caché los hijos: después de desplazar una lista virtual, sin
+    limpiarla se siguen viendo las filas de antes (y parece que no se movió)."""
+    try:
+        nodo.clear_cache()
+    except Exception:
+        pass
+
+
 def find(role, name):
     a = app()
     if a is None:
@@ -136,6 +145,7 @@ def main():
                 break
             accion.do_action(0)
             time.sleep(0.1)
+            limpiar_cache(lista)
             if lista.get_child_at_index(0).get_name() == antes:
                 break
         for _ in range(50):
@@ -149,6 +159,7 @@ def main():
             antes = nombres[-1]
             ultima.do_action(0)
             time.sleep(0.15)
+            limpiar_cache(lista)
             if lista.get_child_at_index(lista.get_child_count() - 1).get_name() == antes:
                 break
         if not hits:
