@@ -11,6 +11,7 @@ pub mod conflict;
 mod cursores;
 mod edicion_visual;
 pub mod find;
+mod flechas;
 mod guardado;
 pub mod html;
 mod ids_bloque;
@@ -18,6 +19,7 @@ mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;
 pub mod outliner;
+mod plegado;
 pub mod props;
 pub mod reader;
 pub mod right_sidebar;
@@ -201,6 +203,25 @@ struct Inner {
     reader_current_idx: Cell<Option<usize>>,
     visual_matches: Cell<u32>,
     visual_current_idx: Cell<u32>,
+    /// Outliner plegable (028): marcas al comienzo de la línea de cada elemento plegado.
+    pliegues: RefCell<Vec<gtk::TextMark>>,
+    /// Última pasada del árbol de plegables.
+    arbol: RefCell<Option<plegado::Arbol>>,
+    /// Sube con cada cambio del texto (también los del guardado y la carga).
+    texto_gen: Cell<u64>,
+    /// Reconciliación pendiente (300 ms después de la última tecla).
+    plegado_gen: Cell<u64>,
+    /// Ids del guardado y outliner: sus ediciones no despliegan (research R5).
+    sin_desplegar: Cell<bool>,
+    tag_plegado: gtk::TextTag,
+    /// Lo que queda fuera del elemento enfocado (tanda B, research R9).
+    #[allow(dead_code)]
+    tag_fuera: gtk::TextTag,
+    /// Canal de las flechitas (`flechas.rs`).
+    flechas: sourceview5::GutterRendererPixbuf,
+    on_plegado: RefCell<Option<plegado::PlegadoFn>>,
+    /// Últimas claves avisadas a la ventana.
+    plegado_claves: RefCell<Vec<orbital_vault::Clave>>,
 }
 
 /// El editor de la nota abierta.
@@ -227,7 +248,9 @@ impl Editor {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .child(&view)
             .build();
-        code::center_column(&code_scroller, &view, 860);
+        let flechas = flechas::nuevo();
+        code::center_column(&code_scroller, &view, 860, Some(&flechas));
+        let (tag_plegado, tag_fuera) = plegado::crear_etiquetas(&buffer);
         let capa_cursor = gtk::Overlay::new();
         capa_cursor.set_child(Some(&code_scroller));
         capa_cursor.add_overlay(&caren);
@@ -279,6 +302,11 @@ impl Editor {
         let search_settings = sourceview5::SearchSettings::new();
         search_settings.set_case_sensitive(false);
         search_settings.set_wrap_around(true);
+        // Buscar en la nota encuentra también lo plegado (028): al ir a la coincidencia, se
+        // despliega.
+        if search_settings.find_property("visible-only").is_some() {
+            search_settings.set_property("visible-only", false);
+        }
         let search_ctx = sourceview5::SearchContext::new(&buffer, Some(&search_settings));
         search_ctx.set_highlight(false);
 
@@ -347,6 +375,16 @@ impl Editor {
             reader_current_idx: Cell::new(None),
             visual_matches: Cell::new(0),
             visual_current_idx: Cell::new(0),
+            pliegues: RefCell::new(Vec::new()),
+            arbol: RefCell::new(None),
+            texto_gen: Cell::new(0),
+            plegado_gen: Cell::new(0),
+            sin_desplegar: Cell::new(false),
+            tag_plegado,
+            tag_fuera,
+            flechas,
+            on_plegado: RefCell::new(None),
+            plegado_claves: RefCell::new(Vec::new()),
         }));
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -549,6 +587,8 @@ impl Editor {
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_changed(move |_| {
             if let Some(inner) = weak.upgrade() {
+                // Primero: cualquier otro manejador que pida el árbol de plegables ya lo ve viejo.
+                inner.texto_gen.set(inner.texto_gen.get() + 1);
                 Editor(inner).on_changed();
             }
         });
@@ -618,6 +658,13 @@ impl Editor {
                 }
             });
         this.setup_multi_cursor();
+        this.setup_plegado();
+        let weak = Rc::downgrade(&this.0);
+        this.0.reader.set_on_plegar(move |linea| {
+            if let Some(i) = weak.upgrade() {
+                Editor(i).alternar_plegado(linea);
+            }
+        });
         this.apply_mode(View::Codigo);
         this
     }
@@ -749,7 +796,7 @@ impl Editor {
     /// Obtiene el texto actual del buffer de edición.
     pub fn text(&self) -> String {
         let b = &self.0.buffer;
-        b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+        b.text(&b.start_iter(), &b.end_iter(), true).to_string()
     }
 
     /// Formato de la nota abierta.

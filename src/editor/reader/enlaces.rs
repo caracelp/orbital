@@ -4,11 +4,19 @@ use super::*;
 
 impl Reader {
     pub(super) fn all_link_items(&self) -> Vec<LinkItem> {
+        // Lo plegado no se recorre con Tab (028).
+        let buf = self.buffer();
+        let oculto = buf.tag_table().lookup("plegado");
         self.0
             .blocks
             .borrow()
             .iter()
             .flat_map(|b| b.links.iter().cloned())
+            .filter(|l| {
+                oculto
+                    .as_ref()
+                    .is_none_or(|t| !buf.iter_at_mark(&l.start).has_tag(t))
+            })
             .collect()
     }
 
@@ -46,6 +54,19 @@ impl Reader {
             let Some(iter) = i.view.iter_at_location(bx, by) else {
                 return;
             };
+            // Una flechita del plegado (028).
+            let reader = Reader(i.clone());
+            if iter
+                .buffer()
+                .tag_table()
+                .lookup("flecha")
+                .is_some_and(|t| iter.has_tag(&t))
+                && let Some(linea) = reader.flecha_en(&iter)
+            {
+                g.set_state(gtk::EventSequenceState::Claimed);
+                reader.plegar(linea);
+                return;
+            }
             for tag in iter.tags() {
                 let url = i.links.borrow().get(&tag).cloned();
                 if let (Some(url), Some(f)) = (url, i.on_link.borrow().as_ref()) {
@@ -113,6 +134,14 @@ impl Reader {
         let Some(item) = self.all_link_items().get(index).cloned() else {
             return false;
         };
+        if let Some(linea) = item
+            .url
+            .strip_prefix(super::plegado::URL_PLEGAR)
+            .and_then(|l| l.parse().ok())
+        {
+            self.plegar(linea);
+            return true;
+        }
         if let Some(f) = self.0.on_link.borrow().as_ref() {
             f(&item.url);
         }

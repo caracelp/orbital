@@ -44,6 +44,39 @@ impl Editor {
         });
         let buffer = self.0.buffer.clone();
         buffer.place_cursor(&buffer.end_iter());
+        // `ORBITAL_MEDIR_PLEGADO=todo` (028): «Plegar todo» antes de medir, con su tiempo hasta el
+        // cuadro siguiente; se escribe al final de la última línea visible (el final del texto
+        // queda oculto y escribir ahí lo desplegaría).
+        if std::env::var("ORBITAL_MEDIR_PLEGADO").as_deref() == Ok("todo") {
+            let pintado: Rc<Cell<Option<Instant>>> = Rc::default();
+            let p = pintado.clone();
+            let h = clock.connect_after_paint(move |_| {
+                if p.get().is_none() {
+                    p.set(Some(Instant::now()));
+                }
+            });
+            let inicio = Instant::now();
+            self.plegar_todo();
+            let plegar = inicio.elapsed();
+            view.queue_draw();
+            while pintado.get().is_none() && inicio.elapsed() < Duration::from_secs(2) {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            clock.disconnect(h);
+            let cuadro = pintado.get().map(|t| t.saturating_duration_since(inicio));
+            println!(
+                "Plegar todo: {:.2} ms hasta el cuadro siguiente (el cambio en sí: {:.2} ms; {} elementos plegados)",
+                cuadro.map_or(f64::NAN, |d| d.as_secs_f64() * 1000.0),
+                plegar.as_secs_f64() * 1000.0,
+                self.lineas_plegadas().len()
+            );
+            let mut it = buffer.end_iter();
+            while plegado::oculto(&it, &self.0.tag_plegado) && it.backward_line() {}
+            if !it.ends_line() {
+                it.forward_to_line_end();
+            }
+            buffer.place_cursor(&it);
+        }
         let mut out = Vec::with_capacity(chars);
         for k in 0..chars {
             update_at.set(None);

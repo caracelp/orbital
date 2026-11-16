@@ -377,6 +377,32 @@ impl Prepared {
             hashes,
             header,
             deps,
+            plegables: Vec::new(),
+        }
+    }
+
+    /// Las flechitas del plegado (028): las líneas plegables y, en el hash de cada bloque, cuáles
+    /// de sus líneas lo son (relativas al bloque: un bloque que gana o pierde una flechita se
+    /// vuelve a dibujar; editar más arriba no cambia nada).
+    pub fn con_plegables(&mut self, plegables: &[orbital_vault::Plegable]) {
+        self.plegables = plegables.iter().map(|p| p.linea).collect();
+        if self.plegables.is_empty() {
+            return;
+        }
+        let lineas: Vec<u32> = self.doc.blocks.iter().map(|b| b.line as u32).collect();
+        for (n, h) in self.hashes.iter_mut().enumerate() {
+            let desde = lineas[n];
+            let hasta = lineas.get(n + 1).copied().unwrap_or(u32::MAX);
+            let a = self.plegables.partition_point(|&l| l < desde);
+            let z = self.plegables.partition_point(|&l| l < hasta);
+            if a == z {
+                continue;
+            }
+            let mut bytes = h.to_le_bytes().to_vec();
+            for l in &self.plegables[a..z] {
+                bytes.extend_from_slice(&(l - desde).to_le_bytes());
+            }
+            *h = orbital_vault::write::hash(&bytes);
         }
     }
 }

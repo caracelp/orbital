@@ -47,19 +47,25 @@ impl Editor {
             .map(|it| (byte_de(&lineas, &it), b.create_mark(None, &it, true)));
 
         i.asignando_ids.set(true);
-        b.begin_user_action();
-        for e in &ediciones {
-            let mut desde = iter_de(b, &lineas, e.rango.start);
-            if e.rango.is_empty() {
-                b.insert(&mut desde, e.texto.as_str());
-            } else {
-                let mut hasta = iter_de(b, &lineas, e.rango.end);
-                b.delete(&mut desde, &mut hasta);
-                b.insert(&mut desde, e.texto.as_str());
+        // Los ids van también en líneas plegadas (028): no despliegan nada, y la reconciliación
+        // de enseguida deja lo plegado igual (un ` ^id` al final de una línea oculta hereda la
+        // etiqueta; uno en una línea propia se oculta acá).
+        self.sin_desplegar(|| {
+            b.begin_user_action();
+            for e in &ediciones {
+                let mut desde = iter_de(b, &lineas, e.rango.start);
+                if e.rango.is_empty() {
+                    b.insert(&mut desde, e.texto.as_str());
+                } else {
+                    let mut hasta = iter_de(b, &lineas, e.rango.end);
+                    b.delete(&mut desde, &mut hasta);
+                    b.insert(&mut desde, e.texto.as_str());
+                }
             }
-        }
-        b.end_user_action();
+            b.end_user_action();
+        });
         i.asignando_ids.set(false);
+        self.reconciliar();
 
         if let Some((byte, mark)) = arriba {
             if ediciones.iter().any(|e| e.rango.start < byte) {

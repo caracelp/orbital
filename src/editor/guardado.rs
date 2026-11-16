@@ -19,6 +19,7 @@ impl Editor {
             i.switching.set(false);
         }
         i.format.set(note.format);
+        self.reiniciar_plegado();
         let scripts =
             note.format == Format::Html && orbital_vault::html_edit::body_has_scripts(&text);
         i.html_scripts.set(scripts);
@@ -47,6 +48,9 @@ impl Editor {
         i.generation.set(i.generation.get() + 1);
         *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
+        // El árbol de plegables (028), en otro hilo: hasta que llega, las flechitas usan la regla
+        // local de cada línea.
+        self.reconciliar_en(Duration::ZERO);
         let vault_weak = Arc::downgrade(&vault);
         let from_note = note.path.clone();
         i.reader.set_is_missing(move |url| {
@@ -93,7 +97,7 @@ impl Editor {
     ) -> Result<(), String> {
         let i = &self.0;
         let b = &i.buffer;
-        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
         let note = i
             .meta
             .borrow()
@@ -168,6 +172,7 @@ impl Editor {
         self.0.completion.popdown();
         self.0.generation.set(self.0.generation.get() + 1);
         self.0.reader.reset();
+        self.reiniciar_plegado();
         *self.0.session.borrow_mut() = None;
     }
 
@@ -176,6 +181,7 @@ impl Editor {
         if i.loading.get() || i.asignando_ids.get() {
             return;
         }
+        self.reconciliar_pronto();
         if let Some(f) = i.on_text_changed.borrow().as_ref() {
             f();
         }
@@ -255,7 +261,7 @@ impl Editor {
         };
         let texto_buffer = || {
             i.buffer
-                .text(&i.buffer.start_iter(), &i.buffer.end_iter(), false)
+                .text(&i.buffer.start_iter(), &i.buffer.end_iter(), true)
                 .to_string()
         };
         let mut text = texto_buffer();
@@ -425,6 +431,10 @@ impl Editor {
             Ok((updated, disk_text)) => {
                 *self.0.session.borrow_mut() = Some(updated);
                 let i = &self.0;
+                // `set_text` deja todas las marcas al comienzo: lo plegado se vuelve a resolver
+                // por sus claves sobre el texto nuevo (research R6).
+                let claves = self.claves_plegadas();
+                self.reiniciar_plegado();
                 i.loading.set(true);
                 i.buffer.begin_irreversible_action();
                 i.buffer.set_text(&disk_text);
@@ -432,6 +442,7 @@ impl Editor {
                 i.buffer.place_cursor(&i.buffer.start_iter());
                 i.loading.set(false);
                 i.generation.set(i.generation.get() + 1);
+                self.aplicar_claves(&claves);
                 if i.mode.get() == View::Visual {
                     self.show_visual();
                 } else if i.mode.get() != View::Codigo {

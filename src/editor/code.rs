@@ -106,20 +106,81 @@ pub fn set_language(buffer: &sourceview5::Buffer, language: &str) {
     buffer.set_language(lang.as_ref());
 }
 
+/// Margen entre el canal de las flechitas (028) y el texto.
+const MARGEN_CANAL: i32 = 4;
+/// Ancho mínimo del canal: el ícono de 16 px y su relleno.
+pub const CANAL_MIN: i32 = 20;
+
 /// Centra el texto en una columna de hasta `max` píxeles con márgenes, sin envolver la vista en
-/// otro widget (que le haría perder el cálculo incremental de la disposición).
-pub fn center_column(scroller: &gtk::ScrolledWindow, view: &impl IsA<gtk::TextView>, max: i32) {
+/// otro widget (que le haría perder el cálculo incremental de la disposición). Con `canal` (las
+/// flechitas del plegado, 028) visible, su ancho toma el lugar del margen izquierdo: la flechita
+/// queda al lado del texto y no en el borde de la ventana.
+///
+/// Con un canal, cambiar márgenes o anchos dentro del aviso de `page-size` (que GTK emite
+/// mientras valida lo visible) rompe la aserción `onscreen_validated` de `GtkTextView`: el ajuste
+/// va a un *idle*, uno por vez.
+pub fn center_column(
+    scroller: &gtk::ScrolledWindow,
+    view: &impl IsA<gtk::TextView>,
+    max: i32,
+    canal: Option<&sourceview5::GutterRendererPixbuf>,
+) {
+    use std::cell::Cell;
+    use std::rc::Rc;
     let view = view.as_ref().clone();
-    let apply = move |width: f64| {
-        let side = ((width as i32 - max) / 2).max(12);
-        if view.left_margin() != side {
-            view.set_left_margin(side);
-            view.set_right_margin(side);
+    let notificar = canal.cloned();
+    let canal = canal.cloned();
+    let h = scroller.hadjustment();
+    let ajustar = {
+        let h = h.clone();
+        move || {
+            // La página del ajuste horizontal es el área de texto, sin el canal: con el canal
+            // visible, el ancho total es la página más el canal (si no, agrandar el canal
+            // achica la página y el ancho oscila).
+            let canal_visible = canal.as_ref().filter(|c| c.is_visible());
+            let total =
+                h.page_size() as i32 + canal_visible.map_or(0, |c| c.width_request().max(0));
+            let side = ((total - max) / 2).max(12);
+            let left = match canal_visible {
+                Some(c) => {
+                    let ancho = (side - MARGEN_CANAL).max(CANAL_MIN);
+                    if c.width_request() != ancho {
+                        c.set_size_request(ancho, -1);
+                    }
+                    MARGEN_CANAL
+                }
+                None => side,
+            };
+            if view.left_margin() != left || view.right_margin() != side {
+                view.set_left_margin(left);
+                view.set_right_margin(side);
+            }
         }
     };
-    let h = scroller.hadjustment();
-    apply(h.page_size());
-    h.connect_page_size_notify(move |a| apply(a.page_size()));
+    if notificar.is_none() {
+        // Sin canal, como siempre: en el acto.
+        ajustar();
+        h.connect_page_size_notify(move |_| ajustar());
+        return;
+    }
+    let pendiente = Rc::new(Cell::new(false));
+    let ajustar = Rc::new(ajustar);
+    let programar = Rc::new(move || {
+        if pendiente.replace(true) {
+            return;
+        }
+        let (p, a) = (pendiente.clone(), ajustar.clone());
+        gtk::glib::idle_add_local_once(move || {
+            p.set(false);
+            a();
+        });
+    });
+    programar();
+    if let Some(c) = notificar {
+        let p = programar.clone();
+        c.connect_visible_notify(move |_| p());
+    }
+    h.connect_page_size_notify(move |_| programar());
 }
 
 /// Verifica si el cursor está dentro de una secuencia `[[...` no cerrada en la misma línea.
@@ -130,7 +191,7 @@ pub fn link_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32
     let mut line_start = cursor_iter;
     line_start.set_line_offset(0);
 
-    let line_text = buffer.text(&line_start, &cursor_iter, false);
+    let line_text = buffer.text(&line_start, &cursor_iter, true);
     // Buscar el último "[[" antes del cursor en la línea
     let last_open = line_text.rfind("[[")?;
     let after_open = &line_text[last_open + 2..];
@@ -151,7 +212,7 @@ pub fn block_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, St
     let cursor = buffer.iter_at_offset(buffer.cursor_position());
     let mut line_start = cursor;
     line_start.set_line_offset(0);
-    let line = buffer.text(&line_start, &cursor, false);
+    let line = buffer.text(&line_start, &cursor, true);
     let open = line.rfind("[[")?;
     let after = &line[open + 2..];
     if after.contains("]]") || after.contains('|') {
@@ -174,7 +235,7 @@ pub fn tag_query_at_cursor(buffer: &sourceview5::Buffer, is_html: bool) -> Optio
     let cursor = buffer.iter_at_offset(buffer.cursor_position());
     let mut start = cursor;
     start.set_line_offset(0);
-    let line = buffer.text(&start, &cursor, false);
+    let line = buffer.text(&start, &cursor, true);
     let hash = line.rfind('#')?;
     if !line[hash + 1..]
         .chars()
@@ -182,7 +243,7 @@ pub fn tag_query_at_cursor(buffer: &sourceview5::Buffer, is_html: bool) -> Optio
     {
         return None;
     }
-    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
     let byte_cursor = text
         .char_indices()
         .nth(cursor.offset() as usize)
@@ -225,12 +286,12 @@ pub fn marker_query_at_cursor(
     let cursor = buffer.iter_at_offset(buffer.cursor_position());
     let mut line_start = cursor;
     line_start.set_line_offset(0);
-    let hasta_cursor = buffer.text(&line_start, &cursor, false);
+    let hasta_cursor = buffer.text(&line_start, &cursor, true);
     let mut line_end = cursor;
     if !line_end.ends_line() {
         line_end.forward_to_line_end();
     }
-    let line = buffer.text(&line_start, &line_end, false);
+    let line = buffer.text(&line_start, &line_end, true);
 
     let bracket = hasta_cursor.rfind("[%")?;
     let prefix = &hasta_cursor[bracket + 2..];
@@ -277,8 +338,8 @@ pub fn marker_query_at_cursor(
         }
     }
 
-    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-    let line_bytes = buffer.text(&buffer.start_iter(), &line_start, false).len();
+    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+    let line_bytes = buffer.text(&buffer.start_iter(), &line_start, true).len();
     let at = line_bytes + bracket;
     // Cerrar el marcador en la posición del cursor y dejar la línea como esté: la exclusión del
     // núcleo (código, enlaces, frontmatter, escape) es una sola fuente de verdad. Con prefijo
@@ -397,7 +458,7 @@ mod tests {
 
         insert_link_completion(&buffer, &view, start_offset, "biologia");
 
-        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
         assert_eq!(text, "Ver [[biologia]]");
 
         // El cursor debe estar al final, justo después de ]]
@@ -508,12 +569,12 @@ mod tests {
         buffer.place_cursor(&buffer.end_iter());
         let (_, start) = marker_query_at_cursor(&buffer, false).unwrap();
         insert_marker_completion(&buffer, start, "prioridad");
-        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
         assert_eq!(text, "Café 😀 [%prioridad]");
         assert_eq!(buffer.cursor_position(), text.chars().count() as i32);
         buffer.undo();
         assert_eq!(
-            buffer.text(&buffer.start_iter(), &buffer.end_iter(), false),
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
             "Café 😀 [%pría"
         );
     }

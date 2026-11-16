@@ -53,7 +53,7 @@ impl Editor {
                         i.buffer.iter_at_mark(&i.buffer.get_insert()),
                         i.buffer.iter_at_mark(&i.buffer.selection_bound()),
                     );
-                    Some(i.buffer.text(&s, &e, false).to_string())
+                    Some(i.buffer.text(&s, &e, true).to_string())
                 } else {
                     None
                 }
@@ -65,7 +65,7 @@ impl Editor {
                         b.iter_at_mark(&b.get_insert()),
                         b.iter_at_mark(&b.selection_bound()),
                     );
-                    Some(b.text(&s, &e, false).to_string())
+                    Some(b.text(&s, &e, true).to_string())
                 } else {
                     None
                 }
@@ -132,7 +132,9 @@ impl Editor {
                     return;
                 }
                 let b = i.reader.buffer();
-                let text = b.text(&b.start_iter(), &b.end_iter(), false);
+                // `slice` cuenta los widgets anclados como un carácter y lo invisible (lo plegado,
+                // 028) también: las posiciones coinciden con las del buffer.
+                let text = b.slice(&b.start_iter(), &b.end_iter(), true);
                 let folded_text = orbital_vault::fold(&text);
                 let folded_query = orbital_vault::fold(query);
                 if folded_query.is_empty() {
@@ -165,6 +167,7 @@ impl Editor {
                 } else {
                     i.reader_current_idx.set(Some(0));
                     let (start, end) = matches[0];
+                    self.revelar_en_lector(start);
                     let iter_start = b.iter_at_offset(start as i32);
                     let iter_end = b.iter_at_offset(end as i32);
                     b.apply_tag_by_name("find-current", &iter_start, &iter_end);
@@ -228,6 +231,7 @@ impl Editor {
                     let new_idx = (old_idx + 1) % matches.len();
                     i.reader_current_idx.set(Some(new_idx));
                     let (s, e) = matches[new_idx];
+                    self.revelar_en_lector(s);
                     b.apply_tag_by_name(
                         "find-current",
                         &b.iter_at_offset(s as i32),
@@ -288,6 +292,7 @@ impl Editor {
                     };
                     i.reader_current_idx.set(Some(new_idx));
                     let (s, e) = matches[new_idx];
+                    self.revelar_en_lector(s);
                     b.apply_tag_by_name(
                         "find-current",
                         &b.iter_at_offset(s as i32),
@@ -359,9 +364,38 @@ impl Editor {
         if !matches!(i.mode.get(), View::Codigo | View::Dividida) {
             return;
         }
+        // Lo que se reemplaza tiene que estar a la vista (028, decisión 6): se despliegan antes
+        // los elementos con coincidencias, de una vez.
+        if self.tiene_pliegues() {
+            let mut lineas = Vec::new();
+            let mut it = i.buffer.start_iter();
+            while let Some((a, b, vuelta)) = i.search_ctx.forward(&it) {
+                if vuelta || b.offset() <= it.offset() {
+                    break;
+                }
+                lineas.push(a.line() as u32);
+                it = b;
+            }
+            self.revelar_lineas(&lineas);
+        }
+        // Sin coincidencias, `replace_all` de sourceview5 0.11 entra en pánico (GtkSourceView
+        // devuelve 0 reemplazos sin error y el enlace lo toma como una falla sin error).
+        if i.search_ctx.forward(&i.buffer.start_iter()).is_none() {
+            i.find_bar.set_counter(None, 0);
+            return;
+        }
         i.buffer.begin_user_action();
         let _ = i.search_ctx.replace_all(replace_text);
         i.buffer.end_user_action();
         i.find_bar.set_counter(None, 0);
+    }
+
+    /// Una coincidencia de Lectura dentro de algo plegado: se despliega antes de mostrarla
+    /// (FR-011, 028).
+    fn revelar_en_lector(&self, offset: usize) {
+        let lineas = self.0.reader.plegados_en(offset as i32);
+        if !lineas.is_empty() {
+            self.desplegar_lineas(&lineas);
+        }
     }
 }
