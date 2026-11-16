@@ -21,6 +21,7 @@ pub mod html_text;
 pub mod importar;
 pub mod link_graph;
 pub mod links;
+pub mod listas;
 pub mod markers;
 pub mod note;
 pub mod okf_files;
@@ -54,6 +55,7 @@ pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,
     parse_link_target, percent_decode,
 };
+pub use listas::{Coleccion, Lista, Listas, ListasSnapshot};
 pub use markers::{Marker, find_markers, resolve_markers, resolve_markers_html, section_ranges};
 pub use note::{Format, Note, NoteMeta};
 pub use ops::DeletePlan;
