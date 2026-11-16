@@ -1826,4 +1826,68 @@ mod plegado_tests {
             std::fs::remove_dir_all(root).unwrap();
         });
     }
+
+    #[test]
+    #[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
+    fn menu_paleta_y_acciones_plegado() {
+        adw::init().expect("Se necesita una sesión gráfica GTK");
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.Test028Us5")
+            .build();
+        let root = std::env::temp_dir().join("orbital-test-028-us5");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("wiki")).unwrap();
+        std::fs::write(
+            root.join("wiki/outline.md"),
+            "# Uno\nintro\n\n## Historia\nTexto.\n- Frutas\n  - Manzana\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("wiki/pagina.html"), "<h1>Hola</h1><p>HTML</p>\n").unwrap();
+
+        glib::MainContext::default().block_on(async {
+            let w = ventana(&app, &root).await;
+            abrir(&w, "wiki/outline.md").await;
+
+            // Menú sin enfoque: Plegar todo, Desplegar todo, Enfocar (sin Salir del enfoque).
+            let labels: Vec<String> = w
+                .items_menu_plegado()
+                .into_iter()
+                .map(|m| m.label)
+                .collect();
+            assert_eq!(labels, ["Plegar todo", "Desplegar todo", "Enfocar"]);
+
+            let act = |name: &str| {
+                gtk::prelude::ActionGroupExt::activate_action(&w.0.window, name, None);
+            };
+            // Acciones en Código, Lectura y Dividida.
+            for vista in ["view-code", "view-read", "view-split"] {
+                act(vista);
+                act("plegar-todo");
+                assert!(editor(&w).tiene_pliegues());
+                act("desplegar-todo");
+                assert!(!editor(&w).tiene_pliegues());
+            }
+
+            // Enfocar desde acción: aparece Salir del enfoque en el menú.
+            act("enfocar");
+            assert!(editor(&w).esta_enfocado());
+            let labels: Vec<String> = w
+                .items_menu_plegado()
+                .into_iter()
+                .map(|m| m.label)
+                .collect();
+            assert!(labels.contains(&"Salir del enfoque".to_owned()));
+            act("salir-enfoque");
+            assert!(!editor(&w).esta_enfocado());
+
+            // En .html, plegar no está disponible y no rompe nada.
+            abrir(&w, "wiki/pagina.html").await;
+            assert!(!editor(&w).plegado_disponible());
+            act("plegar-todo");
+            assert!(!editor(&w).tiene_pliegues());
+
+            w.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
 }

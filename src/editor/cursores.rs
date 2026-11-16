@@ -107,6 +107,18 @@ impl Editor {
                         return glib::Propagation::Stop;
                     }
                 }
+                // Enfoque (028): Alt+Derecha enfoca el elemento del cursor; Alt+Izquierda sube o
+                // sale del enfoque.
+                if alt && !ctrl && !shift {
+                    let hecho = match keyval {
+                        gtk::gdk::Key::Right => this.enfocar_en_cursor(),
+                        gtk::gdk::Key::Left => this.subir_enfoque(),
+                        _ => false,
+                    };
+                    if hecho {
+                        return glib::Propagation::Stop;
+                    }
+                }
                 if matches!(keyval, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter)
                     && !ctrl
                     && !alt

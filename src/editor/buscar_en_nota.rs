@@ -390,9 +390,12 @@ impl Editor {
         i.find_bar.set_counter(None, 0);
     }
 
-    /// Una coincidencia de Lectura dentro de algo plegado: se despliega antes de mostrarla
-    /// (FR-011, 028).
+    /// Una coincidencia de Lectura dentro de algo plegado o fuera del enfoque: se revela antes de
+    /// mostrarla (FR-011, FR-014, 028).
     fn revelar_en_lector(&self, offset: usize) {
+        if self.0.reader.esta_fuera_de_enfoque(offset as i32) {
+            self.salir_enfoque();
+        }
         let lineas = self.0.reader.plegados_en(offset as i32);
         if !lineas.is_empty() {
             self.desplegar_lineas(&lineas);

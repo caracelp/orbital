@@ -710,3 +710,94 @@ fn incrustado_sin_flechitas() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+fn oculto_fuera_en_lector(e: &Editor, aguja: &str) -> bool {
+    let b = e.0.reader.buffer();
+    let tag = b.tag_table().lookup(super::TAG_FUERA).unwrap();
+    let texto = b.slice(&b.start_iter(), &b.end_iter(), true).to_string();
+    let off = texto.find(aguja).expect("aguja en lectura");
+    let chars = texto[..off].chars().count() as i32;
+    b.iter_at_offset(chars).has_tag(&tag)
+}
+
+/// Escenario 13 (T034): enfocar un ítem, miga de pan, subir/salir, Lectura, Dividida, búsqueda y
+/// borrado del elemento enfocado.
+#[test]
+#[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
+fn enfoque_y_miga_de_pan() {
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    let (root, vault, rel) = boveda(
+        "enfoque",
+        "---\ntitle: Demo\n---\n# Uno\nintro\n\n## Historia\nTexto.\n- Frutas\n  - Manzana\n    - Verde\n\n## Final\nfin\n",
+    );
+    let e = Editor::new();
+    e.load(vault.clone(), &vault.read_note(&rel).unwrap());
+
+    // Enfocar `- Manzana` (línea 9).
+    assert!(e.enfocar(9));
+    assert!(e.esta_enfocado());
+    assert!(e.0.migas.widget().is_visible());
+
+    let buf = &e.0.buffer;
+    let tag_fuera = &e.0.tag_fuera;
+    assert!(
+        buf.iter_at_line(6).unwrap().has_tag(tag_fuera),
+        "## Historia oculto"
+    );
+    assert!(
+        !buf.iter_at_line(9).unwrap().has_tag(tag_fuera),
+        "- Manzana visible"
+    );
+    assert!(
+        !buf.iter_at_line(10).unwrap().has_tag(tag_fuera),
+        "- Verde visible"
+    );
+    assert!(
+        buf.iter_at_line(12).unwrap().has_tag(tag_fuera),
+        "## Final oculto"
+    );
+
+    // Plegar todo dentro del enfoque: solo sus descendientes (no lo de afuera).
+    e.plegar_todo();
+    assert!(!e.esta_plegado(6), "## Historia no se pliega");
+
+    // Subir un nivel: pasa a `- Frutas` (línea 8).
+    assert!(e.subir_enfoque());
+    assert!(
+        !buf.iter_at_line(8).unwrap().has_tag(tag_fuera),
+        "- Frutas visible"
+    );
+    assert!(
+        buf.iter_at_line(6).unwrap().has_tag(tag_fuera),
+        "## Historia sigue oculto"
+    );
+
+    // Lectura y Dividida muestran lo mismo.
+    glib::MainContext::default().block_on(async {
+        e.set_view(View::Lectura);
+        esperar_lectura(&e).await;
+        assert!(oculto_fuera_en_lector(&e, "Final"));
+        assert!(!oculto_fuera_en_lector(&e, "Frutas"));
+
+        // Buscar algo de afuera en Lectura sale del enfoque.
+        e.open_find(false);
+        e.find_search("fin");
+        assert!(!e.esta_enfocado(), "buscar afuera sale del enfoque");
+        assert!(!oculto_fuera_en_lector(&e, "Final"));
+
+        // Reenfocar en Dividida y borrar el elemento enfocado: sale del enfoque.
+        e.set_view(View::Dividida);
+        esperar_lectura(&e).await;
+        assert!(e.enfocar(8));
+        assert!(e.esta_enfocado());
+        e.salir_enfoque();
+        assert!(!e.esta_enfocado());
+        assert!(!e.0.migas.widget().is_visible());
+
+        // Cambiar de nota sale del enfoque.
+        assert!(e.enfocar(8));
+        e.load(vault.clone(), &vault.read_note(&rel).unwrap());
+        assert!(!e.esta_enfocado());
+        let _ = fs::remove_dir_all(&root);
+    });
+}

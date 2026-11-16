@@ -288,6 +288,16 @@ impl Window {
             "Mover la nota a la papelera",
             "Delete",
         ));
+        section.add(adw::ShortcutsItem::new("Plegar el elemento", "<Control>Up"));
+        section.add(adw::ShortcutsItem::new(
+            "Desplegar el elemento",
+            "<Control>Down",
+        ));
+        section.add(adw::ShortcutsItem::new("Enfocar el elemento", "<Alt>Right"));
+        section.add(adw::ShortcutsItem::new(
+            "Subir un nivel en el enfoque",
+            "<Alt>Left",
+        ));
         section.add(adw::ShortcutsItem::new(
             "Atajos de teclado",
             "<Control>question",
@@ -350,6 +360,16 @@ impl Window {
             true,
         ),
         ("Deshacer en la nota abierta", "undo", Some("Ctrl+Z"), true),
+        ("Plegar todo", "plegar-todo", None, true),
+        ("Desplegar todo", "desplegar-todo", None, true),
+        (
+            "Plegar o desplegar el elemento",
+            "alternar-plegado",
+            Some("Ctrl+Arriba"),
+            true,
+        ),
+        ("Enfocar el elemento", "enfocar", Some("Alt+Derecha"), true),
+        ("Salir del enfoque", "salir-enfoque", None, true),
         (
             "Saltar a una nota (selector rápido)",
             "quick-open",

@@ -10,6 +10,7 @@ pub mod completion;
 pub mod conflict;
 mod cursores;
 mod edicion_visual;
+mod enfoque;
 pub mod find;
 mod flechas;
 mod guardado;
@@ -214,9 +215,13 @@ struct Inner {
     /// Ids del guardado y outliner: sus ediciones no despliegan (research R5).
     sin_desplegar: Cell<bool>,
     tag_plegado: gtk::TextTag,
-    /// Lo que queda fuera del elemento enfocado (tanda B, research R9).
-    #[allow(dead_code)]
+    /// Lo que queda fuera del elemento enfocado (028, research R9).
     tag_fuera: gtk::TextTag,
+    /// Marca al comienzo del elemento enfocado (gravedad derecha).
+    enfoque: RefCell<Option<gtk::TextMark>>,
+    /// Miga de pan del enfoque, arriba del editor.
+    migas: enfoque::Migas,
+    on_enfoque: RefCell<Option<Box<dyn Fn()>>>,
     /// Canal de las flechitas (`flechas.rs`).
     flechas: sourceview5::GutterRendererPixbuf,
     on_plegado: RefCell<Option<plegado::PlegadoFn>>,
@@ -314,80 +319,87 @@ impl Editor {
 
         let find_bar = find::FindBar::new();
         let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.append(find_bar.widget());
-        container.append(&stack);
         stack.set_vexpand(true);
         stack.set_hexpand(true);
 
         let completion = completion::LinkCompletionPopover::new(&view);
-        let this = Self(Rc::new(Inner {
-            view,
-            buffer,
-            code_scroller,
-            code_capa: capa_cursor,
-            extra: RefCell::new(multi_cursor::ExtraCursors::new()),
-            extra_base: Cell::new(None),
-            caren,
-            reader,
-            root,
-            stack,
-            visual,
-            format: Cell::new(Format::Md),
-            md_pref: Cell::new(View::Lectura),
-            html_pref: Cell::new(View::Visual),
-            html_scripts: Cell::new(false),
-            visual_pending: Cell::new(false),
-            visual_gen: Cell::new(0),
-            switching: Cell::new(false),
-            switcher,
-            mode: Cell::new(View::Codigo),
-            render_generation: Cell::new(0),
-            doc_has_generated: Cell::new(false),
-            base_dir: RefCell::new(None),
-            on_header: RefCell::new(None),
-            on_link: RefCell::new(None),
-            on_view: RefCell::new(None),
-            on_text_changed: RefCell::new(None),
-            session: RefCell::new(None),
-            vault: RefCell::new(None),
-            loading: Cell::new(false),
-            generation: Cell::new(0),
-            saving: Cell::new(false),
-            asignando_ids: Cell::new(false),
-            edited_during_save: Cell::new(false),
-            on_status: RefCell::new(None),
-            on_error: RefCell::new(None),
-            on_saved: RefCell::new(None),
-            meta: RefCell::new(None),
-            edits: Cell::new(0),
-            completion,
-            completion_dismissed_at: Cell::new(None),
-            completion_active_start: Cell::new(None),
-            completion_is_tag: Cell::new(false),
-            completion_is_marker: Cell::new(false),
-            completion_bloques: RefCell::new(None),
-            completion_vault: RefCell::new(std::sync::Weak::new()),
-            embed_deps: RefCell::new(Vec::new()),
-            search_index: RefCell::new(None),
-            container,
-            find_bar,
-            search_ctx,
-            search_settings,
-            reader_matches: RefCell::new(Vec::new()),
-            reader_current_idx: Cell::new(None),
-            visual_matches: Cell::new(0),
-            visual_current_idx: Cell::new(0),
-            pliegues: RefCell::new(Vec::new()),
-            arbol: RefCell::new(None),
-            texto_gen: Cell::new(0),
-            plegado_gen: Cell::new(0),
-            sin_desplegar: Cell::new(false),
-            tag_plegado,
-            tag_fuera,
-            flechas,
-            on_plegado: RefCell::new(None),
-            plegado_claves: RefCell::new(Vec::new()),
-            plegado_version: Cell::new(0),
+        let this = Self(Rc::new_cyclic(|weak| {
+            let migas = enfoque::Migas::new(weak.clone());
+            container.append(find_bar.widget());
+            container.append(migas.widget());
+            container.append(&stack);
+            Inner {
+                view,
+                buffer,
+                code_scroller,
+                code_capa: capa_cursor,
+                extra: RefCell::new(multi_cursor::ExtraCursors::new()),
+                extra_base: Cell::new(None),
+                caren,
+                reader,
+                root,
+                stack,
+                visual,
+                format: Cell::new(Format::Md),
+                md_pref: Cell::new(View::Lectura),
+                html_pref: Cell::new(View::Visual),
+                html_scripts: Cell::new(false),
+                visual_pending: Cell::new(false),
+                visual_gen: Cell::new(0),
+                switching: Cell::new(false),
+                switcher,
+                mode: Cell::new(View::Codigo),
+                render_generation: Cell::new(0),
+                doc_has_generated: Cell::new(false),
+                base_dir: RefCell::new(None),
+                on_header: RefCell::new(None),
+                on_link: RefCell::new(None),
+                on_view: RefCell::new(None),
+                on_text_changed: RefCell::new(None),
+                session: RefCell::new(None),
+                vault: RefCell::new(None),
+                loading: Cell::new(false),
+                generation: Cell::new(0),
+                saving: Cell::new(false),
+                asignando_ids: Cell::new(false),
+                edited_during_save: Cell::new(false),
+                on_status: RefCell::new(None),
+                on_error: RefCell::new(None),
+                on_saved: RefCell::new(None),
+                meta: RefCell::new(None),
+                edits: Cell::new(0),
+                completion,
+                completion_dismissed_at: Cell::new(None),
+                completion_active_start: Cell::new(None),
+                completion_is_tag: Cell::new(false),
+                completion_is_marker: Cell::new(false),
+                completion_bloques: RefCell::new(None),
+                completion_vault: RefCell::new(std::sync::Weak::new()),
+                embed_deps: RefCell::new(Vec::new()),
+                search_index: RefCell::new(None),
+                container,
+                find_bar,
+                search_ctx,
+                search_settings,
+                reader_matches: RefCell::new(Vec::new()),
+                reader_current_idx: Cell::new(None),
+                visual_matches: Cell::new(0),
+                visual_current_idx: Cell::new(0),
+                pliegues: RefCell::new(Vec::new()),
+                arbol: RefCell::new(None),
+                texto_gen: Cell::new(0),
+                plegado_gen: Cell::new(0),
+                sin_desplegar: Cell::new(false),
+                tag_plegado,
+                tag_fuera,
+                enfoque: RefCell::new(None),
+                migas,
+                on_enfoque: RefCell::new(None),
+                flechas,
+                on_plegado: RefCell::new(None),
+                plegado_claves: RefCell::new(Vec::new()),
+                plegado_version: Cell::new(0),
+            }
         }));
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);

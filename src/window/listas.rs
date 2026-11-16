@@ -104,7 +104,7 @@ impl Window {
             1 => "Guardada en 1 colección…".to_owned(),
             n => format!("Guardada en {n} colecciones…"),
         };
-        vec![
+        let mut items = vec![
             MenuItem::new(
                 if favorito {
                     "Quitar de favoritos"
@@ -123,7 +123,9 @@ impl Window {
                 "Ctrl+Mayús+V",
             ),
             MenuItem::new("Mover a la papelera", "win.trash", "Supr"),
-        ]
+        ];
+        items.extend(self.items_menu_plegado());
+        items
     }
 
     /// Desde `show_vault`: una bóveda nueva carga sus listas después del primer cuadro; una

@@ -39,6 +39,8 @@ type LinkFn = Box<dyn Fn(&str)>;
 type IsMissingFn = Rc<dyn Fn(&str) -> bool>;
 type RenderedFn = Box<dyn Fn()>;
 type PlegarFn = Box<dyn Fn(u32)>;
+type EnfocarFn = Box<dyn Fn(Option<u32>)>;
+type SubirEnfoqueFn = Box<dyn Fn()>;
 
 #[derive(Clone)]
 struct LinkItem {
@@ -104,6 +106,10 @@ struct Inner {
     /// Líneas fuente de los elementos plegados (028); la verdad está en el buffer de Código.
     plegado: RefCell<Rc<Vec<u32>>>,
     on_plegar: RefCell<Option<PlegarFn>>,
+    /// Rango `linea..=ultima` del elemento enfocado en el editor (028, T032).
+    enfoque: RefCell<Option<(u32, u32)>>,
+    on_enfocar: RefCell<Option<EnfocarFn>>,
+    on_subir_enfoque: RefCell<Option<SubirEnfoqueFn>>,
 }
 
 #[derive(Clone)]
@@ -172,6 +178,9 @@ impl Reader {
             on_rendered: RefCell::new(None),
             plegado: RefCell::new(Rc::new(Vec::new())),
             on_plegar: RefCell::new(None),
+            enfoque: RefCell::new(None),
+            on_enfocar: RefCell::new(None),
+            on_subir_enfoque: RefCell::new(None),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra

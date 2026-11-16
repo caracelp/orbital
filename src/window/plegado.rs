@@ -26,6 +26,12 @@ impl Window {
                 Window(i).aplicar_plegado(move |p| p.poner(&ruta, claves.clone()));
             }
         });
+        let weak = Rc::downgrade(&self.0);
+        self.0.code_editor.set_on_enfoque(move || {
+            if let Some(i) = weak.upgrade() {
+                Window(i).habilitar_acciones_plegado();
+            }
+        });
         let accion = |nombre: &str, f: fn(&Editor)| {
             let this = self.clone();
             gio::ActionEntry::builder(nombre)
@@ -45,6 +51,16 @@ impl Window {
             }),
             accion("plegar-todo", Editor::plegar_todo),
             accion("desplegar-todo", Editor::desplegar_todo),
+            accion("enfocar", |e| {
+                if e.current_view() == crate::editor::View::Lectura {
+                    e.enfocar_en_lectura();
+                } else {
+                    e.enfocar_en_cursor();
+                }
+            }),
+            accion("salir-enfoque", |e| {
+                e.salir_enfoque();
+            }),
         ]);
         self.habilitar_acciones_plegado();
     }
@@ -56,15 +72,35 @@ impl Window {
             && i.code_editor.current_path().as_ref()
                 == i.current_entry.borrow().as_ref().map(|e| &e.path)
             && !i.gone.get();
-        for name in ["alternar-plegado", "plegar-todo", "desplegar-todo"] {
+        let enfocado = abierta && i.code_editor.esta_enfocado();
+        for (name, enabled) in [
+            ("alternar-plegado", abierta),
+            ("plegar-todo", abierta),
+            ("desplegar-todo", abierta),
+            ("enfocar", abierta),
+            ("salir-enfoque", enfocado),
+        ] {
             if let Some(a) = i
                 .window
                 .lookup_action(name)
                 .and_downcast::<gio::SimpleAction>()
             {
-                a.set_enabled(abierta);
+                a.set_enabled(enabled);
             }
         }
+    }
+
+    /// Opciones del menú «Más opciones de la nota» para plegado y enfoque (T036).
+    pub(super) fn items_menu_plegado(&self) -> Vec<MenuItem> {
+        let mut items = vec![
+            MenuItem::new("Plegar todo", "win.plegar-todo", ""),
+            MenuItem::new("Desplegar todo", "win.desplegar-todo", ""),
+            MenuItem::new("Enfocar", "win.enfocar", "Alt+Derecha"),
+        ];
+        if self.0.code_editor.esta_enfocado() {
+            items.push(MenuItem::new("Salir del enfoque", "win.salir-enfoque", ""));
+        }
+        items
     }
 
     /// Desde `show_vault`: una bóveda nueva olvida el estado (se lee al abrir la primera nota).

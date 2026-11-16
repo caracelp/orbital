@@ -3,6 +3,11 @@
 use super::*;
 
 impl Editor {
+    /// Vista activa del editor.
+    pub fn current_view(&self) -> View {
+        self.0.mode.get()
+    }
+
     /// Cambia de vista (FR-008). Al pasar a Lectura o Dividida, la vista formateada se actualiza.
     pub fn set_view(&self, v: View) {
         let i = &self.0;

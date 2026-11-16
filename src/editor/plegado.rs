@@ -230,17 +230,25 @@ impl Editor {
     /// Conecta las señales del plegado (una vez, desde `Editor::new`).
     pub(super) fn setup_plegado(&self) {
         let i = &self.0;
-        // Regla 1: el cursor nunca queda en texto oculto.
+        // Regla 1: el cursor nunca queda en texto oculto (ni plegado ni fuera del enfoque).
         let weak = Rc::downgrade(&self.0);
         i.buffer.connect_mark_set(move |buf, it, mark| {
             let Some(i) = weak.upgrade() else { return };
-            if i.pliegues.borrow().is_empty() || i.sin_desplegar.get() || i.loading.get() {
+            if (i.pliegues.borrow().is_empty() && i.enfoque.borrow().is_none())
+                || i.sin_desplegar.get()
+                || i.loading.get()
+            {
                 return;
             }
-            if mark != &buf.get_insert() || !oculto(it, &i.tag_plegado) {
+            if mark != &buf.get_insert() {
                 return;
             }
-            Editor(i).revelar_linea(it.line() as u32);
+            if oculto(it, &i.tag_fuera) {
+                Editor(i.clone()).salir_enfoque();
+            }
+            if oculto(it, &i.tag_plegado) {
+                Editor(i).revelar_linea(it.line() as u32);
+            }
         });
         // Regla 2: una edición que toca texto oculto lo despliega antes.
         let weak = Rc::downgrade(&self.0);
@@ -256,11 +264,12 @@ impl Editor {
         let weak = Rc::downgrade(&self.0);
         i.buffer.connect_delete_range(move |buf, a, b| {
             let Some(i) = weak.upgrade() else { return };
-            if i.pliegues.borrow().is_empty() || i.loading.get() {
+            if (i.pliegues.borrow().is_empty() && i.enfoque.borrow().is_none()) || i.loading.get() {
                 return;
             }
             let editor = Editor(i.clone());
             editor.olvidar_marcas_borradas(buf, a, b);
+            editor.olvidar_enfoque_borrado(buf, a, b);
             if i.sin_desplegar.get() {
                 return;
             }
@@ -317,6 +326,26 @@ impl Editor {
             }
         });
         i.view.add_controller(arrastre);
+        let weak = Rc::downgrade(&self.0);
+        i.reader.set_on_enfocar(move |linea| {
+            if let Some(i) = weak.upgrade() {
+                let e = Editor(i);
+                match linea {
+                    Some(l) => {
+                        e.enfocar(l);
+                    }
+                    None => {
+                        e.enfocar_en_lectura();
+                    }
+                }
+            }
+        });
+        let weak = Rc::downgrade(&self.0);
+        i.reader.set_on_subir_enfoque(move || {
+            if let Some(i) = weak.upgrade() {
+                Editor(i).subir_enfoque();
+            }
+        });
         self.setup_flechas();
     }
 
@@ -456,23 +485,50 @@ impl Editor {
         }
     }
 
-    /// Pliega todos los elementos plegables, en todos los niveles (FR-015).
+    /// Pliega todos los elementos plegables, en todos los niveles (FR-015). Con enfoque, solo
+    /// sus descendientes.
     pub fn plegar_todo(&self) {
         let (_, ps) = self.arbol();
-        let lineas = ps.iter().map(|p| p.linea).collect();
+        let lineas = match self.rango_enfocado() {
+            Some(r) => {
+                let mut v = self.lineas_plegadas();
+                for p in ps.iter() {
+                    if p.linea > r.start && p.linea < r.end {
+                        v.push(p.linea);
+                    }
+                }
+                v
+            }
+            None => ps.iter().map(|p| p.linea).collect(),
+        };
         self.poner_pliegues(lineas, Cursor::Mover);
     }
 
-    /// Despliega todo.
+    /// Despliega todo (con enfoque, solo sus descendientes).
     pub fn desplegar_todo(&self) {
-        self.poner_pliegues(Vec::new(), Cursor::Mover);
+        let lineas = match self.rango_enfocado() {
+            Some(r) => self
+                .lineas_plegadas()
+                .into_iter()
+                .filter(|&l| l <= r.start || l >= r.end)
+                .collect(),
+            None => Vec::new(),
+        };
+        self.poner_pliegues(lineas, Cursor::Mover);
     }
 
     /// Despliega los elementos que ocultan la línea `linea` (y los que los contienen) para que se
-    /// vea. Devuelve si desplegó algo. Lo usa toda navegación (FR-011).
+    /// vea, y sale del enfoque si queda afuera. Devuelve si cambió algo. Lo usa toda navegación
+    /// (FR-011, FR-014).
     pub fn revelar_linea(&self, linea: u32) -> bool {
+        let mut cambio = false;
+        if let Some(r) = self.rango_enfocado()
+            && !r.contains(&linea)
+        {
+            cambio |= self.salir_enfoque();
+        }
         if !self.tiene_pliegues() {
-            return false;
+            return cambio;
         }
         let (_, ps) = self.arbol();
         let contienen: Vec<u32> = nucleo::contienen(&ps, linea)
@@ -481,7 +537,7 @@ impl Editor {
             .collect();
         let lineas = self.lineas_plegadas();
         if !contienen.iter().any(|l| lineas.binary_search(l).is_ok()) {
-            return false;
+            return cambio;
         }
         self.desplegar_lineas(&contienen);
         true
@@ -489,8 +545,14 @@ impl Editor {
 
     /// Como [`Editor::revelar_linea`] para varias líneas, con un solo cambio.
     pub(super) fn revelar_lineas(&self, lineas: &[u32]) -> bool {
+        let mut cambio = false;
+        if let Some(r) = self.rango_enfocado()
+            && lineas.iter().any(|l| !r.contains(l))
+        {
+            cambio |= self.salir_enfoque();
+        }
         if !self.tiene_pliegues() {
-            return false;
+            return cambio;
         }
         let (_, ps) = self.arbol();
         let mut quitar: Vec<u32> = lineas
@@ -502,7 +564,7 @@ impl Editor {
         quitar.dedup();
         let plegadas = self.lineas_plegadas();
         if !quitar.iter().any(|l| plegadas.binary_search(l).is_ok()) {
-            return false;
+            return cambio;
         }
         self.desplegar_lineas(&quitar);
         true
@@ -698,6 +760,7 @@ impl Editor {
         i.buffer
             .remove_tag(&i.tag_plegado, &i.buffer.start_iter(), &i.buffer.end_iter());
         i.reader.set_plegado(Rc::new(Vec::new()));
+        self.salir_enfoque();
         i.flechas.set_visible(i.format.get() == Format::Md);
     }
 
@@ -750,6 +813,9 @@ impl Editor {
     /// Reconciliación inmediata: cada marca con el elemento de su línea; lo que ya no es
     /// plegable o contiene un cursor se despliega.
     pub(super) fn reconciliar(&self) {
+        if self.esta_enfocado() {
+            self.reconciliar_enfoque();
+        }
         if !self.tiene_pliegues() {
             return;
         }
