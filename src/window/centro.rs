@@ -287,6 +287,7 @@ pub(super) fn construir_centro() -> Centro {
             ("Guardar en…", "win.guardar-en", ""),
             ("Ver como mapa mental", "win.ver-mapa-mental", ""),
             ("Escribir en ramas libres", "win.ver-ramas-libres", ""),
+            ("Estructurar nota en 3 partes", "win.estructurar-nota", ""),
             ("Renombrar o mover…", "win.rename", "F2"),
             ("Archivar", "win.archive", "Ctrl+Mayús+A"),
             (

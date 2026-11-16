@@ -122,6 +122,7 @@ impl Window {
             MenuItem::new(&guardar, "win.guardar-en", ""),
             MenuItem::new("Ver como mapa mental", "win.ver-mapa-mental", ""),
             MenuItem::new("Escribir en ramas libres", "win.ver-ramas-libres", ""),
+            MenuItem::new("Estructurar nota en 3 partes", "win.estructurar-nota", ""),
             MenuItem::new("Renombrar o mover…", "win.rename", "F2"),
             MenuItem::new("Archivar", "win.archive", "Ctrl+Mayús+A"),
             MenuItem::new(

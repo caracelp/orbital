@@ -147,13 +147,28 @@ impl Reader {
                 buf.insert_with_tags(end, "\n", &space.iter().collect::<Vec<_>>());
             }
             BlockKind::Html(text) => {
-                // Ocultar en Lectura los delimitadores de bloque `<!-- block ... -->` y `<!---->` (040).
-                let filtrado: Vec<&str> = text
-                    .lines()
-                    .filter(|l| !crate::grafo::ramas_libres::es_delimitador_bloque_comentario(l))
-                    .collect();
-                if !filtrado.is_empty() {
-                    let limpio = filtrado.join("\n");
+                // Ocultar en Lectura los delimitadores de bloque `<!-- block ... -->` y `<!---->` (040),
+                // y mostrar etiqueta de sección para `summary`, `connections` y `sources` (041).
+                let mut resto_html: Vec<&str> = Vec::new();
+                for l in text.lines() {
+                    if crate::grafo::ramas_libres::es_delimitador_bloque_comentario(l) {
+                        continue;
+                    }
+                    if let Some(etq) =
+                        crate::grafo::notas_tres_partes::etiqueta_apertura_seccion_lectura(l)
+                    {
+                        let mut tags_sec = base.clone();
+                        tags_sec.extend(table.lookup("callout-title"));
+                        tags_sec.extend(table.lookup("dim"));
+                        let refs_sec: Vec<&gtk::TextTag> = tags_sec.iter().collect();
+                        buf.insert_with_tags(end, etq, &refs_sec);
+                        buf.insert(end, "\n");
+                    } else {
+                        resto_html.push(l);
+                    }
+                }
+                if !resto_html.is_empty() {
+                    let limpio = resto_html.join("\n");
                     if !limpio.trim().is_empty() {
                         let mut tags = base.clone();
                         tags.extend(table.lookup("code"));

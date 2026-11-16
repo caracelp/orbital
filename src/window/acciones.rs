@@ -138,6 +138,7 @@ impl Window {
             simple("cerrar-mapa-mental", Window::cerrar_mapa_mental),
             simple("ver-ramas-libres", Window::ver_ramas_libres),
             simple("cerrar-ramas-libres", Window::cerrar_ramas_libres),
+            simple("estructurar-nota", Window::estructurar_nota_tres_partes),
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
@@ -421,6 +422,12 @@ impl Window {
         ("Nuevo lienzo (Canvas)…", "nuevo-canvas", None, false),
         ("Ver mapa mental de la nota", "ver-mapa-mental", None, true),
         ("Ramas libres de la nota", "ver-ramas-libres", None, true),
+        (
+            "Estructurar nota en 3 partes",
+            "estructurar-nota",
+            None,
+            true,
+        ),
         ("Historial de versiones…", "historial", None, true),
         (
             "Renumerar notas al pie",

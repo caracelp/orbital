@@ -137,7 +137,145 @@ impl Window {
         let this = self.clone();
         let note = path.clone();
         let custom = move |e: &PropEntry| this.source_rows(&note, e);
-        Some(list(&h.entries, mode, actions, &custom))
+        let props_widget = list(&h.entries, mode, actions, &custom);
+        if path.as_str().ends_with(".md")
+            && let Some(col) = props_widget.downcast_ref::<gtk::Box>()
+        {
+            let texto = self.0.code_editor.text();
+            let id_sug = self.id_sugerido_para_nota_abierta();
+            let diag = crate::grafo::notas_tres_partes::DiagnosticoTresPartes::analizar(
+                &texto,
+                Some(&id_sug),
+            );
+            let retroenlaces: Vec<String> = self
+                .0
+                .graph
+                .borrow()
+                .as_ref()
+                .and_then(|g| g.lock().ok())
+                .map(|g| {
+                    let mut v: Vec<String> = g
+                        .backlinks_for(path)
+                        .iter()
+                        .map(|b| {
+                            let n = b.from.file_name();
+                            n.rsplit_once('.').map_or(n, |(s, _)| s).to_owned()
+                        })
+                        .collect();
+                    v.sort();
+                    v.dedup();
+                    v
+                })
+                .unwrap_or_default();
+            let weak_ir = Rc::downgrade(&self.0);
+            let weak_est = Rc::downgrade(&self.0);
+            let weak_opc = Rc::downgrade(&self.0);
+            let weak_lnk = Rc::downgrade(&self.0);
+            let origen = path.clone();
+            let acc_tres = Rc::new(crate::grafo::notas_tres_partes::AccionesTresPartes {
+                ir_a_linea: Box::new(move |linea| {
+                    if let Some(i) = weak_ir.upgrade() {
+                        i.code_editor.reveal_line(linea);
+                    }
+                }),
+                estructurar: Box::new(move || {
+                    if let Some(i) = weak_est.upgrade() {
+                        Window(i).estructurar_nota_tres_partes();
+                    }
+                }),
+                insertar_opcional: Box::new(move |parte| {
+                    if let Some(i) = weak_opc.upgrade() {
+                        Window(i).insertar_parte_opcional_nota(parte);
+                    }
+                }),
+                abrir_enlace: Box::new(move |url| {
+                    if let Some(i) = weak_lnk.upgrade() {
+                        Window(i).open_link(Some(&origen), url);
+                    }
+                }),
+            });
+            let barra = crate::grafo::notas_tres_partes::construir_barra_tres_partes(
+                &diag,
+                &retroenlaces,
+                h.read_only,
+                acc_tres,
+            );
+            col.append(&barra);
+        }
+        Some(props_widget)
+    }
+
+    fn id_sugerido_para_nota_abierta(&self) -> String {
+        let note = self.0.current_note.borrow();
+        let tipo = note
+            .as_ref()
+            .and_then(|n| n.prop("type"))
+            .and_then(|v| v.as_text())
+            .unwrap_or("atomo");
+        let id_existente = note
+            .as_ref()
+            .and_then(|n| n.prop("id"))
+            .and_then(|v| v.as_text())
+            .map(str::to_owned);
+        id_existente
+            .unwrap_or_else(|| format!("{}-001", crate::grafo::ramas_libres::prefijo_de_tipo(tipo)))
+    }
+
+    /// Estructura la nota abierta en sus 3 partes obligatorias (`Propiedades YAML`, `Cuerpo` en
+    /// bloques `<!-- block ... -->` y `Conexiones` al pie `<!-- connections ID -->`, 041).
+    pub fn estructurar_nota_tres_partes(&self) {
+        let i = &self.0;
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            self.toast("Abrí una nota antes de estructurarla en 3 partes");
+            return;
+        };
+        if Format::from_name(entry.path.file_name()) != Some(Format::Md) {
+            self.toast("La estructura en 3 partes está disponible para notas Markdown (.md)");
+            return;
+        }
+        if i.code_editor.current_path().as_ref() != Some(&entry.path) {
+            return;
+        }
+        let texto = i.code_editor.text();
+        let id_sug = self.id_sugerido_para_nota_abierta();
+        let (nuevo, linea) =
+            crate::grafo::notas_tres_partes::estructurar_en_tres_partes(&texto, Some(&id_sug));
+        if nuevo != texto {
+            i.code_editor.replace_text(&nuevo);
+            i.code_editor.render_now();
+        }
+        i.code_editor.reveal_line(linea);
+        self.toast("Nota estructurada en 3 partes (Propiedades · Cuerpo · Conexiones)");
+    }
+
+    /// Inserta una de las 2 partes opcionales (`Síntesis` o `Fuentes`) en la nota abierta (041).
+    pub(super) fn insertar_parte_opcional_nota(
+        &self,
+        parte: crate::grafo::notas_tres_partes::ParteOpcional,
+    ) {
+        let i = &self.0;
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            return;
+        };
+        if Format::from_name(entry.path.file_name()) != Some(Format::Md)
+            || i.code_editor.current_path().as_ref() != Some(&entry.path)
+        {
+            return;
+        }
+        let texto = i.code_editor.text();
+        let id_sug = self.id_sugerido_para_nota_abierta();
+        let (nuevo, linea) =
+            crate::grafo::notas_tres_partes::insertar_parte_opcional(&texto, parte, Some(&id_sug));
+        if nuevo != texto {
+            i.code_editor.replace_text(&nuevo);
+            i.code_editor.render_now();
+        }
+        i.code_editor.reveal_line(linea);
+        let nombre = match parte {
+            crate::grafo::notas_tres_partes::ParteOpcional::Sintesis => "Síntesis (summary)",
+            crate::grafo::notas_tres_partes::ParteOpcional::Fuentes => "Fuentes (sources)",
+        };
+        self.toast(&format!("Se agregó la sección opcional de {nombre}"));
     }
 
     /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió.

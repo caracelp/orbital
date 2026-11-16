@@ -8,6 +8,8 @@ pub mod brujula;
 pub mod canvas;
 #[path = "mapa_mental.rs"]
 pub mod mapa_mental;
+#[path = "notas_tres_partes.rs"]
+pub mod notas_tres_partes;
 #[path = "ramas_libres.rs"]
 pub mod ramas_libres;
 

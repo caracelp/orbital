@@ -139,6 +139,20 @@ pub fn extraer_bloques_delimitados(texto: &str) -> Vec<BloqueDelimitado> {
                 });
             }
             actual = Some((codigo, id_nota, sig_offset, num_linea));
+        } else if crate::grafo::notas_tres_partes::parse_apertura_seccion(sin_eol).is_some()
+            && let Some((c_ant, id_ant, ini_ant, lin_ant)) = actual.take()
+        {
+            let fin_cuerpo = offset.max(ini_ant);
+            let cuerpo = texto[ini_ant..fin_cuerpo]
+                .trim_matches(['\n', '\r'])
+                .to_owned();
+            out.push(BloqueDelimitado {
+                codigo: c_ant,
+                id_nota: id_ant,
+                rango_contenido: ini_ant..fin_cuerpo,
+                linea: lin_ant,
+                contenido: cuerpo,
+            });
         } else if sin_eol.trim() == "<!---->"
             && let Some((c_ant, id_ant, ini_ant, lin_ant)) = actual.take()
         {
@@ -226,8 +240,14 @@ pub struct ArbolRamas {
     pub frontmatter: String,
     /// Identificador de la nota (p. ej. `"AP-001"`).
     pub id_nota: String,
+    /// Parte opcional A: Síntesis (`<!-- summary <ID> --> ... <!---->`).
+    pub summary: Option<String>,
     /// Raíces de nivel 1.
     pub raices: Vec<NodoRama>,
+    /// Parte 3 obligatoria: Conexiones (`<!-- connections <ID> --> ... <!---->`).
+    pub connections: Option<String>,
+    /// Parte opcional B: Fuentes (`<!-- sources <ID> --> ... <!---->`).
+    pub sources: Option<String>,
     proximo_uid: usize,
 }
 
@@ -286,10 +306,30 @@ impl ArbolRamas {
         let fm_raw = fm_opt.unwrap_or_default();
         let (id_fm, tipo_fm) = extraer_id_y_tipo_de_frontmatter(&fm_raw);
 
+        let secciones_especiales =
+            crate::grafo::notas_tres_partes::extraer_secciones_delimitadas(cuerpo);
+        let summary = secciones_especiales
+            .iter()
+            .find(|s| s.tipo == crate::grafo::notas_tres_partes::TipoSeccionNota::Summary)
+            .map(|s| s.contenido.clone());
+        let connections = secciones_especiales
+            .iter()
+            .find(|s| s.tipo == crate::grafo::notas_tres_partes::TipoSeccionNota::Connections)
+            .map(|s| s.contenido.clone());
+        let sources = secciones_especiales
+            .iter()
+            .find(|s| s.tipo == crate::grafo::notas_tres_partes::TipoSeccionNota::Sources)
+            .map(|s| s.contenido.clone());
+
         let bloques_delim = extraer_bloques_delimitados(cuerpo);
         let id_de_bloques = bloques_delim
             .iter()
-            .find_map(|b| (!b.id_nota.is_empty()).then(|| b.id_nota.clone()));
+            .find_map(|b| (!b.id_nota.is_empty()).then(|| b.id_nota.clone()))
+            .or_else(|| {
+                secciones_especiales
+                    .iter()
+                    .find_map(|s| (!s.id_nota.is_empty()).then(|| s.id_nota.clone()))
+            });
 
         let id_nota = id_fm
             .clone()
@@ -300,13 +340,17 @@ impl ArbolRamas {
                 siguiente_id_nota(t, std::iter::empty())
             });
 
-        let frontmatter = if id_fm.is_some() {
-            fm_raw
-        } else if fm_raw.trim().is_empty() {
-            let t = tipo_fm.as_deref().unwrap_or("atomo");
-            format!("id: {id_nota}\ntype: {t}")
-        } else {
-            format!("id: {id_nota}\n{fm_raw}")
+        let frontmatter = match (id_fm.is_some(), tipo_fm.is_some()) {
+            (true, true) => fm_raw,
+            (true, false) => format!("{fm_raw}\ntype: atomo"),
+            (false, true) => format!("id: {id_nota}\n{fm_raw}"),
+            (false, false) => {
+                if fm_raw.trim().is_empty() {
+                    format!("id: {id_nota}\ntype: atomo")
+                } else {
+                    format!("id: {id_nota}\ntype: atomo\n{fm_raw}")
+                }
+            }
         };
 
         let mut proximo_uid = 1usize;
@@ -336,7 +380,9 @@ impl ArbolRamas {
             }
         } else {
             // La nota todavía no tenía `<!-- block ... -->`: partir por encabezados ATX (`#`..`######`).
-            let secciones = partir_por_encabezados(cuerpo);
+            let cuerpo_sin_especiales =
+                crate::grafo::notas_tres_partes::quitar_secciones_delimitadas(cuerpo);
+            let secciones = partir_por_encabezados(&cuerpo_sin_especiales);
             let mut pila_ruta: Vec<(usize, usize)> = Vec::new();
             for (nivel, lin, cont) in secciones {
                 while pila_ruta.last().is_some_and(|&(p, _)| p >= nivel) {
@@ -371,7 +417,10 @@ impl ArbolRamas {
         let mut arbol = Self {
             frontmatter,
             id_nota,
+            summary,
             raices,
+            connections,
+            sources,
             proximo_uid,
         };
         arbol.renumerar();
@@ -407,9 +456,36 @@ impl ArbolRamas {
             out.push_str(self.frontmatter.trim_end());
             out.push_str("\n---\n\n");
         }
+        if let Some(s) = &self.summary {
+            out.push_str(&format!(
+                "<!-- summary {} -->\n{}\n<!---->\n\n",
+                self.id_nota,
+                s.trim_matches(['\n', '\r'])
+            ));
+        }
         let mut primero = true;
         for r in &self.raices {
             serializar_nodo(r, &self.id_nota, &mut out, &mut primero);
+        }
+        if let Some(c) = &self.connections {
+            if !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "<!-- connections {} -->\n{}\n<!---->\n",
+                self.id_nota,
+                c.trim_matches(['\n', '\r'])
+            ));
+        }
+        if let Some(src) = &self.sources {
+            if !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "<!-- sources {} -->\n{}\n<!---->\n",
+                self.id_nota,
+                src.trim_matches(['\n', '\r'])
+            ));
         }
         out
     }
