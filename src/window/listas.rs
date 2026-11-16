@@ -75,7 +75,7 @@ impl Window {
     /// Las acciones de las listas solo valen con un archivo abierto.
     pub(super) fn habilitar_acciones_listas(&self, habilitadas: bool) {
         let habilitadas = habilitadas && !self.0.gone.get();
-        for name in ["alternar-favorito", "guardar-en"] {
+        for name in ["alternar-favorito", "guardar-en", "ver-mapa-mental"] {
             if let Some(a) = self
                 .0
                 .window
@@ -115,6 +115,7 @@ impl Window {
                 "",
             ),
             MenuItem::new(&guardar, "win.guardar-en", ""),
+            MenuItem::new("Ver como mapa mental", "win.ver-mapa-mental", ""),
             MenuItem::new("Renombrar o mover…", "win.rename", "F2"),
             MenuItem::new("Archivar", "win.archive", "Ctrl+Mayús+A"),
             MenuItem::new(

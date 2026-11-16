@@ -302,9 +302,76 @@ impl Window {
         });
     }
 
+    /// Abre el Mapa mental de la nota abierta (039).
+    pub fn ver_mapa_mental(&self) {
+        let i = &self.0;
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            self.toast("Abrí una nota antes de ver su mapa mental");
+            return;
+        };
+        let Some(formato) = Format::from_name(entry.path.file_name()) else {
+            self.toast("El mapa mental solo está disponible para notas Markdown o HTML");
+            return;
+        };
+        let Some(vista) = crate::grafo::mapa_mental::VistaMapaMental::desde_stack(&i.content_stack)
+        else {
+            return;
+        };
+        self.guardar_estado_pestana();
+        let file = entry.path.file_name();
+        let (titulo, fuente) = {
+            let note = i.current_note.borrow();
+            let note = note.as_ref().filter(|n| n.path == entry.path);
+            let titulo = note
+                .and_then(|n| n.prop("title"))
+                .and_then(|v| v.as_text())
+                .map(str::to_owned)
+                .unwrap_or_else(|| file.rsplit_once('.').map_or(file, |(s, _)| s).to_owned());
+            let fuente = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
+                i.code_editor.text()
+            } else {
+                note.map(|n| n.source.clone()).unwrap_or_default()
+            };
+            (titulo, fuente)
+        };
+        vista.cargar_nota(
+            entry.path.as_str(),
+            &titulo,
+            &fuente,
+            formato == Format::Html,
+        );
+        i.pestanas
+            .abrir(crate::pestanas::MAPA_MENTAL, "Mapa mental");
+        i.content_stack.set_visible_child_name("mapa-mental");
+    }
+
+    /// Cierra la pestaña del Mapa mental y vuelve a la nota.
+    pub fn cerrar_mapa_mental(&self) {
+        self.0.pestanas.cerrar(crate::pestanas::MAPA_MENTAL);
+    }
+
     /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
     /// el centro vacío (guardando antes lo pendiente).
     pub(super) fn setup_pestanas(&self) {
+        if let Some(vista_mm) =
+            crate::grafo::mapa_mental::VistaMapaMental::desde_stack(&self.0.content_stack)
+        {
+            let weak_s = Rc::downgrade(&self.0);
+            vista_mm.connect_saltar_linea(move |ruta, linea| {
+                let Some(i) = weak_s.upgrade() else { return };
+                let Ok(rel) = RelPath::new(ruta) else { return };
+                let w = Window(i);
+                w.0.pending_line.set(Some((rel, linea)));
+                w.0.content_stack.set_visible_child_name("codigo");
+                w.show_path(ruta);
+            });
+            let weak_x = Rc::downgrade(&self.0);
+            vista_mm.connect_cerrar(move || {
+                if let Some(i) = weak_x.upgrade() {
+                    Window(i).cerrar_mapa_mental();
+                }
+            });
+        }
         if let Some(vista_c) = crate::grafo::canvas::VistaCanvas::desde_stack(&self.0.content_stack)
         {
             let weak_g = Rc::downgrade(&self.0);
@@ -422,6 +489,10 @@ impl Window {
                 w.ver_brujula();
                 return;
             }
+            if clave == crate::pestanas::MAPA_MENTAL {
+                w.ver_mapa_mental();
+                return;
+            }
             w.guardar_estado_pestana();
             if let (Some(estado), Ok(path)) = (estado, RelPath::new(clave)) {
                 *w.0.estado_pendiente.borrow_mut() = Some((path, estado));
@@ -435,7 +506,9 @@ impl Window {
                 return;
             }
             let w = Window(i);
-            if (clave == crate::pestanas::CONEXIONES || clave == crate::pestanas::BRUJULA)
+            if (clave == crate::pestanas::CONEXIONES
+                || clave == crate::pestanas::BRUJULA
+                || clave == crate::pestanas::MAPA_MENTAL)
                 && w.0.code_editor.current_path().is_some()
             {
                 // Quedó solo la nota del editor sin pestaña: se vuelve a ella.

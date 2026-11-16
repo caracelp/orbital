@@ -245,6 +245,10 @@ pub(super) fn construir_centro() -> Centro {
     let canvas_vista = crate::grafo::canvas::VistaCanvas::new();
     content_stack.add_named(canvas_vista.widget(), Some("canvas"));
 
+    // Mapa mental de la nota abierta (039).
+    let mapa_mental_vista = crate::grafo::mapa_mental::VistaMapaMental::new();
+    content_stack.add_named(mapa_mental_vista.widget(), Some("mapa-mental"));
+
     let content_title = adw::WindowTitle::new("", "");
     // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
     // cabecera única de arriba).
@@ -277,6 +281,7 @@ pub(super) fn construir_centro() -> Centro {
         &[
             ("Agregar a favoritos", "win.alternar-favorito", ""),
             ("Guardar en…", "win.guardar-en", ""),
+            ("Ver como mapa mental", "win.ver-mapa-mental", ""),
             ("Renombrar o mover…", "win.rename", "F2"),
             ("Archivar", "win.archive", "Ctrl+Mayús+A"),
             (
