@@ -37,43 +37,49 @@ pub(super) fn construir_izquierda() -> Izquierda {
     let tag_panel = crate::tag_panel::TagPanel::new();
     // --- Explorador (025): secciones plegables Favoritos, Explorador, Etiquetas y Recientes ---
     // El árbol sigue siendo un `ListView` virtual con su propio desplazamiento (con 5000 notas
-    // no puede ir dentro de un scroll de altura natural); las otras secciones van debajo, en
-    // un panel redimensionable.
+    // no puede ir dentro de un scroll de altura natural). El alto de la columna lo reparte
+    // `crate::reparto::Reparto` por orden de importancia (027): los encabezados siempre, el árbol
+    // unas cuatro filas, Favoritos en filas enteras y después Etiquetas y Recientes.
     let (files_section, _) = seccion_plegable("Explorador", &sidebar_scroll, true, true);
     sidebar_scroll.set_vexpand(true);
-    // Con Favoritos arriba (027), en una ventana baja el árbol quedaba en una fila: se le
-    // asegura un mínimo (unas tres filas) y lo que cede es el panel de abajo, que se desplaza.
-    sidebar_scroll.set_min_content_height(110);
-    tag_panel.widget().set_height_request(150);
-    let (tags_section, _) = seccion_plegable("Etiquetas", tag_panel.widget(), true, false);
+    sidebar_scroll.set_min_content_height(crate::reparto::ARBOL_MINIMO);
+    let (tags_section, _) = seccion_plegable(
+        "Etiquetas",
+        &crate::reparto::Encogible::new(tag_panel.widget()),
+        true,
+        // Que su contenido llene el alto que le da `Reparto` (un `GtkBox` no reparte el
+        // sobrante si ningún hijo se expande).
+        true,
+    );
     let recent_list = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .css_classes(["orbital-recent"])
         .build();
     recent_list.update_property(&[gtk::accessible::Property::Label("Notas recientes")]);
-    let (recent_section, _) = seccion_plegable("Recientes", &recent_list, true, false);
+    // Recientes (hasta cinco filas) se muestra entera o queda solo su encabezado.
+    let (recent_section, _) = seccion_plegable(
+        "Recientes",
+        &crate::reparto::Encogible::new(&recent_list),
+        true,
+        false,
+    );
     // Favoritos (027) arriba de Explorador; su contenido y la página Guardados son de
     // `ListasPanel`, con el mismo estilo de sección.
     let listas_panel = crate::listas_panel::ListasPanel::new(seccion_plegable);
     let (favorites_section, _) =
         seccion_plegable("Favoritos", listas_panel.favoritos(), true, false);
-    // Las secciones de abajo comparten un desplazamiento que puede encogerse: el alto
-    // mínimo de la barra no depende de cuántas etiquetas o notas recientes haya (si no, la
-    // ventana se pasa de alto y GTK la desacomoda).
-    let lower = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    lower.append(&tags_section);
-    lower.append(&recent_section);
-    let lower_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .max_content_height(260)
-        .child(&lower)
-        .build();
     let explorer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let panel = listas_panel.clone();
+    explorer.set_layout_manager(Some(crate::reparto::Reparto::new(move || {
+        panel.filas_favoritos()
+    })));
+    explorer.set_vexpand(true);
     files_section.set_vexpand(true);
+    // El orden importa: `Reparto` toma a los hijos como Favoritos, Explorador, Etiquetas, Recientes.
     explorer.append(&favorites_section);
     explorer.append(&files_section);
-    explorer.append(&lower_scroll);
+    explorer.append(&tags_section);
+    explorer.append(&recent_section);
 
     let sidebar_stack = adw::ViewStack::new();
     sidebar_stack.add_named(&explorer, Some("archivos"));

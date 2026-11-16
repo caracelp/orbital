@@ -22,6 +22,7 @@ struct Inner {
     favoritos: gtk::ListBox,
     favoritos_vacio: gtk::Label,
     favoritos_scroll: gtk::ScrolledWindow,
+    favoritos_caja: gtk::Box,
     /// Lo que muestra cada fila de Favoritos: ruta y si falta.
     favoritos_filas: RefCell<Vec<(RelPath, bool)>>,
     guardados: gtk::Box,
@@ -111,15 +112,17 @@ impl ListasPanel {
         let favoritos_vacio = texto_tenue("Agregá notas desde el menú ⋯ de la nota");
         // Hasta que terminen de cargarse las listas, la sección queda vacía y sin texto.
         favoritos_vacio.set_visible(false);
-        let caja = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        caja.append(&favoritos);
-        caja.append(&favoritos_vacio);
+        // El desplazamiento solo envuelve las filas: vacía, la sección mide su encabezado y el
+        // texto de ayuda (el mínimo de un `ScrolledWindow` es el de su barra, unos 58 px).
         let favoritos_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(200)
-            .child(&caja)
+            .child(&favoritos)
+            .visible(false)
             .build();
+        let favoritos_caja = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        favoritos_caja.append(&favoritos_scroll);
+        favoritos_caja.append(&favoritos_vacio);
         let guardados = gtk::Box::new(gtk::Orientation::Vertical, 0);
         guardados.update_property(&[gtk::accessible::Property::Label("Guardados")]);
         let guardados_lista = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -127,6 +130,7 @@ impl ListasPanel {
             favoritos,
             favoritos_vacio,
             favoritos_scroll,
+            favoritos_caja,
             favoritos_filas: RefCell::new(Vec::new()),
             guardados,
             guardados_lista,
@@ -150,8 +154,19 @@ impl ListasPanel {
     }
 
     /// Contenido de la sección «Favoritos» (la ventana lo envuelve en su sección plegable).
-    pub fn favoritos(&self) -> &gtk::ScrolledWindow {
-        &self.0.favoritos_scroll
+    pub fn favoritos(&self) -> &gtk::Box {
+        &self.0.favoritos_caja
+    }
+
+    /// Cuántas filas tiene Favoritos y el alto de una (para el reparto de la barra, `reparto.rs`).
+    pub fn filas_favoritos(&self) -> (usize, i32) {
+        let i = &self.0;
+        let filas = i.favoritos_filas.borrow().len();
+        let alto = match i.favoritos.row_at_index(0) {
+            Some(r) if filas > 0 => r.measure(gtk::Orientation::Vertical, -1).1,
+            _ => 0,
+        };
+        (filas, alto)
     }
 
     /// La lista de filas de Favoritos.
@@ -185,7 +200,7 @@ impl ListasPanel {
         for (ruta, falta) in &filas {
             i.favoritos.append(&fila(ruta, *falta));
         }
-        i.favoritos.set_visible(!filas.is_empty());
+        i.favoritos_scroll.set_visible(!filas.is_empty());
         i.favoritos_vacio.set_visible(filas.is_empty());
         *i.favoritos_filas.borrow_mut() = filas;
     }
