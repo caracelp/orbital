@@ -311,8 +311,11 @@ impl ListasPanel {
         favoritos_vacio.set_visible(false);
         // El desplazamiento solo envuelve las filas: vacía, la sección mide su encabezado y el
         // texto de ayuda (el mínimo de un `ScrolledWindow` es el de su barra, unos 58 px).
+        // Barra de desplazamiento fija (no superpuesta): con más favoritos de los que entran
+        // (`reparto.rs` muestra filas enteras), es lo que avisa que hay más.
         let favoritos_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .overlay_scrolling(false)
             .propagate_natural_height(true)
             .child(&favoritos)
             .visible(false)
