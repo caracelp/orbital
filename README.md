@@ -1,89 +1,84 @@
 <div align="center">
 
+<img src="data/icons/hicolor/scalable/apps/io.github.caracelp.Orbital.svg" alt="Orbital" width="96">
+
 # Orbital
 
 **Notas en Markdown y HTML para Linux, hechas en Rust con GTK4 y libadwaita.**
 
 El disco siempre tiene la verdad: tus notas son archivos `.md` y `.html` normales en una bóveda
 [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) `raw/` + `wiki/`,
-compatible con otros editores. Ninguna función escribe HTML en tus notas.
+compatible con otros editores. Ninguna función escribe HTML dentro de tus notas Markdown.
 
 [![CI](https://github.com/caracelp/orbital/actions/workflows/ci.yml/badge.svg)](https://github.com/caracelp/orbital/actions/workflows/ci.yml)
 [![Licencia: GPL-3.0-or-later](https://img.shields.io/badge/licencia-GPL--3.0--or--later-ff8cc6)](LICENSE)
+![Rust](https://img.shields.io/badge/Rust-GTK4%20%2B%20libadwaita-ff8cc6)
+![Linux](https://img.shields.io/badge/Linux-Flatpak%20%7C%20Wayland-1e1e24)
 
-<img src="docs/img/lectura.png" alt="Orbital: vista Lectura de una nota con propiedades, árbol de archivos y tabla de contenidos generada" width="820">
+<br>
 
-[Características](#características) · [Atajos](#atajos) · [Compilar](#compilar-y-ejecutar) · [Verificación](#verificación) · [Contribuir](CONTRIBUTING.md)
+<img src="docs/img/tour.gif" alt="Recorrido por Orbital: vista Dividida, outliner plegable en Código y Lectura, propiedades y barra de navegación" width="840">
+
+<br>
+
+[Vistas](#vistas-y-outliner) · [Características](#características) · [Atajos](#atajos) · [Instalación](#flatpak) · [Compilar](#compilar-y-ejecutar) · [Contribuir](CONTRIBUTING.md)
 
 </div>
 
+---
+
+## Vistas y outliner
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/img/lectura.png" alt="Vista Dividida con tabla de contenidos, propiedades YAML y enlaces">
+      <br>
+      <sub><b>Vista Dividida y propiedades</b> — Código a la izquierda, Lectura formateada y propiedades YAML a la derecha.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/img/outliner.png" alt="Outliner plegable sincronizado entre Código y Lectura">
+      <br>
+      <sub><b>Outliner plegable</b> — Plegado sincronizado entre Código y Lectura con estado persistente en <code>.orbital/plegado.yaml</code>.</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Características
 
-**Interfaz**
+### Interfaz nativa de GNOME
 
-- Riel de navegación, barras laterales plegables (Ctrl+[ y Ctrl+]) y barra inferior con totales de la
-  bóveda y contadores de la nota y de la selección.
-- Pestañas de notas que recuerdan cursor, desplazamiento y vista; el grafo global también abre en una
-  pestaña.
-- Explorador con secciones plegables (archivos, etiquetas, recientes) y desplegable de bóvedas
-  recientes.
-- Barra derecha con tres modos: propiedades y etiquetas de la nota, contexto (retroenlaces y enlaces
-  entrantes) y grafo local de la nota.
+- **Estética oscura rosa y negra** sobre GTK4 y libadwaita, con riel de navegación, pestañas que recuerdan cursor, vista y desplazamiento, y barra de estado con totales de la bóveda y de la selección.
+- **Explorador y listas**: árbol de archivos, **Favoritos**, **Guardados** (colecciones personalizadas en `.orbital/listas.yaml`), etiquetas anidadas, recientes y selector de bóvedas recientes.
+- **Barra derecha** con cuatro modos: propiedades y etiquetas de la nota, contexto (retroenlaces y enlaces entrantes), **grafo local por saltos** (1 · 2 · 3) y notas relacionadas.
+- **Paleta de comandos** (`Ctrl+Mayús+P`) y **selector rápido** (`Ctrl+P`).
 
-**Núcleo**
+### Editor y outliner
 
-- Bóveda `raw/` (fuentes inmutables) + `wiki/` (trabajo) según OKF v0.2; una carpeta cualquiera se
-  abre con **Abrir** sin modificarse.
-- Notas `.md` (átomos) y `.html` (síntesis) de primera clase: wikilinks, etiquetas, retroenlaces,
-  propiedades y búsqueda funcionan igual en las dos.
-- Transclusiones `![[nota]]` y `![[nota#sección]]` vivas, plantillas con variables, nota diaria,
-  archivado y papelera recuperable con deshacer.
-- Retroenlaces en tiempo real en el panel lateral.
-- Renombrar y mover actualiza los enlaces que resuelven a la nota, conservando el estilo de cada uno.
+- **Tres vistas sincronizadas**: **Código** (`Ctrl+1`), **Lectura** (`Ctrl+2`) y **Dividida** (`Ctrl+3`).
+- **Outliner plegable**: plegado de encabezados e ítems anidados en Código y Lectura con un único estado, atajos `Ctrl+Arriba` / `Ctrl+Abajo`, y **Enfocar** (`Alt+Derecha` / `Alt+Izquierda`) con miga de pan interactiva arriba del editor.
+- **Edición de listas y multi-cursor**: `Enter` continúa el bloque, `Tab`/`Mayús+Tab` y `Alt+Arriba/Abajo` mueven subárboles enteros; multi-cursor con `Alt+clic`, `Alt+arrastre` y `Ctrl+Alt+Arriba/Abajo`.
+- **Autocompletado y notas al pie**: wikilinks, bloques `^id`, etiquetas y estructuras, búsqueda y reemplazo en la nota, y notas al pie con tooltip en Lectura.
+- **Ramas libres y notas en tres partes**: edición por bloques delimitados estilo Branch Writing / Gingko y estructura en 3 partes (propiedades, cuerpo, conexiones).
 
-**Editor**
+### Visualización y conocimiento
 
-- Tres vistas de la misma nota: **Código** (Ctrl+1), **Lectura** (Ctrl+2) y **Dividida** (Ctrl+3).
-- **Multi-cursor** en Código: Alt+clic, Alt+arrastre y columnas con Ctrl+Alt+Arriba/Abajo; Esc
-  vuelve a un cursor.
-- **Outliner de listas**: Enter continúa la lista, Tab/Shift+Tab con subítems, mover ítems entre
-  hermanos.
-- Autocompletado de wikilinks, etiquetas y estructuras; búsqueda y reemplazo en la nota.
-- **Notas al pie** con tooltip en Lectura y comando «Renumerar notas al pie».
+- **Grafo global de enlaces** a pantalla completa con simulación física Barnes-Hut en segundo plano, controles Pausar/Reanudar, Recalcular y anclaje al arrastrar.
+- **Brújula de vecindario**: entrantes, salientes, mutuos y hermanas de segundo salto desde el riel izquierdo.
+- **Canvas visual (`.canvas`)** con tarjetas de texto y de nota, y **Mapa mental** generado desde los encabezados y listas de la nota abierta.
+- **OnStage**: presentá cualquier nota como diapositivas en vivo en una ventana separada, con portada, índice y modo *calm*.
 
-**Búsqueda y organización**
+### Búsqueda, archivos y privacidad
 
-- Búsqueda en toda la bóveda (Ctrl+Mayús+F): `"frase"`, `-excluir`, `OR`, `tag:`, `path:`, `file:`,
-  `line:`, `section:` y propiedades `[clave:valor]`; resultados con fragmento y clic que abre la nota
-  en la línea.
-- Etiquetas anidadas con panel de árbol y cantidades, renombrado en toda la bóveda con deshacer.
-- Búsquedas guardadas en `.orbital/busquedas.yaml`.
-- Selector rápido (Ctrl+P) y paleta de comandos (Ctrl+Mayús+P).
+- **Búsqueda en toda la bóveda** (`Ctrl+Mayús+F`) con operadores `"frase"`, `-excluir`, `OR`, `tag:`, `path:`, `file:`, `line:`, `section:` y `[clave:valor]`.
+- **Notas `.md` y `.html` de primera clase**, transclusiones vivas `![[nota]]` / `![[nota#sección]]`, plantillas con variables, nota diaria y papelera recuperable con deshacer.
+- **Historial de versiones** automático al guardar (hasta 20 versiones por nota con diff y restaurar en `.orbital/historial/`).
+- **PDFs e importación offline**: visor de PDF embebido con citas `#page=N&sel=i,f`, exportación a HTML autónomo y PDF, e importación offline de PDF/DOCX/HTML de `raw/` a Markdown.
+- **100 % local**: todo corre sin conexión; la red solo interviene si pedís metadatos `og:` para tarjetas ` ```cardlink `, siempre con sesión efímera.
 
-**Contenido generado** (el disco siempre conserva el fuente)
-
-- Marcadores `[%clave]` que muestran valores por sección (inline → YAML → «faltante»).
-- Índices por etiqueta (` ```indice `) y tabla de contenidos (` ```toc `).
-- **Tarjetas de URL**: ` ```cardlink ` con metadatos og:; se pega una URL y Lectura la muestra como
-  tarjeta clicable.
-
-**Conocimiento**
-
-- **Grafo de enlaces** de la bóveda a pantalla completa, con arrastre de nodos y vecinos resaltados.
-- **OnStage**: la nota como diapositivas en una ventana separada, con portada, índice y modo calm;
-  sigue la edición en vivo mientras presentás.
-- **Historial de versiones**: snapshot automático al guardar, 20 versiones por nota con diff y
-  restaurar, en `.orbital/historial/`.
-- **Exportar la nota abierta** a HTML autónomo y PDF.
-- **Importar a Markdown**: un PDF, DOCX o HTML de `raw/` se convierte offline a una nota nueva
-  en `wiki/`, vinculada al fuente en `sources`.
-- **Anotar PDFs**: visor embebido sin red, selecciones que se vuelven enlaces
-  `#page=N&sel=i,f` en tus notas y resaltados bidireccionales; el PDF nunca se modifica.
-- **Archivos externos por URL**: asocia un archivo de `raw/` a una URL y ábrelo en un webview
-  embebido con sesión de red efímera.
-
-Todo funciona sin conexión; la red solo entra donde lo pedís explícitamente (metadatos de tarjetas
-de URL), con sesión efímera.
+---
 
 ## Atajos
 
@@ -93,16 +88,31 @@ de URL), con sesión efímera.
 | Selector rápido / paleta de comandos | `Ctrl+P` / `Ctrl+Mayús+P` |
 | Búsqueda global / buscar en la nota / reemplazar | `Ctrl+Mayús+F` / `Ctrl+F` / `Ctrl+H` |
 | Vistas Código / Lectura / Dividida | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
+| Plegar / desplegar elemento del outliner | `Ctrl+Arriba` / `Ctrl+Abajo` |
+| Enfocar elemento / subir un nivel en la miga | `Alt+Derecha` / `Alt+Izquierda` |
 | Barra izquierda / derecha | `Ctrl+[` / `Ctrl+]` |
-| Retroenlaces | `Ctrl+Mayús+B` |
-| Exportar HTML | `Ctrl+Mayús+E` |
-| Nota diaria | `Ctrl+Alt+D` |
-| Pegar imagen | `Ctrl+Mayús+V` |
+| Retroenlaces / Nota diaria | `Ctrl+Mayús+B` / `Ctrl+Alt+D` |
+| Exportar HTML / Pegar imagen | `Ctrl+Mayús+E` / `Ctrl+Mayús+V` |
 | Renombrar / enviar a papelera | `F2` / `Supr` |
 | Multi-cursor (Código) | `Alt+clic`, `Ctrl+Alt+Arriba/Abajo` |
-| Preferencias / lista de atajos | `Ctrl+,` / `Ctrl+?` |
+| Preferencias / lista completa de atajos | `Ctrl+,` / `Ctrl+?` |
 
-La lista completa está en la app, en **Ayuda → Atajos** (`Ctrl+?`).
+---
+
+## Flatpak
+
+```sh
+cd ~/Proyectos/orbital                    # se corre desde la carpeta del repo
+build-aux/flatpak/construir.sh            # genera build-aux/flatpak/build/orbital.flatpak
+flatpak install --user build-aux/flatpak/build/orbital.flatpak
+flatpak run io.github.caracelp.Orbital    # o desde el menú de aplicaciones
+```
+
+Usa el runtime de GNOME 51 y la extensión de Rust de Flathub (el script indica cómo instalarlos sin
+`sudo`). El manifiesto para `flatpak-builder` está en
+[`build-aux/flatpak/io.github.caracelp.Orbital.json`](build-aux/flatpak/io.github.caracelp.Orbital.json).
+
+---
 
 ## Compilar y ejecutar
 
@@ -127,60 +137,20 @@ orbital --medir-escritura <carpeta> <nota>                             # latenci
 orbital --salir-al-mostrar <carpeta>                                   # medir el arranque
 ```
 
-## Verificación
+---
 
-Cada función lleva pruebas: núcleo en `crates/orbital-vault`, interfaz con GTK en proceso y
-regresión AT-SPI con los scripts `tools/verificar-NNN-us*.sh` (cada uno levanta una instancia y una
-bóveda temporales propias; nunca se toca la bóveda real del usuario ni se envían teclas sintéticas).
+## Verificación y formato de bóveda
 
-Antes de cerrar cualquier cambio, el gate:
+Antes de cerrar cualquier cambio se corre el gate completo:
 
 ```sh
 cargo fmt
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo deny check
+tools/pruebas-gtk.sh
 ```
 
-La CI de GitHub corre el mismo gate en un contenedor de Arch (por WebKitGTK 6.0).
-
-## Formato de la bóveda
-
-El contrato completo está en [docs/formato-boveda.md](docs/formato-boveda.md): estructura, propiedades,
-etiquetas, enlaces, marcadores y bloques generados, y todo lo que vive en `.orbital/` (configuración,
-búsquedas guardadas, URL asociadas, historial y papelera recuperable). Es la fuente de verdad: si el
-código y el documento no coinciden, el error está en el código.
-
-## Flatpak
-
-```sh
-cd ~/Proyectos/orbital                    # el script se corre desde la carpeta del repo
-build-aux/flatpak/construir.sh            # deja build-aux/flatpak/build/orbital.flatpak
-flatpak install --user build-aux/flatpak/build/orbital.flatpak
-flatpak run io.github.caracelp.Orbital    # o desde el menú de aplicaciones
-```
-
-Usa el runtime de GNOME 51 y la extensión de Rust de Flathub (el script dice cómo instalarlos, sin
-`sudo`). El manifiesto para `flatpak-builder` está en
-[`build-aux/flatpak/io.github.caracelp.Orbital.json`](build-aux/flatpak/io.github.caracelp.Orbital.json).
-
-## Specs y desarrollo
-
-El desarrollo sigue un flujo Spec Kit: cada especificación vive en `specs/NNN-nombre/` con
-`spec.md → plan.md → research.md → tasks.md`, más `quickstart.md` (resultados medidos) y
-`traspaso.md` (estado exacto y lecciones aprendidas). Las terminadas están fusionadas en `main`;
-la cola de trabajo vigente está en [specs/cola-autonoma.md](specs/cola-autonoma.md) y lo
-pendiente de cada bloque, en la [hoja de ruta](docs/hoja-de-ruta.md).
-
-Los principios del proyecto (rendimiento primero, la bóveda es del usuario, nativa de GNOME, local y
-privada) están en [.specify/memory/constitution.md](.specify/memory/constitution.md).
-
-## Contribuir
-
-Leé [CONTRIBUTING.md](CONTRIBUTING.md): entorno, gate de verificación, convenciones y flujo de specs.
-Errores y pedidos de función van por [issues](https://github.com/caracelp/orbital/issues) con las
-plantillas.
-
-## Licencia
-
-GPL-3.0-or-later. Ver [LICENSE](LICENSE).
+- El contrato completo del disco (OKF v0.2, propiedades, bloques y `.orbital/`) vive en [docs/formato-boveda.md](docs/formato-boveda.md).
+- El desarrollo sigue el flujo **Spec Kit** (`specs/NNN-nombre/`) con principios en [.specify/memory/constitution.md](.specify/memory/constitution.md) y estado en [docs/hoja-de-ruta.md](docs/hoja-de-ruta.md).
+- Para contribuir, leé [CONTRIBUTING.md](CONTRIBUTING.md). Licencia **GPL-3.0-or-later** ([LICENSE](LICENSE)).
