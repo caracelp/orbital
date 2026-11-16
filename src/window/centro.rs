@@ -241,6 +241,10 @@ pub(super) fn construir_centro() -> Centro {
     let brujula_vista = crate::grafo::brujula::VistaBrujula::new();
     content_stack.add_named(brujula_vista.widget(), Some("brujula"));
 
+    // Editor de Canvas (038): página en el centro para archivos `.canvas`.
+    let canvas_vista = crate::grafo::canvas::VistaCanvas::new();
+    content_stack.add_named(canvas_vista.widget(), Some("canvas"));
+
     let content_title = adw::WindowTitle::new("", "");
     // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
     // cabecera única de arriba).
