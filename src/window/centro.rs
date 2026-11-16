@@ -173,7 +173,8 @@ pub(super) fn construir_centro() -> Centro {
     url_page.append(&url_header);
     content_stack.add_named(&url_page, Some("url-webview"));
 
-    // Grafo de enlaces (008): página a pantalla completa con el canvas propio.
+    // Grafo de enlaces (008, 030): página a pantalla completa con el canvas propio y controles
+    // discretos de simulación física (Pausar/Reanudar y Recalcular).
     let grafo_vista = crate::grafo::VistaGrafo::new();
     let grafo_aviso = gtk::Label::builder()
         .label("")
@@ -181,6 +182,39 @@ pub(super) fn construir_centro() -> Centro {
         .margin_start(12)
         .css_classes(["dim-label", "caption"])
         .build();
+    let grafo_pausar = gtk::Button::builder()
+        .icon_name("media-playback-pause-symbolic")
+        .tooltip_text("Pausar la simulación")
+        .css_classes(["flat"])
+        .build();
+    grafo_pausar.update_property(&[gtk::accessible::Property::Label("Pausar la simulación")]);
+    let grafo_recalcular = gtk::Button::builder()
+        .icon_name("view-refresh-symbolic")
+        .tooltip_text("Recalcular disposición")
+        .css_classes(["flat"])
+        .build();
+    grafo_recalcular.update_property(&[gtk::accessible::Property::Label("Recalcular disposición")]);
+    {
+        let b_pausar = grafo_pausar.clone();
+        grafo_vista.set_on_estado_fisica(move |pausado| {
+            let (icono, rotulo) = if pausado {
+                ("media-playback-start-symbolic", "Reanudar la simulación")
+            } else {
+                ("media-playback-pause-symbolic", "Pausar la simulación")
+            };
+            b_pausar.set_icon_name(icono);
+            b_pausar.set_tooltip_text(Some(rotulo));
+            b_pausar.update_property(&[gtk::accessible::Property::Label(rotulo)]);
+        });
+        let vista_p = grafo_vista.clone();
+        grafo_pausar.connect_clicked(move |_| {
+            vista_p.pausar_reanudar();
+        });
+        let vista_r = grafo_vista.clone();
+        grafo_recalcular.connect_clicked(move |_| {
+            vista_r.recalcular();
+        });
+    }
     let grafo_cerrar = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .tooltip_text("Cerrar el grafo (Esc)")
@@ -192,6 +226,8 @@ pub(super) fn construir_centro() -> Centro {
         "",
     )));
     grafo_barra.pack_end(&grafo_cerrar);
+    grafo_barra.pack_end(&grafo_recalcular);
+    grafo_barra.pack_end(&grafo_pausar);
     grafo_barra.pack_start(&grafo_aviso);
     let grafo_page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
