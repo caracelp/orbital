@@ -8,6 +8,8 @@ pub mod brujula;
 pub mod canvas;
 #[path = "mapa_mental.rs"]
 pub mod mapa_mental;
+#[path = "ramas_libres.rs"]
+pub mod ramas_libres;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};

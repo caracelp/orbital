@@ -17,6 +17,8 @@ pub const CONEXIONES: &str = "orbital:conexiones";
 pub const BRUJULA: &str = "orbital:brujula";
 /// Clave de la pestaña del Mapa mental de la nota (039).
 pub const MAPA_MENTAL: &str = "orbital:mapa-mental";
+/// Clave de la pestaña de Ramas libres de la nota (040).
+pub const RAMAS_LIBRES: &str = "orbital:ramas-libres";
 
 /// Estado de vista de una nota: offset del cursor, desplazamiento de Código y vista.
 pub type Estado = (i32, f64, Option<String>);

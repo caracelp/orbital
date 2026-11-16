@@ -14,6 +14,13 @@ impl Editor {
         if !i.view.is_editable() || i.mode.get() == View::Visual {
             return false;
         }
+        // Si la nota usa bloques delimitados `<!-- block <jerarquía> <ID> --> ... <!---->` (040),
+        // no inyectar `^xxxxxx` al final de los párrafos.
+        if i.format.get() != Format::Html
+            && crate::grafo::ramas_libres::usa_bloques_delimitados(texto)
+        {
+            return false;
+        }
         let lineas = comienzos_de_linea(texto);
         let excluir: Vec<std::ops::Range<usize>> = if cursores {
             let b = &i.buffer;
