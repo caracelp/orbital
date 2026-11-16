@@ -129,6 +129,9 @@ pub(super) fn construir_esqueleto(
         }
         rail.append(&b);
     }
+    let brujula_btn = crate::iconos::boton("brujula", "Brújula");
+    brujula_btn.set_action_name(Some("win.ver-brujula"));
+    rail.append(&brujula_btn);
     let settings = crate::iconos::boton("configuracion", "Configuración general");
     settings.set_action_name(Some("win.preferences"));
     settings.set_vexpand(true);

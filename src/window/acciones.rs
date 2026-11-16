@@ -131,6 +131,8 @@ impl Window {
             simple("exportar-pdf", |w| w.exportar(crate::export::Formato::Pdf)),
             simple("ver-grafo", Window::ver_grafo),
             simple("cerrar-grafo", Window::cerrar_grafo),
+            simple("ver-brujula", Window::ver_brujula),
+            simple("cerrar-brujula", Window::cerrar_brujula),
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
@@ -410,6 +412,7 @@ impl Window {
         ),
         ("Exportar nota como PDF", "exportar-pdf", None, true),
         ("Ver el grafo de enlaces", "ver-grafo", None, false),
+        ("Ver la brújula de la nota", "ver-brujula", None, false),
         ("Historial de versiones…", "historial", None, true),
         (
             "Renumerar notas al pie",

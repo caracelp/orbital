@@ -237,6 +237,10 @@ pub(super) fn construir_centro() -> Centro {
     grafo_vista.set_vexpand(true);
     content_stack.add_named(&grafo_page, Some("grafo"));
 
+    // Brújula de la nota abierta (017): página en el centro activada desde el riel izquierdo.
+    let brujula_vista = crate::grafo::brujula::VistaBrujula::new();
+    content_stack.add_named(brujula_vista.widget(), Some("brujula"));
+
     let content_title = adw::WindowTitle::new("", "");
     // Barra de la nota (025): debajo de las pestañas, sin controles de ventana (los lleva la
     // cabecera única de arriba).

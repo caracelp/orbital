@@ -20,6 +20,9 @@ impl Window {
     pub(super) fn refresh_panel(&self) {
         use crate::panel_derecho::Metadatos;
         let i = &self.0;
+        if i.content_stack.visible_child_name().as_deref() == Some("brujula") {
+            self.actualizar_brujula(None);
+        }
         if !i.right_split.shows_sidebar() {
             return;
         }
@@ -138,15 +141,101 @@ impl Window {
         });
     }
 
+    /// Abre la página de la Brújula (017) para la nota abierta.
+    pub fn ver_brujula(&self) {
+        let i = &self.0;
+        self.guardar_estado_pestana();
+        i.pestanas.abrir(crate::pestanas::BRUJULA, "Brújula");
+        i.content_stack.set_visible_child_name("brujula");
+        self.actualizar_brujula(None);
+    }
+
+    /// Cierra la Brújula y vuelve a la nota abierta.
+    pub fn cerrar_brujula(&self) {
+        self.0.pestanas.cerrar(crate::pestanas::BRUJULA);
+    }
+
+    /// Calcula en segundo plano el vecindario N/S/O/E de la nota abierta (o de `centro_override`).
+    pub(super) fn actualizar_brujula(&self, centro_override: Option<RelPath>) {
+        let i = &self.0;
+        let Some(vista) = crate::grafo::brujula::VistaBrujula::desde_stack(&i.content_stack) else {
+            return;
+        };
+        let centro = centro_override.or_else(|| {
+            i.current_entry
+                .borrow()
+                .as_ref()
+                .filter(|e| Format::from_name(e.path.file_name()).is_some())
+                .map(|e| e.path.clone())
+        });
+        let Some(centro) = centro else {
+            vista.set_vacio("Abrí una nota de la bóveda para explorar sus conexiones cardinales.");
+            return;
+        };
+        let Some(graph) = i.graph.borrow().clone() else {
+            vista.set_vacio("Armando las conexiones de la bóveda…");
+            return;
+        };
+        let c_str = centro.to_string();
+        glib::spawn_future_local(async move {
+            let vecindario = gio::spawn_blocking(move || {
+                let g = graph.lock().ok()?;
+                let enlaces: Vec<(String, String)> = g
+                    .enlaces_resueltos()
+                    .into_iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect();
+                Some(crate::grafo::brujula::VecindarioBrujula::calcular(
+                    &c_str, &enlaces,
+                ))
+            })
+            .await
+            .ok()
+            .flatten();
+            match vecindario {
+                Some(v) => vista.set_vecindario(v),
+                None => vista.set_vacio("No se pudieron leer las conexiones."),
+            }
+        });
+    }
+
     /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
     /// el centro vacío (guardando antes lo pendiente).
     pub(super) fn setup_pestanas(&self) {
+        if let Some(vista) = crate::grafo::brujula::VistaBrujula::desde_stack(&self.0.content_stack)
+        {
+            let weak_a = Rc::downgrade(&self.0);
+            vista.connect_abrir(move |ruta| {
+                if let Some(i) = weak_a.upgrade() {
+                    i.content_stack.set_visible_child_name("codigo");
+                    Window(i).show_path(ruta);
+                }
+            });
+            let weak_c = Rc::downgrade(&self.0);
+            vista.connect_centrar(move |ruta| {
+                if let Some(i) = weak_c.upgrade()
+                    && let Ok(rel) = RelPath::new(ruta)
+                {
+                    Window(i).actualizar_brujula(Some(rel));
+                }
+            });
+            let weak_x = Rc::downgrade(&self.0);
+            vista.connect_cerrar(move || {
+                if let Some(i) = weak_x.upgrade() {
+                    Window(i).cerrar_brujula();
+                }
+            });
+        }
         let weak = Rc::downgrade(&self.0);
         self.0.pestanas.connect_elegir(move |clave, estado| {
             let Some(i) = weak.upgrade() else { return };
             let w = Window(i);
             if clave == crate::pestanas::CONEXIONES {
                 w.ver_grafo();
+                return;
+            }
+            if clave == crate::pestanas::BRUJULA {
+                w.ver_brujula();
                 return;
             }
             w.guardar_estado_pestana();
@@ -162,7 +251,9 @@ impl Window {
                 return;
             }
             let w = Window(i);
-            if clave == crate::pestanas::CONEXIONES && w.0.code_editor.current_path().is_some() {
+            if (clave == crate::pestanas::CONEXIONES || clave == crate::pestanas::BRUJULA)
+                && w.0.code_editor.current_path().is_some()
+            {
                 // Quedó solo la nota del editor sin pestaña: se vuelve a ella.
                 if let Some(e) = w.0.current_entry.borrow().clone() {
                     w.0.pestanas.abrir(e.path.as_str(), e.path.file_name());

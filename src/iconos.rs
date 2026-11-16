@@ -88,6 +88,10 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
     ),
     ("tipo-codigo", "M6 2h9l4 4v16H6zM9 14l2-2 2 2 2-2"),
     ("tipo-texto", "M6 2h9l4 4v16H6zM15 2v5h4M9 12h7m-7 3h7"),
+    (
+        "brujula",
+        "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0zM16.2 7.8l-2.6 5.8-5.8 2.6 2.6-5.8z",
+    ),
 ];
 
 thread_local! {
