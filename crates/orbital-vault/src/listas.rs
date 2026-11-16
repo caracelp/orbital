@@ -118,7 +118,7 @@ fn clave(nombre: &str) -> String {
 }
 
 /// Ruta válida para las listas: `RelPath` sin componentes ocultos.
-fn ruta_valida(s: &str) -> Option<RelPath> {
+pub(crate) fn ruta_valida(s: &str) -> Option<RelPath> {
     let ruta = RelPath::new(s).ok()?;
     (!ruta.as_str().split('/').any(|c| c.starts_with('.'))).then_some(ruta)
 }
@@ -131,27 +131,27 @@ fn push_unica(lista: &mut Vec<RelPath>, ruta: RelPath) {
 }
 
 /// Árbol mínimo del YAML: solo escalares, listas y mapas (sin anclas, alias ni etiquetas).
-enum Nodo {
+pub(crate) enum Nodo {
     Escalar(String, ScalarStyle, usize),
     Lista(Vec<Nodo>, usize),
     Mapa(Vec<(Nodo, Nodo)>, usize),
 }
 
 impl Nodo {
-    fn linea(&self) -> usize {
+    pub(crate) fn linea(&self) -> usize {
         match self {
             Self::Escalar(_, _, l) | Self::Lista(_, l) | Self::Mapa(_, l) => *l,
         }
     }
 
     /// Escalar vacío, `~` o `null` sin comillas.
-    fn es_nulo(&self) -> bool {
+    pub(crate) fn es_nulo(&self) -> bool {
         matches!(self, Self::Escalar(v, ScalarStyle::Plain, _)
             if yaml::scalar_value(v, ScalarStyle::Plain) == PropValue::Null)
     }
 
     /// Texto de un escalar que se lee como texto (no número, fecha ni booleano sin comillas).
-    fn texto(&self) -> Option<&str> {
+    pub(crate) fn texto(&self) -> Option<&str> {
         match self {
             Self::Escalar(v, ScalarStyle::Plain, _) => matches!(
                 yaml::scalar_value(v, ScalarStyle::Plain),
@@ -164,7 +164,7 @@ impl Nodo {
     }
 }
 
-fn arbol(text: &str) -> Result<Option<Nodo>, String> {
+pub(crate) fn arbol(text: &str) -> Result<Option<Nodo>, String> {
     let mut parser = Parser::new_from_str(text);
     // Pila de contenedores abiertos; cada mapa guarda la clave pendiente.
     enum Abierto {
@@ -178,7 +178,7 @@ fn arbol(text: &str) -> Result<Option<Nodo>, String> {
         let (evento, span) = evento
             .map_err(|e| format!("Línea {}: {}", e.marker().line(), yaml::translate(e.info())))?;
         let linea = span.start.line();
-        let otro = || format!("Línea {linea}: el archivo de listas no sigue el formato");
+        let otro = || format!("Línea {linea}: el archivo no sigue el formato");
         let nodo = match evento {
             Event::StreamStart | Event::StreamEnd | Event::Nothing | Event::DocumentEnd => {
                 continue;
@@ -415,7 +415,7 @@ fn validate(listas: &Listas) -> Result<(), VaultError> {
 }
 
 /// Solo para esta ruta de configuración. No relaja la prohibición genérica de escribir ocultos.
-fn check_directories(root: &Path, parts: &[&str]) -> Result<(), VaultError> {
+pub(crate) fn check_directories(root: &Path, parts: &[&str]) -> Result<(), VaultError> {
     let mut path = root.to_path_buf();
     for part in parts {
         path.push(part);
@@ -430,14 +430,19 @@ fn check_directories(root: &Path, parts: &[&str]) -> Result<(), VaultError> {
 }
 
 fn read_config(root: &Path) -> Result<Option<Vec<u8>>, VaultError> {
+    leer_config(root, LISTAS_PATH)
+}
+
+/// Lee un archivo de `.orbital/` sin seguir enlaces simbólicos; `None` si no existe.
+pub(crate) fn leer_config(root: &Path, ruta: &'static str) -> Result<Option<Vec<u8>>, VaultError> {
     check_directories(root, &[".orbital"])?;
-    let path = root.join(LISTAS_PATH);
+    let path = root.join(ruta);
     match fs::symlink_metadata(&path) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-            return Err(VaultError::InvalidPath(LISTAS_PATH.into()));
+            return Err(VaultError::InvalidPath(ruta.into()));
         }
         Ok(meta) if meta.len() > crate::entry::MAX_EDITABLE_BYTES => {
-            return Err(VaultError::TooLarge(RelPath::from_static(LISTAS_PATH)));
+            return Err(VaultError::TooLarge(RelPath::from_static(ruta)));
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -554,7 +559,7 @@ impl Vault {
 }
 
 /// `ruta` es `carpeta` o está dentro de ella.
-fn dentro_de(ruta: &str, carpeta: &str) -> bool {
+pub(crate) fn dentro_de(ruta: &str, carpeta: &str) -> bool {
     ruta == carpeta
         || ruta
             .strip_prefix(carpeta)

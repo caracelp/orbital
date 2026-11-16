@@ -495,3 +495,88 @@ fn listas_500(bencher: divan::Bencher) {
         listas::faltantes(&leidas, vault.entries()).len() + escrito.len()
     });
 }
+
+/// Nota de ≈ 100 KB con estructura (028): 60 encabezados de tres niveles, ≈ 3000 ítems de
+/// cuatro niveles, código y citas.
+fn nota_plegable_100k() -> String {
+    let mut t = String::from("---\ntype: nota\n---\n");
+    let mut item = 0;
+    for s in 0..60 {
+        let nivel = 1 + s % 3;
+        t.push_str(&format!(
+            "{} Sección {s}\n\nUn párrafo de la sección {s}.\n\n",
+            "#".repeat(nivel)
+        ));
+        for k in 0..50 {
+            let sangria = [0, 2, 4, 6, 4, 2, 0, 2, 4, 2][k % 10];
+            t.push_str(&format!(
+                "{}- Ítem {item} con algo de texto\n",
+                " ".repeat(sangria)
+            ));
+            item += 1;
+        }
+        if s % 4 == 0 {
+            t.push_str("\n```\n# no es encabezado\n- tampoco\n```\n\n> - una cita\n>   - sub\n\n");
+        } else {
+            t.push('\n');
+        }
+    }
+    t
+}
+
+/// Árbol de plegables de una nota de 100 KB (objetivo: < 1 ms), realista y caso extremo (un
+/// ítem con subítem cada ≈ 20 bytes).
+#[divan::bench(args = ["realista", "extremo"], sample_count = 50)]
+fn plegables_100k(bencher: divan::Bencher, caso: &str) {
+    let texto = match caso {
+        "realista" => nota_plegable_100k(),
+        _ => {
+            let mut t = String::new();
+            while t.len() < 100 * 1024 {
+                t.push_str("- padre x\n  - hijo y\n");
+            }
+            t
+        }
+    };
+    assert!(texto.len() >= 90 * 1024);
+    bencher.bench(|| orbital_vault::plegado::plegables(divan::black_box(&texto)).len());
+}
+
+/// Leer, analizar y escribir el estado de plegado de 500 notas con 3 claves y podarlo contra la
+/// bóveda de 5000 (objetivo: < 2 ms).
+#[divan::bench(sample_count = 100)]
+fn plegado_500(bencher: divan::Bencher) {
+    use orbital_vault::plegado::{self, Clave, Plegado};
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let rutas: Vec<_> = note_paths()
+        .iter()
+        .filter(|r| r.as_str().ends_with(".md"))
+        .cloned()
+        .collect();
+    let mut p = Plegado::default();
+    for n in 0..500 {
+        p.poner(
+            &rutas[(n * 7) % rutas.len()],
+            vec![
+                Clave::Encabezado {
+                    texto: format!("Sección {n}"),
+                    aparicion: 1,
+                },
+                Clave::Bloque {
+                    id: format!("b{n:05}"),
+                },
+                Clave::Item {
+                    texto: "Comprar pan".into(),
+                    aparicion: 2,
+                },
+            ],
+        );
+    }
+    let texto = plegado::serialize(&p);
+    assert_eq!(plegado::parse(&texto).unwrap(), p);
+    bencher.bench(|| {
+        let mut leido = plegado::parse(divan::black_box(&texto)).unwrap();
+        leido.podar(vault.entries());
+        plegado::serialize(&leido).len()
+    });
+}
