@@ -37,6 +37,7 @@ mod explorador;
 mod externos;
 mod historial;
 mod izquierda;
+mod listas;
 mod nota;
 mod operaciones;
 mod paneles;
@@ -152,6 +153,24 @@ struct Inner {
     url_page: gtk::Box,
     url_abrir: gtk::Button,
     url_ver_archivo: gtk::Button,
+    /// Menú «Más opciones de la nota»: se rearma al abrirse (027).
+    note_menu: gtk::Popover,
+    /// Favoritos y Guardados (027): widgets de la barra izquierda.
+    listas_panel: crate::listas_panel::ListasPanel,
+    /// Lo leído de `.orbital/listas.yaml` con los cambios en memoria; `None` hasta que carga.
+    listas: RefCell<Option<orbital_vault::ListasSnapshot>>,
+    /// Cambios que todavía no llegaron al disco (se repiten si el archivo cambió afuera).
+    listas_acciones: RefCell<Vec<listas::AccionListas>>,
+    /// Hay una escritura de las listas en curso.
+    listas_escribiendo: Cell<bool>,
+    /// Llegaron cambios durante la escritura.
+    listas_pendiente: Cell<bool>,
+    /// Hash de la última escritura propia (para ignorar su aviso en el monitor).
+    listas_eco: Cell<Option<u64>>,
+    /// Sesión de bóveda (`vault_session`) a la que pertenecen las listas.
+    listas_sesion: Cell<u64>,
+    /// Monitor de `.orbital/listas.yaml` (cambios hechos afuera, FR-012).
+    listas_watcher: RefCell<Option<crate::watcher::ListasWatcher>>,
 }
 
 /// Ventana de Orbital.
@@ -178,7 +197,6 @@ impl Window {
             grafo_vista,
             grafo_cerrar,
             content_title,
-            content_view,
             pestanas,
             type_banner,
             note_banner,
@@ -186,6 +204,7 @@ impl Window {
             panel,
             right_split,
             backlinks_button,
+            note_menu,
         } = centro::construir_centro();
         let izquierda::Izquierda {
             list_view,
@@ -198,6 +217,7 @@ impl Window {
             pie_boveda,
             sidebar_view,
             gone_banner,
+            listas_panel,
         } = izquierda::construir_izquierda();
         let esqueleto::Esqueleto {
             split,
@@ -205,7 +225,7 @@ impl Window {
             root_view,
         } = esqueleto::construir_esqueleto(
             backlinks_button.clone(),
-            content_view.clone(),
+            right_split.clone(),
             sidebar_stack.clone(),
             sidebar_view.clone(),
         );
@@ -343,6 +363,15 @@ impl Window {
             watcher: RefCell::new(None),
             gone: Cell::new(false),
             gone_banner,
+            note_menu,
+            listas_panel,
+            listas: RefCell::new(None),
+            listas_acciones: RefCell::new(Vec::new()),
+            listas_escribiendo: Cell::new(false),
+            listas_pendiente: Cell::new(false),
+            listas_eco: Cell::new(None),
+            listas_sesion: Cell::new(0),
+            listas_watcher: RefCell::new(None),
         }));
         conexiones::conectar(&this, app);
         this

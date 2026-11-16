@@ -275,6 +275,10 @@ impl Window {
                 // La ruta cambió: el editor vuelve a abrir la nota en su lugar nuevo.
                 self.0.code_editor.close();
                 self.reload(Some(to.clone())).await;
+                // Favoritos y Guardados siguen al archivo o a la carpeta (027, FR-008); también
+                // en el deshacer, que llama a `do_rename` al revés. Si no se pueden escribir,
+                // `aplicar_listas` lo avisa aparte.
+                self.seguir_renombre_en_listas(&from, &to);
                 if let Some(error) = enlaces_err {
                     self.toast(&format!("No se pudo migrar la URL asociada: {error}"));
                 }
@@ -429,6 +433,8 @@ impl Window {
         .await;
         self.0.code_editor.close();
         self.reload(None).await;
+        // Sale de Favoritos y de las colecciones (027, FR-008); «Deshacer» la repone.
+        let quitadas = self.quitar_de_listas(&path);
         let msg = match &in_vault {
             None => format!("«{}» se movió a la papelera", path.file_name()),
             Some(_) => format!(
@@ -438,21 +444,29 @@ impl Window {
         };
         let this = self.clone();
         self.toast_undo(&msg, move || {
-            let (this, plan, abs, in_vault) =
-                (this.clone(), plan.clone(), abs.clone(), in_vault.clone());
+            let (this, plan, abs, in_vault, quitadas) = (
+                this.clone(),
+                plan.clone(),
+                abs.clone(),
+                in_vault.clone(),
+                quitadas.clone(),
+            );
             glib::spawn_future_local(async move {
-                match in_vault {
+                let repuesta = match in_vault {
                     None => this.restore(plan, abs).await,
                     Some(trashed) => this.restore_vault_trash(plan, trashed).await,
+                };
+                if repuesta {
+                    this.reponer_en_listas(&quitadas);
                 }
             });
         });
     }
 
-    /// Deshacer un borrado que fue a la papelera de la bóveda.
-    pub(super) async fn restore_vault_trash(&self, plan: DeletePlan, trashed: PathBuf) {
+    /// Deshacer un borrado que fue a la papelera de la bóveda. Devuelve si se recuperó.
+    pub(super) async fn restore_vault_trash(&self, plan: DeletePlan, trashed: PathBuf) -> bool {
         let Some(vault) = self.0.vault.borrow().clone() else {
-            return;
+            return false;
         };
         let path = plan.path.clone();
         let result = gio::spawn_blocking(move || {
@@ -462,17 +476,27 @@ impl Window {
         })
         .await;
         match result {
-            Ok(Ok(_)) => self.reload(Some(path)).await,
-            Ok(Err(e)) => self.toast(&format!("No se pudo recuperar: {e}")),
-            Err(_) => self.toast("No se pudo recuperar"),
+            Ok(Ok(_)) => {
+                self.reload(Some(path)).await;
+                true
+            }
+            Ok(Err(e)) => {
+                self.toast(&format!("No se pudo recuperar: {e}"));
+                false
+            }
+            Err(_) => {
+                self.toast("No se pudo recuperar");
+                false
+            }
         }
     }
 
     /// Deshacer un borrado: busca el archivo en la papelera por su ruta original y lo devuelve.
-    pub(super) async fn restore(&self, plan: DeletePlan, abs: PathBuf) {
+    /// Devuelve si se recuperó.
+    pub(super) async fn restore(&self, plan: DeletePlan, abs: PathBuf) -> bool {
         let path = plan.path.clone();
         let Some(vault) = self.0.vault.borrow().clone() else {
-            return;
+            return false;
         };
         match find_in_trash(&abs).await {
             Some(trashed) => {
@@ -489,8 +513,14 @@ impl Window {
                 .await;
                 match moved {
                     Ok(Ok(())) => {}
-                    Ok(Err(e)) => return self.toast(&format!("No se pudo recuperar: {e}")),
-                    Err(_) => return self.toast("No se pudo recuperar"),
+                    Ok(Err(e)) => {
+                        self.toast(&format!("No se pudo recuperar: {e}"));
+                        return false;
+                    }
+                    Err(_) => {
+                        self.toast("No se pudo recuperar");
+                        return false;
+                    }
                 }
                 let v = vault.clone();
                 let _ = gio::spawn_blocking(move || {
@@ -499,8 +529,12 @@ impl Window {
                 })
                 .await;
                 self.reload(Some(path)).await;
+                true
             }
-            None => self.toast("No encontré el archivo en la papelera"),
+            None => {
+                self.toast("No encontré el archivo en la papelera");
+                false
+            }
         }
     }
 }

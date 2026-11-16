@@ -71,6 +71,9 @@ wait_for(get_app, "No se encontró la instancia propia de Orbital")
 # 025: las etiquetas son una sección del explorador (siempre a la vista en modo Explorador).
 tab = next(node for node in find_all("toggle button", "Explorador de archivos") if visible(node))
 do_action(tab, "click")
+# 027: en una ventana baja, Etiquetas es lo primero que cede su lugar (src/reparto.rs). Se pliega
+# la sección Explorador, como haría la usuaria, para que el árbol de etiquetas tenga su alto.
+click("Explorador")
 
 # Diálogo de renombre: nombre nuevo accesible y con el viejo precargado.
 click("Renombrar #fisica")

@@ -223,6 +223,52 @@ Formato de OKF v0.2 §8 y §9.
   que no cambia el contenido no crea versión duplicada. Las versiones nunca son notas: no entran en
   la búsqueda, el grafo ni las listas.
 
+- `.orbital/listas.yaml` (027): Favoritos y Guardados de la bóveda. Viaja con la carpeta:
+  sincronizarla o copiarla los lleva.
+
+  ```yaml
+  format_version: 1
+  favoritos:
+    - wiki/entropia.md
+    - raw/callen-termodinamica.pdf
+  colecciones:
+    - nombre: Para leer
+      notas:
+        - wiki/segundo-principio.html
+        - wiki/entropia.md
+    - nombre: "Tesis: capítulo 2"
+      notas: []
+  ```
+
+  - `format_version`: entero, hoy `1`. Si falta se asume `1`; uno mayor que el que Orbital entiende
+    se trata como archivo dañado (no se pisa).
+  - `favoritos`: lista de rutas, en el orden en que se muestran.
+  - `colecciones`: lista de mapas con `nombre` (texto no vacío, único sin distinguir mayúsculas) y
+    `notas` (lista de rutas en orden; puede estar vacía). Las colecciones no se anidan.
+  - Las claves que faltan valen como listas vacías. Un archivo vacío o ausente = sin favoritos ni
+    colecciones.
+  - Una ruta es relativa a la raíz de la bóveda, con `/`, sin componentes ocultos ni `..`. Puede ser
+    una nota de `wiki/` (`.md` o `.html`) o cualquier archivo que Orbital abre, también de `raw/`.
+  - Una ruta repetida dentro de la misma lista se toma una sola vez (la primera). Una ruta que no
+    existe se conserva y Orbital la muestra como faltante, con la opción de quitarla.
+
+  Cómo lo trata Orbital:
+
+  - Lo crea (y crea `.orbital/`) recién al marcar el primer favorito o crear la primera colección.
+  - Escritura atómica. Antes de escribir encima de un contenido que no escribió esta misma sesión de
+    Orbital (el que había al abrir la bóveda, uno cambiado por fuera o uno dañado), lo copia a
+    `.orbital/respaldo/<fecha>/.orbital/listas.<hora>.yaml`. Los cambios siguientes de la misma
+    sesión (reordenar, marcar) no dejan más copias.
+  - Si el archivo tiene errores (YAML inválido, claves desconocidas, rutas inválidas, nombres de
+    colección vacíos o repetidos), Orbital avisa una vez, muestra las listas vacías y no lo
+    sobrescribe hasta que la usuaria haga un cambio; ese cambio respalda primero el archivo dañado.
+  - Si el archivo cambia afuera mientras Orbital está abierto, lo vuelve a leer. Si cambió entre la
+    lectura y una escritura, lo vuelve a leer y repite el cambio sobre lo nuevo.
+  - Renombrar o mover un archivo o una carpeta desde Orbital actualiza las rutas; borrar desde
+    Orbital quita las entradas (y «Deshacer» las repone). Lo que se borra o mueve por fuera queda
+    como faltante.
+  - Ninguna nota ni archivo de `raw/` se modifica.
+
 ## 10. Borrar y papelera
 
 Borrar nunca es definitivo: el archivo va a la papelera del sistema y, si ese disco no tiene (tmpfs, FAT),

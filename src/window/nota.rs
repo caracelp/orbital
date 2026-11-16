@@ -145,6 +145,8 @@ impl Window {
                     action.set_enabled(enabled);
                 }
             }
+            // Favoritos y Guardados valen para cualquier archivo abierto, también de raw/.
+            this.habilitar_acciones_listas(true);
         });
     }
 

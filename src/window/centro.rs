@@ -21,7 +21,6 @@ pub(super) struct Centro {
     pub(super) grafo_vista: crate::grafo::VistaGrafo,
     pub(super) grafo_cerrar: gtk::Button,
     pub(super) content_title: adw::WindowTitle,
-    pub(super) content_view: adw::ToolbarView,
     pub(super) pestanas: crate::pestanas::Pestanas,
     pub(super) type_banner: adw::Banner,
     pub(super) note_banner: adw::Banner,
@@ -29,6 +28,7 @@ pub(super) struct Centro {
     pub(super) panel: crate::panel_derecho::PanelDerecho,
     pub(super) right_split: adw::OverlaySplitView,
     pub(super) backlinks_button: gtk::ToggleButton,
+    pub(super) note_menu: gtk::Popover,
 }
 
 pub(super) fn construir_centro() -> Centro {
@@ -231,6 +231,8 @@ pub(super) fn construir_centro() -> Centro {
         "view-more-symbolic",
         "Más opciones de la nota",
         &[
+            ("Agregar a favoritos", "win.alternar-favorito", ""),
+            ("Guardar en…", "win.guardar-en", ""),
             ("Renombrar o mover…", "win.rename", "F2"),
             ("Archivar", "win.archive", "Ctrl+Mayús+A"),
             (
@@ -245,6 +247,10 @@ pub(super) fn construir_centro() -> Centro {
     note_menu_button.add_css_class("flat");
     note_menu_button.add_css_class("orbital-iconbtn");
     content_header.pack_end(&note_menu_button);
+    // `listas.rs` lo rearma al abrirse, con el estado de Favoritos y Guardados (027).
+    let note_menu = note_menu_button
+        .popover()
+        .expect("el menú de la nota tiene popover");
     // Botón de vista de la maqueta: muestra el modo actual y pasa al siguiente (Código →
     // Lectura → Dividida en `.md`; Código ↔ Visual en `.html`). El grupo del editor sigue
     // siendo el estado (y lo usan Ctrl+1/2/3), pero ya no se muestra.
@@ -308,8 +314,11 @@ pub(super) fn construir_centro() -> Centro {
     let right = crate::editor::right_sidebar::RightSidebar::new();
     // Barra derecha de tres modos (025): Propiedades, Contexto (los retroenlaces) y Grafo.
     let panel = crate::panel_derecho::PanelDerecho::new(&right);
+    // La barra derecha va al lado de toda la columna central (pestañas y barra de la nota
+    // incluidas): llega hasta la barra superior.
+    content_view.set_content(Some(&content_stack));
     let right_split = adw::OverlaySplitView::builder()
-        .content(&content_stack)
+        .content(&content_view)
         .sidebar(panel.widget())
         .sidebar_position(gtk::PackType::End)
         .show_sidebar(true)
@@ -327,7 +336,6 @@ pub(super) fn construir_centro() -> Centro {
         .sync_create()
         .build();
     nombre_de_barra(&backlinks_button, "barra derecha", "Ctrl+]");
-    content_view.set_content(Some(&right_split));
     Centro {
         editor,
         props_list,
@@ -346,7 +354,6 @@ pub(super) fn construir_centro() -> Centro {
         grafo_vista,
         grafo_cerrar,
         content_title,
-        content_view,
         pestanas,
         type_banner,
         note_banner,
@@ -354,5 +361,6 @@ pub(super) fn construir_centro() -> Centro {
         panel,
         right_split,
         backlinks_button,
+        note_menu,
     }
 }

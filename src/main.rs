@@ -1,8 +1,10 @@
 mod editor;
 mod export;
 mod grafo;
+mod guardar_en;
 mod html_view;
 mod iconos;
+mod listas_panel;
 mod medir_arranque;
 mod onstage;
 mod open_dialog;
@@ -10,6 +12,7 @@ mod panel_derecho;
 mod pestanas;
 mod pie_boveda;
 mod preferences;
+mod reparto;
 mod search_panel;
 mod state;
 mod status_bar;

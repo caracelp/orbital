@@ -80,6 +80,9 @@ def activate(node):
 wait_for(get_app, "No se encontró la instancia propia de Orbital")
 # 025: las etiquetas son una sección del explorador; basta con el modo Explorador.
 activate(wait_for(lambda: exact("Explorador de archivos"), "No aparece el modo Explorador"))
+# 027: en una ventana baja, Etiquetas es lo primero que cede su lugar (src/reparto.rs). Se pliega
+# la sección Explorador, como haría la usuaria, para que el árbol de etiquetas tenga su alto.
+activate(wait_for(lambda: exact("Explorador"), "No aparece la sección Explorador"))
 root = wait_for(lambda: tag_button("fisica", 2), "Falta raíz Física con conteo único de 2 notas")
 wait_for(lambda: tag_button("biologia", 1), "No se indexó la nota HTML Unicode")
 for ignored in ("#123", "#ff00ff", "#codigo", "#oculta"):

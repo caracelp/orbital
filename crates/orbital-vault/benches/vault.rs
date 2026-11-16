@@ -463,3 +463,35 @@ cuatro líneas, con algún enlace a [[otra nota]] y alguna #etiqueta para encont
     }
     bencher.bench(|| orbital_vault::bloques::inserciones(divan::black_box(&text), &[]).len());
 }
+
+/// 027: leer y analizar `listas.yaml` con 500 entradas (50 favoritos y 10 colecciones de 45),
+/// escribirlo y calcular las faltantes contra la bóveda de 5000 (objetivo: < 1 ms).
+#[divan::bench(sample_count = 100)]
+fn listas_500(bencher: divan::Bencher) {
+    use orbital_vault::listas;
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let rutas = note_paths();
+    let mut l = orbital_vault::Listas::default();
+    // Algunas rutas que no existen, para que `faltantes` tenga trabajo de los dos lados.
+    let ruta = |n: usize| {
+        if n.is_multiple_of(25) {
+            orbital_vault::RelPath::new(&format!("wiki/borrada-{n}.md")).unwrap()
+        } else {
+            rutas[(n * 7) % rutas.len()].clone()
+        }
+    };
+    l.favoritos = (0..50).map(ruta).collect();
+    for c in 0..10 {
+        l.colecciones.push(orbital_vault::Coleccion {
+            nombre: format!("Colección {c}"),
+            notas: (0..45).map(|n| ruta(1000 + c * 45 + n)).collect(),
+        });
+    }
+    let texto = listas::serialize(&l);
+    assert_eq!(listas::parse(&texto).unwrap(), l);
+    bencher.bench(|| {
+        let leidas = listas::parse(divan::black_box(&texto)).unwrap();
+        let escrito = listas::serialize(&leidas);
+        listas::faltantes(&leidas, vault.entries()).len() + escrito.len()
+    });
+}
