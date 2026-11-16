@@ -143,7 +143,10 @@ impl Window {
         i.listas_eco.set(None);
         *i.listas_watcher.borrow_mut() = None;
         let this = self.clone();
-        self.after_next_frame(move || this.cargar_listas(sesion));
+        self.after_next_frame(move || {
+            crate::medir_arranque::marca("listas: lectura pedida (después del primer cuadro)");
+            this.cargar_listas(sesion)
+        });
     }
 
     /// Vigila el archivo de listas por cambios hechos afuera (T024); se crea al terminar la
@@ -216,6 +219,7 @@ impl Window {
                 this.toast(aviso);
             }
             this.listas_cargadas(snap);
+            crate::medir_arranque::marca("listas: cargadas y dibujadas");
             this.vigilar_listas(sesion);
         });
     }
