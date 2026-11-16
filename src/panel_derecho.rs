@@ -8,7 +8,7 @@
 
 use gtk::prelude::*;
 use orbital_vault::RelPath;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::editor::right_sidebar::RightSidebar;
@@ -35,6 +35,8 @@ struct Inner {
     entrantes: gtk::Box,
     grafo: VistaGrafo,
     grafo_msg: gtk::Label,
+    saltos: Cell<u8>,
+    botones_saltos: [gtk::ToggleButton; 3],
     al_cambiar_modo: RefCell<Option<ModoFn>>,
     al_abrir: RefCell<Option<AbrirFn>>,
     /// Páginas que todavía no están en el `Stack` (se agregan al elegirlas).
@@ -161,7 +163,49 @@ impl PanelDerecho {
             chips[1].upcast_ref(),
         ]));
 
-        // Grafo local.
+        // Grafo local (025, 030): cabecera con selector compacto de saltos «1 · 2 · 3».
+        let grafo_cabecera = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+        let grafo_titulo = titulo("GRAFO DE CONEXIONES");
+        grafo_titulo.set_hexpand(true);
+        let caja_saltos = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(2)
+            .valign(gtk::Align::Center)
+            .build();
+        caja_saltos.update_property(&[gtk::accessible::Property::Label(
+            "Profundidad en saltos del grafo local",
+        )]);
+        let b_s1 = gtk::ToggleButton::builder()
+            .label("1")
+            .tooltip_text("Vecinos a 1 salto")
+            .css_classes(["flat", "caption"])
+            .build();
+        b_s1.update_property(&[gtk::accessible::Property::Label("1 salto")]);
+        let b_s2 = gtk::ToggleButton::builder()
+            .label("2")
+            .tooltip_text("Vecinos hasta 2 saltos")
+            .css_classes(["flat", "caption"])
+            .build();
+        b_s2.update_property(&[gtk::accessible::Property::Label("2 saltos")]);
+        let b_s3 = gtk::ToggleButton::builder()
+            .label("3")
+            .tooltip_text("Vecinos hasta 3 saltos")
+            .css_classes(["flat", "caption"])
+            .build();
+        b_s3.update_property(&[gtk::accessible::Property::Label("3 saltos")]);
+        b_s2.set_group(Some(&b_s1));
+        b_s3.set_group(Some(&b_s1));
+        b_s1.set_active(true);
+        caja_saltos.append(&b_s1);
+        caja_saltos.append(&b_s2);
+        caja_saltos.append(&b_s3);
+        grafo_cabecera.append(&grafo_titulo);
+        grafo_cabecera.append(&caja_saltos);
+        let botones_saltos = [b_s1, b_s2, b_s3];
+
         let grafo = VistaGrafo::new();
         grafo.set_height_request(260);
         grafo.update_property(&[gtk::accessible::Property::Label(
@@ -173,7 +217,7 @@ impl PanelDerecho {
             .css_classes(["orbital-context-empty"])
             .build();
         let graf = bloque(&[
-            titulo("GRAFO DE CONEXIONES").upcast_ref(),
+            grafo_cabecera.upcast_ref(),
             grafo.upcast_ref(),
             grafo_msg.upcast_ref(),
         ]);
@@ -206,10 +250,25 @@ impl PanelDerecho {
             entrantes,
             grafo,
             grafo_msg,
+            saltos: Cell::new(1),
+            botones_saltos,
             al_cambiar_modo: RefCell::new(None),
             al_abrir: RefCell::new(None),
             pendientes,
         }));
+        for (idx, b) in this.0.botones_saltos.iter().enumerate() {
+            let n_saltos = (idx + 1) as u8;
+            let weak = Rc::downgrade(&this.0);
+            b.connect_toggled(move |b| {
+                let Some(i) = weak.upgrade() else { return };
+                if b.is_active() && i.saltos.get() != n_saltos {
+                    i.saltos.set(n_saltos);
+                    if let Some(f) = i.al_cambiar_modo.borrow().as_ref() {
+                        f("grafo");
+                    }
+                }
+            });
+        }
         for (b, modo) in [
             (b_prop, "propiedades"),
             (b_ctx, "contexto"),
@@ -256,6 +315,18 @@ impl PanelDerecho {
             .visible_child_name()
             .map(|s| s.to_string())
             .unwrap_or_default()
+    }
+
+    /// Cantidad de saltos elegida para el grafo local (`1`, `2` o `3`).
+    pub fn saltos(&self) -> u8 {
+        self.0.saltos.get()
+    }
+
+    /// Cambia el número de saltos del grafo local (`1..=3`) activando su botón.
+    #[cfg(test)]
+    pub fn set_saltos(&self, saltos: u8) {
+        let idx = (saltos.clamp(1, 3) - 1) as usize;
+        self.0.botones_saltos[idx].set_active(true);
     }
 
     /// Elige un modo como lo haría la usuaria (para las pruebas y capturas).

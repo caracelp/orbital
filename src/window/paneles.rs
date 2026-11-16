@@ -100,6 +100,7 @@ impl Window {
         }
         let this = self.clone();
         let centro = entry.path.clone();
+        let saltos = i.panel.saltos();
         glib::spawn_future_local(async move {
             let c = centro.clone();
             let datos = gio::spawn_blocking(move || {
@@ -109,21 +110,9 @@ impl Window {
                     .into_iter()
                     .map(|(a, b)| (a.to_string(), b.to_string()))
                     .collect();
-                let vecinos: Vec<String> = enlaces
-                    .iter()
-                    .filter_map(|(a, b)| {
-                        if *a == c.as_str() {
-                            Some(b.clone())
-                        } else if *b == c.as_str() {
-                            Some(a.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                Some(crate::grafo::GrafoDatos::local(
+                Some(crate::grafo::GrafoDatos::local_saltos(
                     c.to_string(),
-                    vecinos,
+                    saltos,
                     &enlaces,
                 ))
             })
