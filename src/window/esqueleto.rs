@@ -132,6 +132,20 @@ pub(super) fn construir_esqueleto(
     let brujula_btn = crate::iconos::boton("brujula", "Brújula");
     brujula_btn.set_action_name(Some("win.ver-brujula"));
     rail.append(&brujula_btn);
+    // Habilitar el botón Canva del riel (038).
+    let mut hijo_riel = rail.first_child();
+    while let Some(w) = hijo_riel {
+        if let Some(b) = w.downcast_ref::<gtk::Button>()
+            && b.tooltip_text()
+                .is_some_and(|t| t.starts_with("Crear canva"))
+        {
+            b.set_sensitive(true);
+            b.set_tooltip_text(Some("Crear canva"));
+            b.update_property(&[gtk::accessible::Property::Label("Crear canva")]);
+            b.set_action_name(Some("win.nuevo-canvas"));
+        }
+        hijo_riel = w.next_sibling();
+    }
     let settings = crate::iconos::boton("configuracion", "Configuración general");
     settings.set_action_name(Some("win.preferences"));
     settings.set_vexpand(true);

@@ -133,6 +133,7 @@ impl Window {
             simple("cerrar-grafo", Window::cerrar_grafo),
             simple("ver-brujula", Window::ver_brujula),
             simple("cerrar-brujula", Window::cerrar_brujula),
+            simple("nuevo-canvas", Window::ask_new_canvas),
             simple("historial", Window::historial),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
@@ -413,6 +414,7 @@ impl Window {
         ("Exportar nota como PDF", "exportar-pdf", None, true),
         ("Ver el grafo de enlaces", "ver-grafo", None, false),
         ("Ver la brújula de la nota", "ver-brujula", None, false),
+        ("Nuevo lienzo (Canvas)…", "nuevo-canvas", None, false),
         ("Historial de versiones…", "historial", None, true),
         (
             "Renumerar notas al pie",

@@ -199,9 +199,193 @@ impl Window {
         });
     }
 
+    /// Diálogo para crear un archivo `.canvas` nuevo en `wiki/` y abrirlo en `VistaCanvas` (038).
+    pub fn ask_new_canvas(&self) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            self.toast("Abrí una bóveda antes de crear un lienzo");
+            return;
+        };
+        let entry = gtk::Entry::builder()
+            .placeholder_text("Nombre del lienzo (por ejemplo: mapa-conceptual)")
+            .activates_default(true)
+            .build();
+        entry.update_property(&[gtk::accessible::Property::Label("Nombre del lienzo")]);
+        let dialog = adw::AlertDialog::builder()
+            .heading("Nuevo lienzo (Canvas)")
+            .body("Se creará un archivo .canvas en wiki/ para organizar tarjetas y conexiones.")
+            .extra_child(&entry)
+            .default_response("create")
+            .close_response("cancel")
+            .build();
+        dialog.add_response("cancel", "Cancelar");
+        dialog.add_response("create", "Crear");
+        dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+
+        let this = self.clone();
+        dialog.choose(
+            Some(&self.0.window),
+            None::<&gio::Cancellable>,
+            move |resp| {
+                if resp != "create" {
+                    return;
+                }
+                let raw = entry.text();
+                let limpio = raw
+                    .trim()
+                    .trim_matches('/')
+                    .strip_suffix(".canvas")
+                    .unwrap_or_else(|| raw.trim().trim_matches('/'))
+                    .trim();
+                if limpio.is_empty() {
+                    this.toast("Escribí un nombre para el lienzo");
+                    return;
+                }
+                let Ok(rel) = RelPath::new(&format!("wiki/{limpio}.canvas")) else {
+                    this.toast("Nombre de lienzo inválido");
+                    return;
+                };
+                let v = vault.clone();
+                let w = this.clone();
+                glib::spawn_future_local(async move {
+                    let r = rel.clone();
+                    let creado = gio::spawn_blocking(move || -> Result<RelPath, String> {
+                        let abs = r.to_path(v.root());
+                        if abs.exists() {
+                            return Ok(r);
+                        }
+                        if let Some(parent) = abs.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        }
+                        let inicial = crate::grafo::canvas::DocumentoCanvas::default().serialize();
+                        std::fs::write(&abs, inicial.as_bytes()).map_err(|e| e.to_string())?;
+                        Ok(r)
+                    })
+                    .await;
+                    match creado {
+                        Ok(Ok(path)) => {
+                            w.reload(Some(path.clone())).await;
+                            w.show_path(path.as_str());
+                        }
+                        Ok(Err(e)) => w.toast(&format!("No se pudo crear el lienzo: {e}")),
+                        Err(_) => w.toast("No se pudo crear el lienzo"),
+                    }
+                });
+            },
+        );
+    }
+
+    /// Carga en `VistaCanvas` el archivo `.canvas` que está en `current_entry` (038).
+    pub(super) fn abrir_canvas_actual(&self) {
+        let i = &self.0;
+        let Some(vista) = crate::grafo::canvas::VistaCanvas::desde_stack(&i.content_stack) else {
+            return;
+        };
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let Some(entry) = i.current_entry.borrow().clone() else {
+            return;
+        };
+        if entry.kind != EntryKind::Canvas {
+            return;
+        }
+        let path = entry.path.clone();
+        glib::spawn_future_local(async move {
+            let p = path.clone();
+            let leido = gio::spawn_blocking(move || vault.read_aux(&p))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            if let Some(aux) = leido {
+                vista.cargar(aux);
+            }
+        });
+    }
+
     /// Conecta las pestañas: elegir abre su nota con el estado guardado; cerrar la última deja
     /// el centro vacío (guardando antes lo pendiente).
     pub(super) fn setup_pestanas(&self) {
+        if let Some(vista_c) = crate::grafo::canvas::VistaCanvas::desde_stack(&self.0.content_stack)
+        {
+            let weak_g = Rc::downgrade(&self.0);
+            vista_c.connect_guardar({
+                let vista_c = vista_c.clone();
+                move |aux, nuevo_yaml, confirm| {
+                    let Some(i) = weak_g.upgrade() else { return };
+                    let Some(vault) = i.vault.borrow().clone() else {
+                        return;
+                    };
+                    let w = Window(i);
+                    let vc = vista_c.clone();
+                    glib::spawn_future_local(async move {
+                        let v = vault.clone();
+                        let ruta = aux.path.clone();
+                        let res = gio::spawn_blocking(move || {
+                            let ctx = write_ctx::now(Some(v.config()));
+                            v.save_aux(&aux, &nuevo_yaml, confirm, &ctx)
+                                .and_then(|_| v.read_aux(&ruta))
+                        })
+                        .await;
+                        match res {
+                            Ok(Ok(nuevo_aux)) => {
+                                if vc.ruta_actual().as_ref() == Some(&nuevo_aux.path) {
+                                    vc.actualizar_aux(nuevo_aux);
+                                }
+                            }
+                            Ok(Err(e)) => w.toast(&e.to_string()),
+                            Err(_) => w.toast("No se pudo guardar el lienzo"),
+                        }
+                    });
+                }
+            });
+            let weak_n = Rc::downgrade(&self.0);
+            vista_c.connect_abrir_nota(move |ruta| {
+                if let Some(i) = weak_n.upgrade() {
+                    Window(i).show_path(ruta);
+                }
+            });
+            let weak_p = Rc::downgrade(&self.0);
+            vista_c.connect_pedir_nota({
+                let vista_c = vista_c.clone();
+                move || {
+                    let Some(i) = weak_p.upgrade() else { return };
+                    let Some(vault) = i.vault.borrow().clone() else {
+                        return;
+                    };
+                    let candidates = i.candidates.borrow().clone();
+                    let recent = AppState::load().recent_notes_for(vault.root()).to_vec();
+                    let vc = vista_c.clone();
+                    crate::switcher::SwitcherDialog::present(
+                        &i.window,
+                        candidates,
+                        recent,
+                        move |path| {
+                            vc.agregar_tarjeta_nota(path.as_str());
+                        },
+                    );
+                }
+            });
+        }
+        {
+            let weak_st = Rc::downgrade(&self.0);
+            self.0
+                .content_stack
+                .connect_visible_child_name_notify(move |st| {
+                    if st.visible_child_name().as_deref() == Some("nota")
+                        && let Some(i) = weak_st.upgrade()
+                    {
+                        let es_canvas = i
+                            .current_entry
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|e| e.kind == EntryKind::Canvas);
+                        if es_canvas {
+                            st.set_visible_child_name("canvas");
+                            Window(i).abrir_canvas_actual();
+                        }
+                    }
+                });
+        }
         if let Some(vista) = crate::grafo::brujula::VistaBrujula::desde_stack(&self.0.content_stack)
         {
             let weak_a = Rc::downgrade(&self.0);

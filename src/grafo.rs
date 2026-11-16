@@ -4,6 +4,8 @@
 
 #[path = "brujula.rs"]
 pub mod brujula;
+#[path = "canvas.rs"]
+pub mod canvas;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
