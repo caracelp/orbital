@@ -1,7 +1,8 @@
 //! Plegado en la vista formateada (028, research R7).
 //!
-//! Sin widgets nuevos: cada elemento plegable lleva dos glifos de texto, `▾` y `▸`, con la
-//! etiqueta compartida `flecha` (uno de los dos oculto con `flecha-oculta`). Lo plegado se oculta
+//! Sin widgets nuevos: cada elemento plegable lleva un glifo de texto con la etiqueta compartida
+//! `flecha`, `▾` desplegado o `▸` plegado (se reemplaza el carácter: un glifo invisible recortaría
+//! el texto accesible de la vista, porque GTK lo deja afuera pero cuenta su largo). Lo plegado se oculta
 //! con la etiqueta compartida `plegado`, sobre la unión de los rangos y tocando solo los tramos
 //! que cambian. Las etiquetas son de la tabla (creadas en `create_tags`), nunca de un bloque: lo
 //! de `new_tag` se borra de la tabla con su bloque. El estado lo decide el editor (las marcas de
@@ -11,6 +12,9 @@ use super::*;
 use orbital_vault::plegado as nucleo;
 use std::ops::Range;
 
+const ABIERTA: &str = "▾";
+const CERRADA: &str = "▸";
+
 /// Prefijo de los «enlaces» de las flechitas en la lista que recorre Tab.
 pub(super) const URL_PLEGAR: &str = "orbital-plegar:";
 
@@ -18,7 +22,7 @@ pub(super) const URL_PLEGAR: &str = "orbital-plegar:";
 pub(super) struct PlegableLector {
     /// Línea fuente del elemento.
     pub(super) linea: u32,
-    /// Comienzo de los dos glifos (`▾▸`).
+    /// El glifo (`▾` o `▸`).
     pub(super) glifo: gtk::TextMark,
     /// Contenido de un ítem en la vista (lo que va después de su primera línea). Una sección no
     /// tiene: llega hasta el próximo encabezado de nivel menor o igual.
@@ -60,7 +64,7 @@ fn tramos(buf: &gtk::TextBuffer, tag: &gtk::TextTag) -> Vec<Range<u32>> {
 }
 
 impl Reader {
-    /// Los dos glifos de un elemento plegable, con `despues` (espacio hasta el texto).
+    /// El glifo de un elemento plegable, con `despues` (espacio hasta el texto).
     pub(super) fn glifos(
         &self,
         s: &RenderState,
@@ -74,9 +78,7 @@ impl Reader {
         let inicio = buf.create_mark(None, end, true);
         let mut tags: Vec<gtk::TextTag> = base.to_vec();
         tags.extend(table.lookup("flecha"));
-        buf.insert_with_tags(end, "▾", &tags.iter().collect::<Vec<_>>());
-        tags.extend(table.lookup("flecha-oculta"));
-        buf.insert_with_tags(end, "▸", &tags.iter().collect::<Vec<_>>());
+        buf.insert_with_tags(end, ABIERTA, &tags.iter().collect::<Vec<_>>());
         let fin = buf.create_mark(None, end, false);
         buf.insert_with_tags(end, despues, &base.iter().collect::<Vec<_>>());
         // Tab llega a la flechita como a un enlace; Enter o Espacio la alternan.
@@ -116,7 +118,7 @@ impl Reader {
             .iter()
             .find(|p| {
                 let g = buf.iter_at_mark(&p.glifo).offset();
-                (g..g + 2).contains(&off)
+                g == off
             })
             .map(|p| p.linea)
     }
@@ -134,8 +136,7 @@ impl Reader {
         let i = &self.0;
         let buf = self.buffer();
         let table = buf.tag_table();
-        let (Some(tag), Some(oculta)) = (table.lookup("plegado"), table.lookup("flecha-oculta"))
-        else {
+        let Some(tag) = table.lookup("plegado") else {
             return;
         };
         let plegadas = i.plegado.borrow().clone();
@@ -145,19 +146,17 @@ impl Reader {
         for (n, b) in blocks.iter().enumerate() {
             for p in &b.plegables {
                 let plegado = plegadas.binary_search(&p.linea).is_ok();
-                // El glifo visible: `▾` desplegado, `▸` plegado.
-                let g = buf.iter_at_mark(&p.glifo);
-                if g.has_tag(&oculta) != plegado {
-                    let mut g2 = g;
-                    g2.forward_chars(2);
-                    buf.remove_tag(&oculta, &g, &g2);
-                    let mut a = g;
-                    if !plegado {
-                        a.forward_char();
-                    }
-                    let mut z = a;
+                // El glifo: `▾` desplegado, `▸` plegado (mismo largo: nada se corre).
+                let mut g = buf.iter_at_mark(&p.glifo);
+                let quiere = if plegado { CERRADA } else { ABIERTA };
+                // Solo se cambia un glifo: si la marca quedó en otro carácter, no se toca el texto.
+                let actual = g.char().to_string();
+                if (actual == ABIERTA || actual == CERRADA) && actual != quiere {
+                    let etiquetas = g.tags();
+                    let mut z = g;
                     z.forward_char();
-                    buf.apply_tag(&oculta, &a, &z);
+                    buf.delete(&mut g, &mut z);
+                    buf.insert_with_tags(&mut g, quiere, &etiquetas.iter().collect::<Vec<_>>());
                 }
                 if !plegado {
                     continue;

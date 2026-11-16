@@ -38,22 +38,94 @@ pub(super) fn nuevo() -> sourceview5::GutterRendererPixbuf {
     r
 }
 
-/// Sangría en columnas (un tab cuenta 4).
-fn sangria(t: &str) -> usize {
-    t.bytes()
-        .take_while(|b| *b == b' ' || *b == b'\t')
-        .map(|b| if b == b'\t' { 4 } else { 1 })
-        .sum()
+/// Lo que importa de una línea para la regla local, leído del buffer sin copiar el texto.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Linea {
+    Vacia,
+    Encabezado(u8),
+    Item(u32),
+    Otra(u32),
 }
 
-/// Nivel si la línea es un encabezado ATX.
-fn nivel(t: &str) -> Option<usize> {
-    let s = t.trim_start();
-    if t.len() - s.len() > 3 {
+/// Mira el comienzo de la línea `n` con un iterador (sin asignar memoria: corre por línea visible
+/// en cada cuadro mientras se escribe).
+fn mirar(b: &sourceview5::Buffer, n: u32) -> Option<Linea> {
+    let mut it = b.iter_at_line(n as i32)?;
+    if it.line() as u32 != n {
         return None;
     }
-    let n = s.bytes().take_while(|b| *b == b'#').count();
-    ((1..=6).contains(&n) && (s.len() == n || s.as_bytes()[n] == b' ')).then_some(n)
+    let mut sangria = 0u32;
+    while !it.ends_line() {
+        match it.char() {
+            ' ' => sangria += 1,
+            '\t' => sangria += 4,
+            _ => break,
+        }
+        it.forward_char();
+    }
+    if it.ends_line() {
+        return Some(Linea::Vacia);
+    }
+    let sigue_espacio = |mut x: gtk::TextIter| x.forward_char() && x.char() == ' ';
+    match it.char() {
+        '#' if sangria <= 3 => {
+            let mut k = 0u8;
+            while it.char() == '#' && k < 7 {
+                k += 1;
+                it.forward_char();
+            }
+            Some(
+                if (1..=6).contains(&k) && (it.ends_line() || it.char() == ' ') {
+                    Linea::Encabezado(k)
+                } else {
+                    Linea::Otra(sangria)
+                },
+            )
+        }
+        '-' | '*' | '+' if sigue_espacio(it) => Some(Linea::Item(sangria)),
+        c if c.is_ascii_digit() => {
+            while it.char().is_ascii_digit() {
+                it.forward_char();
+            }
+            Some(if matches!(it.char(), '.' | ')') && sigue_espacio(it) {
+                Linea::Item(sangria)
+            } else {
+                Linea::Otra(sangria)
+            })
+        }
+        _ => Some(Linea::Otra(sangria)),
+    }
+}
+
+/// Lo oculto entre la primera y la última línea del cuadro que se dibuja.
+struct Cuadro {
+    /// Primera y última línea, generación del texto y versión de lo plegado.
+    clave: (u32, u32, u64, u64),
+    ocultas: Vec<std::ops::Range<u32>>,
+}
+
+impl Cuadro {
+    fn oculta(&self, linea: u32) -> bool {
+        let n = self.ocultas.partition_point(|r| r.end <= linea);
+        self.ocultas.get(n).is_some_and(|r| r.start <= linea)
+    }
+}
+
+/// Las dos imágenes, cargadas una vez: cambiar el nombre del ícono rehace la imagen en cada línea.
+fn imagenes(widget: &impl IsA<gtk::Widget>) -> (gtk::IconPaintable, gtk::IconPaintable) {
+    let tema = gtk::IconTheme::for_display(&widget.display());
+    let escala = widget.scale_factor();
+    let cargar = |nombre: &str| {
+        tema.lookup_icon(
+            nombre,
+            &[],
+            16,
+            escala,
+            gtk::TextDirection::None,
+            gtk::IconLookupFlags::empty(),
+        )
+    };
+    (cargar("pan-down-symbolic"), cargar("pan-end-symbolic"))
 }
 
 impl Editor {
@@ -63,18 +135,55 @@ impl Editor {
         sourceview5::prelude::ViewExt::gutter(&i.view, gtk::TextWindowType::Left)
             .insert(r, POSICION);
         let ultima = Rc::new(Cell::new(Flecha::Ninguna));
+        let cargadas: Rc<RefCell<Option<(gtk::IconPaintable, gtk::IconPaintable)>>> = Rc::default();
+        // Lo oculto del tramo dibujado, una vez por cuadro: con mucho plegado, lo visible abarca
+        // miles de líneas ocultas y GtkSourceView consulta el canal por cada una.
+        let cuadro: Rc<RefCell<Option<Cuadro>>> = Rc::default();
         let weak = Rc::downgrade(&self.0);
-        r.connect_query_data(move |r, _, linea| {
+        r.connect_query_data(move |r, lineas, linea| {
             let Some(i) = weak.upgrade() else { return };
-            let f = Editor(i).flecha(linea);
-            // El renderer es uno para todas las líneas: se cambia el ícono solo si cambia.
+            let e = Editor(i);
+            let f = match lineas.downcast_ref::<sourceview5::GutterLines>() {
+                Some(l) if e.tiene_pliegues() => {
+                    let mut c = cuadro.borrow_mut();
+                    let clave = (
+                        l.first(),
+                        l.last(),
+                        e.0.texto_gen.get(),
+                        e.0.plegado_version.get(),
+                    );
+                    if c.as_ref().is_none_or(|c| c.clave != clave) {
+                        *c = Some(Cuadro {
+                            clave,
+                            ocultas: plegado::rangos_entre(
+                                &e.0.buffer,
+                                &e.0.tag_plegado,
+                                l.first(),
+                                l.last(),
+                            ),
+                        });
+                    }
+                    let c = c.as_ref().expect("recién calculado");
+                    if c.oculta(linea) {
+                        Flecha::Ninguna
+                    } else if l.last() > linea {
+                        e.flecha_con(linea, Some(c.oculta(linea + 1)))
+                    } else {
+                        e.flecha(linea)
+                    }
+                }
+                _ => e.flecha(linea),
+            };
+            // El renderer es uno para todas las líneas: se cambia la imagen solo si cambia.
             if f != ultima.get() {
                 ultima.set(f);
-                r.set_icon_name(match f {
-                    Flecha::Ninguna => None,
-                    Flecha::Abierta => Some("pan-down-symbolic"),
-                    Flecha::Cerrada => Some("pan-end-symbolic"),
-                });
+                let mut c = cargadas.borrow_mut();
+                let (abierta, cerrada) = c.get_or_insert_with(|| imagenes(r));
+                match f {
+                    Flecha::Ninguna => r.set_paintable(None::<&gtk::IconPaintable>),
+                    Flecha::Abierta => r.set_paintable(Some(&*abierta)),
+                    Flecha::Cerrada => r.set_paintable(Some(&*cerrada)),
+                }
             }
         });
         let weak = Rc::downgrade(&self.0);
@@ -94,6 +203,11 @@ impl Editor {
     }
 
     pub(super) fn flecha(&self, linea: u32) -> Flecha {
+        self.flecha_con(linea, None)
+    }
+
+    /// Con `siguiente`, ya se sabe si la línea siguiente está oculta.
+    fn flecha_con(&self, linea: u32, siguiente: Option<bool>) -> Flecha {
         if !self.plegado_disponible() {
             return Flecha::Ninguna;
         }
@@ -103,7 +217,8 @@ impl Editor {
         };
         if !plegable {
             Flecha::Ninguna
-        } else if self.tiene_pliegues() && self.siguiente_oculta(linea) {
+        } else if self.tiene_pliegues() && siguiente.unwrap_or_else(|| self.siguiente_oculta(linea))
+        {
             Flecha::Cerrada
         } else {
             Flecha::Abierta
@@ -129,49 +244,23 @@ impl Editor {
         }
     }
 
-    fn texto_linea(&self, linea: u32) -> Option<String> {
-        let b = &self.0.buffer;
-        let inicio = b.iter_at_line(linea as i32)?;
-        if inicio.line() as u32 != linea {
-            return None;
-        }
-        let mut fin = inicio;
-        if !fin.ends_line() {
-            fin.forward_to_line_end();
-        }
-        Some(b.text(&inicio, &fin, true).to_string())
-    }
-
     /// Mientras se escribe (el árbol no está al día): encabezado con algo debajo antes del próximo
     /// de nivel ≤, o ítem con un ítem de más sangría debajo (saltando líneas vacías).
     fn plegable_local(&self, linea: u32) -> bool {
-        let Some(t) = self.texto_linea(linea) else {
-            return false;
+        let b = &self.0.buffer;
+        let propia = match mirar(b, linea) {
+            Some(l @ (Linea::Encabezado(_) | Linea::Item(_))) => l,
+            _ => return false,
         };
-        if let Some(n) = nivel(&t) {
-            for k in 1..=MIRAR {
-                let Some(s) = self.texto_linea(linea + k) else {
-                    return false;
-                };
-                if s.trim().is_empty() {
-                    continue;
-                }
-                return nivel(&s).is_none_or(|m| m > n);
-            }
-            return false;
-        }
-        if outliner::item_de_linea(&t, 0, 0).is_none() {
-            return false;
-        }
-        let propia = sangria(&t);
         for k in 1..=MIRAR {
-            let Some(s) = self.texto_linea(linea + k) else {
-                return false;
-            };
-            if s.trim().is_empty() {
-                continue;
+            match (propia, mirar(b, linea + k)) {
+                (_, None) => return false,
+                (_, Some(Linea::Vacia)) => continue,
+                (Linea::Encabezado(n), Some(Linea::Encabezado(m))) => return m > n,
+                (Linea::Encabezado(_), Some(_)) => return true,
+                (Linea::Item(s), Some(Linea::Item(t))) => return t > s,
+                _ => return false,
             }
-            return sangria(&s) > propia && outliner::item_de_linea(&s, 0, 0).is_some();
         }
         false
     }

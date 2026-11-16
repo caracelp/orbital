@@ -135,6 +135,28 @@ fn flechitas_plegar_y_desplegar_sin_tocar_la_nota() {
             .filter(|&n| e.flecha(n) != Flecha::Ninguna)
             .collect();
         assert_eq!(con, [UNO, HISTORIA, FRUTAS, MANZANA, 13, EJEMPLOS2]);
+        // Mientras se escribe (el árbol quedó viejo), la regla local de cada línea.
+        let b = e.buffer().clone();
+        let mut fin = b.iter_at_line(7).unwrap();
+        fin.forward_to_line_end();
+        b.insert(&mut fin, "x");
+        assert!(e.arbol_al_dia().is_none());
+        for (l, f) in [
+            (UNO, Flecha::Abierta),
+            (HISTORIA, Flecha::Abierta),
+            (7, Flecha::Ninguna),
+            (FRUTAS, Flecha::Abierta),
+            (MANZANA, Flecha::Abierta),
+            (10, Flecha::Ninguna),
+            (11, Flecha::Ninguna),
+            (13, Flecha::Abierta),
+            (34, Flecha::Ninguna),
+            (35, Flecha::Ninguna),
+        ] {
+            assert_eq!(e.flecha(l), f, "línea {l}");
+        }
+        e.undo();
+        let _ = e.arbol();
 
         assert!(e.alternar_plegado(HISTORIA));
         assert_eq!(e.flecha(HISTORIA), Flecha::Cerrada);
@@ -441,28 +463,45 @@ fn sc001_plegar_en_100k() {
             glib::timeout_future(std::time::Duration::from_millis(20)).await;
         }
         let clock = e.0.view.frame_clock().expect("la vista se dibuja");
+        // El trabajo: el cambio más la disposición y el dibujo del cuadro siguiente (de su
+        // `update` a su `after-paint`), sin la espera de la sincronización vertical, que depende
+        // de cuántos cuadros le dé GNOME a la ventana. Se informa también el total.
         let mut peor: f64 = 0.0;
         for linea in [0u32, 44 * 10, 44 * 30] {
             for _ in 0..2 {
-                let pintado = std::rc::Rc::new(std::cell::Cell::new(None));
-                let p = pintado.clone();
-                let h = clock.connect_after_paint(move |_| {
-                    if p.get().is_none() {
-                        p.set(Some(Instant::now()));
+                let marcas: std::rc::Rc<std::cell::Cell<(Option<Instant>, Option<Instant>)>> =
+                    Default::default();
+                let (m1, m2) = (marcas.clone(), marcas.clone());
+                let h1 = clock.connect_update(move |_| {
+                    let (u, p) = m1.get();
+                    if u.is_none() {
+                        m1.set((Some(Instant::now()), p));
+                    }
+                });
+                let h2 = clock.connect_after_paint(move |_| {
+                    let (u, p) = m2.get();
+                    if u.is_some() && p.is_none() {
+                        m2.set((u, Some(Instant::now())));
                     }
                 });
                 let inicio = Instant::now();
                 assert!(e.alternar_plegado(linea), "{linea}");
+                let cambio = inicio.elapsed().as_secs_f64() * 1000.0;
                 e.0.view.queue_draw();
-                while pintado.get().is_none() && inicio.elapsed().as_secs() < 2 {
+                while marcas.get().1.is_none() && inicio.elapsed().as_secs() < 2 {
                     glib::timeout_future(std::time::Duration::from_millis(1)).await;
                 }
-                clock.disconnect(h);
-                let ms = pintado
-                    .get()
-                    .map_or(f64::MAX, |t: Instant| (t - inicio).as_secs_f64() * 1000.0);
-                eprintln!("SC-001 línea {linea}: {ms:.1} ms");
-                peor = peor.max(ms);
+                clock.disconnect(h1);
+                clock.disconnect(h2);
+                let (u, p) = marcas.get();
+                let (u, p) = (u.expect("hubo cuadro"), p.expect("se dibujó"));
+                let cuadro = (p - u).as_secs_f64() * 1000.0;
+                let total = (p - inicio).as_secs_f64() * 1000.0;
+                eprintln!(
+                    "SC-001 línea {linea}: cambio {cambio:.1} ms + cuadro {cuadro:.1} ms = {:.1} ms (hasta el dibujo, con la espera: {total:.1} ms)",
+                    cambio + cuadro
+                );
+                peor = peor.max(cambio + cuadro);
             }
         }
         assert!(peor < 50.0, "plegar tardó {peor:.1} ms");
@@ -531,7 +570,7 @@ fn oculto_en_lector(e: &Editor, aguja: &str) -> bool {
     let texto = b.slice(&b.start_iter(), &b.end_iter(), true).to_string();
     let byte = texto
         .find(aguja)
-        .unwrap_or_else(|| panic!("no está «{aguja}»"));
+        .unwrap_or_else(|| panic!("no está «{aguja}» en {texto:?}"));
     let off = texto[..byte].chars().count() as i32;
     let tag = b.tag_table().lookup("plegado").unwrap();
     b.iter_at_offset(off).has_tag(&tag)
@@ -563,10 +602,7 @@ fn lectura_flechitas_y_estado_compartido() {
         // Clic en la flechita de «Historia»: la flechita está en el comienzo de su línea.
         let b = r.buffer();
         let texto = b.slice(&b.start_iter(), &b.end_iter(), true).to_string();
-        let byte = texto
-            .find("▾▸Historia")
-            .or_else(|| texto.find("▾▸ Historia"))
-            .unwrap();
+        let byte = texto.find("▾ Historia").unwrap();
         let off = texto[..byte].chars().count() as i32;
         assert_eq!(r.clic_en(off), Some(HISTORIA));
         assert!(e.esta_plegado(HISTORIA));

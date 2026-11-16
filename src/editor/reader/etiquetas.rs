@@ -128,10 +128,6 @@ impl Reader {
             .foreground("rgba(255,255,255,0.70)")
             .build());
         add(gtk::TextTag::builder()
-            .name("flecha-oculta")
-            .invisible(true)
-            .build());
-        add(gtk::TextTag::builder()
             .name("plegado")
             .invisible(true)
             .build());

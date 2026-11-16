@@ -222,6 +222,8 @@ struct Inner {
     on_plegado: RefCell<Option<plegado::PlegadoFn>>,
     /// Últimas claves avisadas a la ventana.
     plegado_claves: RefCell<Vec<orbital_vault::Clave>>,
+    /// Sube con cada cambio de lo plegado (el canal guarda lo oculto de cada cuadro).
+    plegado_version: Cell<u64>,
 }
 
 /// El editor de la nota abierta.
@@ -385,6 +387,7 @@ impl Editor {
             flechas,
             on_plegado: RefCell::new(None),
             plegado_claves: RefCell::new(Vec::new()),
+            plegado_version: Cell::new(0),
         }));
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);

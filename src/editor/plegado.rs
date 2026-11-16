@@ -119,6 +119,43 @@ pub(super) fn rangos_actuales(
     out
 }
 
+/// Los rangos de líneas con la etiqueta entre las líneas `desde` y `hasta` (O(cambios de la
+/// etiqueta en ese tramo)).
+pub(super) fn rangos_entre(
+    buf: &impl IsA<gtk::TextBuffer>,
+    tag: &gtk::TextTag,
+    desde: u32,
+    hasta: u32,
+) -> Vec<Range<u32>> {
+    let mut out: Vec<Range<u32>> = Vec::new();
+    let Some(mut it) = buf.iter_at_line(desde as i32) else {
+        return out;
+    };
+    let mut abierto = it.has_tag(tag).then_some(desde);
+    loop {
+        if !it.forward_to_tag_toggle(Some(tag)) {
+            it = buf.end_iter();
+        }
+        match abierto.take() {
+            Some(a) => {
+                let b = linea_fin(&it);
+                if a < b {
+                    out.push(a..b);
+                }
+            }
+            None if it.starts_tag(Some(tag)) => abierto = Some(linea_inicio(&it)),
+            None => {}
+        }
+        if it.is_end() || it.line() as u32 > hasta {
+            if let Some(a) = abierto {
+                out.push(a..hasta + 1);
+            }
+            break;
+        }
+    }
+    out
+}
+
 /// Los iteradores de un rango de líneas `a..b` tal como lo cubre la etiqueta.
 fn iters_de(
     buf: &impl IsA<gtk::TextBuffer>,
@@ -602,6 +639,7 @@ impl Editor {
             .collect();
         *i.pliegues.borrow_mut() = nuevas;
         aplicar_ocultas(buf, &i.tag_plegado, &ocultas);
+        i.plegado_version.set(i.plegado_version.get() + 1);
         let plegadas: Rc<Vec<u32>> =
             Rc::new(indices.iter().map(|&n| ps[n as usize].linea).collect());
         i.reader.set_plegado(plegadas);

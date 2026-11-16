@@ -298,6 +298,12 @@ impl Reader {
         // La marca del primer bloque que queda tiene gravedad izquierda: quedó antes de lo insertado.
         if let Some(b) = suffix.first() {
             buffer.move_mark(&b.mark, &end);
+            // Lo mismo con la flechita del plegado (028) si estaba al comienzo del bloque.
+            for p in &b.plegables {
+                if buffer.iter_at_mark(&p.glifo).offset() < end.offset() {
+                    buffer.move_mark(&p.glifo, &end);
+                }
+            }
         }
         i.links
             .borrow_mut()
