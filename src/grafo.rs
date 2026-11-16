@@ -2,6 +2,9 @@
 //! resuelto, simulación física Barnes-Hut en otro hilo para el grafo global y grafo local por
 //! saltos (1, 2 y 3) en anillos concéntricos.
 
+#[path = "brujula.rs"]
+pub mod brujula;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;

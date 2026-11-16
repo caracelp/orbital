@@ -13,6 +13,8 @@ use std::rc::Rc;
 
 /// Clave de la pestaña del grafo global («Conexiones» en la maqueta).
 pub const CONEXIONES: &str = "orbital:conexiones";
+/// Clave de la pestaña de la Brújula de la nota (017).
+pub const BRUJULA: &str = "orbital:brujula";
 
 /// Estado de vista de una nota: offset del cursor, desplazamiento de Código y vista.
 pub type Estado = (i32, f64, Option<String>);
