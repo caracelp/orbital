@@ -6,7 +6,8 @@
 //! guardan para repetirlas sobre lo releído si el archivo cambió afuera (research R4).
 
 use super::*;
-use orbital_vault::{Listas, ListasSnapshot};
+use crate::listas_panel::Orden;
+use orbital_vault::{Lista, Listas, ListasSnapshot};
 
 /// Un cambio de las listas: devuelve si cambió algo. Se puede repetir sobre otro estado.
 pub(super) type AccionListas = Rc<dyn Fn(&mut Listas) -> bool>;
@@ -27,6 +28,12 @@ impl Window {
                     w.show_path(ruta.as_str());
                 }
             });
+        let weak = Rc::downgrade(&self.0);
+        self.0.listas_panel.connect_orden(move |orden| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).orden_de_listas(orden);
+            }
+        });
         // La página Guardados se arma la primera vez que se muestra.
         let weak = Rc::downgrade(&self.0);
         self.0
@@ -134,8 +141,62 @@ impl Window {
         i.listas_escribiendo.set(false);
         i.listas_pendiente.set(false);
         i.listas_eco.set(None);
+        *i.listas_watcher.borrow_mut() = None;
         let this = self.clone();
         self.after_next_frame(move || this.cargar_listas(sesion));
+    }
+
+    /// Vigila el archivo de listas por cambios hechos afuera (T024); se crea al terminar la
+    /// carga para no sumar nada antes del primer cuadro.
+    fn vigilar_listas(&self, sesion: u64) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let ruta = vault.root().join(orbital_vault::listas::LISTAS_PATH);
+        let weak = Rc::downgrade(&self.0);
+        *self.0.listas_watcher.borrow_mut() =
+            Some(crate::watcher::ListasWatcher::new(&ruta, move || {
+                if let Some(i) = weak.upgrade() {
+                    Window(i).releer_listas(sesion);
+                }
+            }));
+    }
+
+    /// El archivo de listas cambió en disco: si no es el eco de una escritura propia, se relee y
+    /// se muestra. Con cambios propios todavía sin escribir no se toca nada: su escritura va a
+    /// encontrar el conflicto y repetirlos sobre lo nuevo (research R4).
+    fn releer_listas(&self, sesion: u64) {
+        let i = &self.0;
+        if i.vault_session.get() != sesion || !self.listas_cargadas_ya() {
+            return;
+        }
+        let Some(vault) = i.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(snap) = gio::spawn_blocking(move || vault.listas_snapshot()).await else {
+                return;
+            };
+            let i = &this.0;
+            if i.vault_session.get() != sesion
+                || i.listas_escribiendo.get()
+                || !i.listas_acciones.borrow().is_empty()
+            {
+                return;
+            }
+            // El eco de la última escritura propia, o lo mismo que ya se muestra.
+            let mostrado = i.listas.borrow().as_ref().and_then(|s| s.hash);
+            let eco = i.listas_eco.get();
+            if snap.hash == mostrado || (eco.is_some() && snap.hash == eco) {
+                return;
+            }
+            if let Some(aviso) = &snap.warning {
+                this.toast(aviso);
+            }
+            *i.listas.borrow_mut() = Some(snap);
+            this.redibujar_listas();
+        });
     }
 
     /// Lee `.orbital/listas.yaml` en otro hilo (FR-013).
@@ -155,6 +216,7 @@ impl Window {
                 this.toast(aviso);
             }
             this.listas_cargadas(snap);
+            this.vigilar_listas(sesion);
         });
     }
 
@@ -405,6 +467,251 @@ impl Window {
         if let Some(nombre) = nueva {
             self.toast(&format!("Guardada en «{nombre}»"));
         }
+    }
+
+    /// Lo que piden los menús de las filas y de las colecciones, y el arrastre (T022). Los
+    /// índices son los de lo que se ve: se traducen a la ruta y al nombre de la colección para
+    /// que la acción se pueda repetir sobre lo releído si el archivo cambió afuera (research R4).
+    pub(super) fn orden_de_listas(&self, orden: Orden) {
+        let (lista, indice) = match orden {
+            Orden::Mover { lista, desde, .. } => (lista, desde),
+            Orden::Quitar { lista, indice } => (lista, indice),
+            Orden::RenombrarColeccion(n) => {
+                self.pedir_renombrar_coleccion(n);
+                return;
+            }
+            Orden::BorrarColeccion(n) => {
+                self.pedir_borrar_coleccion(n);
+                return;
+            }
+        };
+        let (ruta, coleccion) = {
+            let listas = self.0.listas.borrow();
+            let Some(s) = listas.as_ref() else { return };
+            let Some(ruta) = s.listas.lista(lista).get(indice).cloned() else {
+                return;
+            };
+            let coleccion = match lista {
+                Lista::Coleccion(n) => s.listas.colecciones.get(n).map(|c| c.nombre.clone()),
+                Lista::Favoritos => None,
+            };
+            (ruta, coleccion)
+        };
+        // La lista como está ahora (por nombre si es una colección) y la posición de la ruta.
+        let ubicar = move |l: &Listas| -> Option<(Lista, usize)> {
+            let lista = match &coleccion {
+                Some(nombre) => Lista::Coleccion(l.buscar_coleccion(nombre)?),
+                None => Lista::Favoritos,
+            };
+            let n = l.lista(lista).iter().position(|r| *r == ruta)?;
+            Some((lista, n))
+        };
+        let nombre = self
+            .0
+            .listas
+            .borrow()
+            .as_ref()
+            .and_then(|s| {
+                s.listas
+                    .lista(lista)
+                    .get(indice)
+                    .map(|r| r.file_name().to_owned())
+            })
+            .unwrap_or_default();
+        let mensaje = match orden {
+            Orden::Mover { hasta, .. } => {
+                self.aplicar_listas(move |l| match ubicar(l) {
+                    Some((lista, n)) => l.mover(lista, n, hasta),
+                    None => false,
+                });
+                format!("{nombre} ahora es la {}.ª", hasta + 1)
+            }
+            _ => {
+                self.aplicar_listas(move |l| match ubicar(l) {
+                    Some((lista, n)) => l.quitar(lista, n),
+                    None => false,
+                });
+                match lista {
+                    Lista::Favoritos => format!("Se quitó {nombre} de favoritos"),
+                    Lista::Coleccion(_) => format!("Se quitó {nombre} de la colección"),
+                }
+            }
+        };
+        self.0
+            .list_view
+            .announce(&mensaje, gtk::AccessibleAnnouncementPriority::Medium);
+    }
+
+    /// «Renombrar…» de una colección: diálogo con el nombre; vacío o repetido no se acepta.
+    /// Devuelve el diálogo y su campo (las pruebas lo manejan desde adentro).
+    pub(super) fn pedir_renombrar_coleccion(
+        &self,
+        n: usize,
+    ) -> Option<(adw::AlertDialog, gtk::Entry)> {
+        let (viejo, otros): (String, Vec<String>) = {
+            let listas = self.0.listas.borrow();
+            let l = &listas.as_ref()?.listas;
+            let viejo = l.colecciones.get(n)?.nombre.clone();
+            let otros = l
+                .colecciones
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| *k != n)
+                .map(|(_, c)| c.nombre.trim().to_lowercase())
+                .collect();
+            (viejo, otros)
+        };
+        let campo = gtk::Entry::builder()
+            .text(&viejo)
+            .activates_default(true)
+            .build();
+        campo.update_property(&[gtk::accessible::Property::Label("Nombre de la colección")]);
+        let aviso = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .visible(false)
+            .css_classes(["error"])
+            .build();
+        let caja = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        caja.append(&campo);
+        caja.append(&aviso);
+        let dialogo = adw::AlertDialog::new(
+            Some("Renombrar la colección"),
+            Some(&format!(
+                "Nombre nuevo para «{viejo}». Las notas se conservan."
+            )),
+        );
+        dialogo.set_extra_child(Some(&caja));
+        dialogo.add_response("cancelar", "Cancelar");
+        dialogo.add_response("renombrar", "Renombrar");
+        dialogo.set_response_appearance("renombrar", adw::ResponseAppearance::Suggested);
+        dialogo.set_default_response(Some("renombrar"));
+        dialogo.set_close_response("cancelar");
+        let d = dialogo.downgrade();
+        campo.connect_changed(move |e| {
+            let texto = e.text();
+            let problema = if texto.trim().is_empty() {
+                Some("El nombre no puede estar vacío")
+            } else if otros.contains(&texto.trim().to_lowercase()) {
+                Some("Ya existe una colección con ese nombre")
+            } else {
+                None
+            };
+            aviso.set_label(problema.unwrap_or(""));
+            aviso.set_visible(problema.is_some());
+            if let Some(d) = d.upgrade() {
+                d.set_response_enabled("renombrar", problema.is_none());
+            }
+            match problema {
+                Some(p) => e.update_property(&[gtk::accessible::Property::Description(p)]),
+                None => e.reset_property(gtk::AccessibleProperty::Description),
+            }
+        });
+        let this = self.clone();
+        let c = campo.downgrade();
+        dialogo.connect_response(None, move |_, respuesta| {
+            let Some(nuevo) = c.upgrade().map(|c| c.text().trim().to_owned()) else {
+                return;
+            };
+            if respuesta != "renombrar" || nuevo == viejo {
+                return;
+            }
+            let viejo = viejo.clone();
+            let mut error = None;
+            if let Some(s) = this.0.listas.borrow().as_ref() {
+                let mut prueba = s.listas.clone();
+                if let Some(k) = prueba.buscar_coleccion(&viejo) {
+                    error = prueba.renombrar_coleccion(k, &nuevo).err();
+                }
+            }
+            if let Some(e) = error {
+                return this.toast(&e.to_string());
+            }
+            let n2 = nuevo.clone();
+            this.aplicar_listas(move |l| match l.buscar_coleccion(&viejo) {
+                Some(k) => l.renombrar_coleccion(k, &n2).unwrap_or(false),
+                None => false,
+            });
+            this.toast(&format!("La colección ahora se llama «{nuevo}»"));
+        });
+        let f = campo.clone();
+        glib::idle_add_local_once(move || {
+            f.grab_focus();
+            f.select_region(0, -1);
+        });
+        dialogo.present(Some(&self.0.window));
+        Some((dialogo, campo))
+    }
+
+    /// «Borrar colección…»: confirmación con respuesta destructiva; las notas no se tocan.
+    pub(super) fn pedir_borrar_coleccion(&self, n: usize) -> Option<adw::AlertDialog> {
+        let (nombre, notas) = {
+            let listas = self.0.listas.borrow();
+            let c = listas.as_ref()?.listas.colecciones.get(n)?;
+            (c.nombre.clone(), c.notas.len())
+        };
+        let dialogo = adw::AlertDialog::new(
+            Some(&format!("¿Borrar la colección «{nombre}»?")),
+            Some(&match notas {
+                0 => "La colección está vacía. Las notas no se tocan.".to_owned(),
+                1 => "Tiene 1 nota. Las notas no se tocan.".to_owned(),
+                k => format!("Tiene {k} notas. Las notas no se tocan."),
+            }),
+        );
+        dialogo.add_response("cancelar", "Cancelar");
+        dialogo.add_response("borrar", "Borrar");
+        dialogo.set_response_appearance("borrar", adw::ResponseAppearance::Destructive);
+        dialogo.set_close_response("cancelar");
+        let this = self.clone();
+        dialogo.connect_response(None, move |_, respuesta| {
+            if respuesta != "borrar" {
+                return;
+            }
+            let nombre = nombre.clone();
+            this.toast(&format!("Se borró la colección «{nombre}»"));
+            this.aplicar_listas(move |l| match l.buscar_coleccion(&nombre) {
+                Some(k) => l.borrar_coleccion(k),
+                None => false,
+            });
+        });
+        dialogo.present(Some(&self.0.window));
+        Some(dialogo)
+    }
+
+    /// Un archivo o una carpeta se renombró desde Orbital: las entradas lo siguen (T023).
+    pub(super) fn seguir_renombre_en_listas(&self, desde: &RelPath, hasta: &RelPath) {
+        let (desde, hasta) = (desde.clone(), hasta.clone());
+        self.aplicar_listas(move |l| l.renombrar_ruta(&desde, &hasta));
+    }
+
+    /// Un archivo o una carpeta se borró desde Orbital: sale de todas las listas. Devuelve lo
+    /// quitado (con sus posiciones) para «Deshacer»; si la acción se repite sobre lo releído
+    /// tras un cambio externo, guarda lo de la última vez.
+    pub(super) fn quitar_de_listas(
+        &self,
+        ruta: &RelPath,
+    ) -> Rc<RefCell<orbital_vault::listas::Quitadas>> {
+        let quitadas: Rc<RefCell<orbital_vault::listas::Quitadas>> = Rc::default();
+        let (ruta, q) = (ruta.clone(), quitadas.clone());
+        self.aplicar_listas(move |l| {
+            let quitado = l.quitar_ruta(&ruta);
+            let cambio = !quitado.is_empty();
+            *q.borrow_mut() = quitado;
+            cambio
+        });
+        quitadas
+    }
+
+    /// «Deshacer» un borrado: las entradas vuelven a su lugar (decisión 2 del plan).
+    pub(super) fn reponer_en_listas(
+        &self,
+        quitadas: &Rc<RefCell<orbital_vault::listas::Quitadas>>,
+    ) {
+        if quitadas.borrow().is_empty() {
+            return;
+        }
+        let quitadas = quitadas.borrow().clone();
+        self.aplicar_listas(move |l| l.reponer(&quitadas));
     }
 
     /// Para las pruebas: la lista pedida tal como está en memoria.

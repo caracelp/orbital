@@ -83,3 +83,38 @@ impl Watcher {
         }
     }
 }
+
+/// Vigila `.orbital/listas.yaml` (027, FR-012): el monitor de la bóveda descarta lo oculto. GLib
+/// vigila también un archivo que todavía no existe (o cuya carpeta no existe). Los avisos se
+/// agrupan cada 100 ms y llegan como una sola llamada a `on_change`, que relee en otro hilo.
+pub struct ListasWatcher {
+    _monitor: Option<gio::FileMonitor>,
+}
+
+impl ListasWatcher {
+    pub fn new(path: &Path, on_change: impl Fn() + 'static) -> Self {
+        let monitor = gio::File::for_path(path)
+            .monitor_file(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)
+            .ok();
+        if let Some(m) = &monitor {
+            let scheduled = Rc::new(Cell::new(false));
+            let on_change = Rc::new(on_change);
+            m.connect_changed(move |_, _, _, event| {
+                if matches!(
+                    event,
+                    gio::FileMonitorEvent::AttributeChanged | gio::FileMonitorEvent::PreUnmount
+                ) {
+                    return;
+                }
+                if !scheduled.replace(true) {
+                    let (scheduled, on_change) = (scheduled.clone(), on_change.clone());
+                    glib::timeout_add_local_once(Duration::from_millis(100), move || {
+                        scheduled.set(false);
+                        on_change();
+                    });
+                }
+            });
+        }
+        Self { _monitor: monitor }
+    }
+}

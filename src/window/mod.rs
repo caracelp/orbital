@@ -169,6 +169,8 @@ struct Inner {
     listas_eco: Cell<Option<u64>>,
     /// Sesión de bóveda (`vault_session`) a la que pertenecen las listas.
     listas_sesion: Cell<u64>,
+    /// Monitor de `.orbital/listas.yaml` (cambios hechos afuera, FR-012).
+    listas_watcher: RefCell<Option<crate::watcher::ListasWatcher>>,
 }
 
 /// Ventana de Orbital.
@@ -369,6 +371,7 @@ impl Window {
             listas_pendiente: Cell::new(false),
             listas_eco: Cell::new(None),
             listas_sesion: Cell::new(0),
+            listas_watcher: RefCell::new(None),
         }));
         conexiones::conectar(&this, app);
         this
