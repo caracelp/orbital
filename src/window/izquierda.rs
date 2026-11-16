@@ -41,6 +41,9 @@ pub(super) fn construir_izquierda() -> Izquierda {
     // un panel redimensionable.
     let (files_section, _) = seccion_plegable("Explorador", &sidebar_scroll, true, true);
     sidebar_scroll.set_vexpand(true);
+    // Con Favoritos arriba (027), en una ventana baja el árbol quedaba en una fila: se le
+    // asegura un mínimo (unas tres filas) y lo que cede es el panel de abajo, que se desplaza.
+    sidebar_scroll.set_min_content_height(110);
     tag_panel.widget().set_height_request(150);
     let (tags_section, _) = seccion_plegable("Etiquetas", tag_panel.widget(), true, false);
     let recent_list = gtk::Box::builder()
