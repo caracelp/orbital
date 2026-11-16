@@ -692,8 +692,19 @@ mod esqueleto_tests {
                 let b = boton(&raiz, tooltip).unwrap_or_else(|| panic!("falta «{tooltip}»"));
                 assert_eq!(b.is_sensitive(), activo, "«{tooltip}»");
             }
-            // Guardados: pendiente (desactivado). Búsqueda cambia la página de la barra.
-            assert!(!boton(&raiz, "Guardados").unwrap().is_sensitive());
+            // Guardados (027): activo, cambia la página de la barra (y la arma al primer uso).
+            let guardados = boton(&raiz, "Guardados")
+                .and_downcast::<gtk::ToggleButton>()
+                .unwrap();
+            assert!(guardados.is_sensitive());
+            assert!(!window.0.listas_panel.guardados_construida());
+            guardados.set_active(true);
+            assert_eq!(
+                window.0.sidebar_stack.visible_child_name().as_deref(),
+                Some("guardados")
+            );
+            assert!(window.0.listas_panel.guardados_construida());
+            // Búsqueda cambia la página de la barra.
             boton(&raiz, "Búsqueda")
                 .and_downcast::<gtk::ToggleButton>()
                 .unwrap()
@@ -799,6 +810,383 @@ mod enlaces_bloque_tests {
             }
             assert_eq!(linea(), 603, "[[#^id]] va al bloque de la nota abierta");
             window.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}
+
+mod listas_tests {
+    //! 027: Favoritos y Guardados.
+    use super::super::*;
+    use orbital_vault::Lista;
+    use std::time::{Duration, Instant};
+
+    fn app(nombre: &str) -> adw::Application {
+        adw::init().expect("se necesita acceso a GTK");
+        let app = adw::Application::builder()
+            .application_id(format!("io.github.caracelp.Orbital.Listas{nombre}"))
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        app
+    }
+
+    async fn esperar(que: &str, cond: impl Fn() -> bool) {
+        let t0 = Instant::now();
+        while !cond() {
+            assert!(t0.elapsed() < Duration::from_secs(5), "no pasó: {que}");
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn boveda(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("orbital-027-{tag}-{}", glib::uuid_string_random()));
+        std::fs::create_dir_all(root.join("wiki")).unwrap();
+        std::fs::create_dir_all(root.join("raw")).unwrap();
+        std::fs::write(root.join("wiki/a.md"), "# A\n\nNota a.\n").unwrap();
+        std::fs::write(root.join("wiki/b.md"), "# B\n\nNota b.\n").unwrap();
+        std::fs::write(root.join("wiki/c.html"), "<p>Síntesis c.</p>\n").unwrap();
+        std::fs::write(root.join("raw/fuente.pdf"), b"%PDF-1.4\xff\xfe binario").unwrap();
+        root
+    }
+
+    /// Suma de verificación de todo lo que no es `.orbital/` (SC-004).
+    fn sumas(root: &Path) -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        for zona in ["wiki", "raw"] {
+            for e in std::fs::read_dir(root.join(zona)).unwrap() {
+                let e = e.unwrap();
+                let bytes = std::fs::read(e.path()).unwrap();
+                out.push((
+                    e.path().display().to_string(),
+                    orbital_vault::write::hash(&bytes),
+                ));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    async fn ventana(app: &adw::Application, root: &Path) -> Window {
+        let window = Window::new(app);
+        window.set_persist(false);
+        window.0.window.set_default_size(1200, 900);
+        window.0.window.present();
+        window.open_path(root.to_path_buf()).await;
+        esperar("las listas se cargan", || window.listas_cargadas_ya()).await;
+        window
+    }
+
+    async fn abrir(window: &Window, ruta: &str) {
+        window.show_path(ruta);
+        esperar(&format!("se abre {ruta}"), || {
+            window
+                .0
+                .current_entry
+                .borrow()
+                .as_ref()
+                .map(|e| e.path.as_str().to_owned())
+                == Some(ruta.to_owned())
+        })
+        .await;
+    }
+
+    fn rotulo_menu(window: &Window, n: usize) -> String {
+        window.items_menu_nota()[n].label.clone()
+    }
+
+    fn filas(list: &gtk::ListBox) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(row) = list.row_at_index(out.len() as i32) {
+            out.push(
+                row.tooltip_text()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default(),
+            );
+        }
+        out
+    }
+
+    fn en_disco(root: &Path) -> String {
+        std::fs::read_to_string(root.join(".orbital/listas.yaml")).unwrap_or_default()
+    }
+
+    fn rutas(v: &[&str]) -> Vec<RelPath> {
+        v.iter().map(|s| RelPath::new(s).unwrap()).collect()
+    }
+
+    /// Las etiquetas de los botones del menú de la nota tal como se ven al abrirlo.
+    async fn menu_abierto(window: &Window) -> Vec<String> {
+        let menu = &window.0.note_menu;
+        menu.popup();
+        glib::timeout_future(Duration::from_millis(50)).await;
+        let mut out = Vec::new();
+        let mut pila: Vec<gtk::Widget> = menu.child().into_iter().collect();
+        while let Some(w) = pila.pop() {
+            if let Some(l) = w.downcast_ref::<gtk::Label>()
+                && !l.has_css_class("dim-label")
+            {
+                out.push(l.label().to_string());
+            }
+            let mut h = w.last_child();
+            while let Some(x) = h {
+                pila.push(x.clone());
+                h = x.prev_sibling();
+            }
+        }
+        menu.popdown();
+        out
+    }
+
+    /// 027 US1 (T013): agregar y quitar favoritos desde la acción del menú, la fila aparece en
+    /// < 100 ms (SC-001), el menú cambia, abrir desde la fila, reabrir con el mismo orden, un
+    /// archivo de raw/, sin `.orbital/` al abrir y sin tocar ninguna nota (SC-004).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn us1_favoritos_desde_el_menu() {
+        let app = app("Us1");
+        glib::MainContext::default().block_on(async {
+            let root = boveda("us1");
+            let antes = sumas(&root);
+            let window = ventana(&app, &root).await;
+            let panel = window.0.listas_panel.clone();
+            assert!(!root.join(".orbital").exists(), "abrir no crea .orbital/");
+            assert!(filas(panel.lista_favoritos()).is_empty());
+            assert!(
+                !window.0.window.is_action_enabled("alternar-favorito"),
+                "sin archivo abierto, la acción está desactivada"
+            );
+
+            abrir(&window, "wiki/a.md").await;
+            assert!(menu_abierto(&window).await.contains(&"Agregar a favoritos".to_owned()));
+            let t0 = Instant::now();
+            WidgetExt::activate_action(&window.0.window, "win.alternar-favorito", None).unwrap();
+            assert_eq!(filas(panel.lista_favoritos()), ["wiki/a.md"]);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            println!("SC-001: la fila apareció en {ms:.2} ms");
+            assert!(ms < 100.0, "SC-001: {ms} ms");
+            assert_eq!(rotulo_menu(&window, 0), "Quitar de favoritos");
+            let menu = menu_abierto(&window).await;
+            assert!(menu.contains(&"Quitar de favoritos".to_owned()), "{menu:?}");
+            assert!(!menu.contains(&"Agregar a favoritos".to_owned()));
+
+            abrir(&window, "wiki/c.html").await;
+            WidgetExt::activate_action(&window.0.window, "win.alternar-favorito", None).unwrap();
+            abrir(&window, "raw/fuente.pdf").await;
+            assert_eq!(rotulo_menu(&window, 0), "Agregar a favoritos");
+            WidgetExt::activate_action(&window.0.window, "win.alternar-favorito", None).unwrap();
+            assert_eq!(
+                filas(panel.lista_favoritos()),
+                ["wiki/a.md", "wiki/c.html", "raw/fuente.pdf"],
+                "las nuevas van al final"
+            );
+            esperar("se escriben los tres", || {
+                en_disco(&root)
+                    == "format_version: 1\nfavoritos:\n  - wiki/a.md\n  - wiki/c.html\n  - raw/fuente.pdf\ncolecciones: []\n"
+            })
+            .await;
+
+            // Un clic en la fila abre como desde el explorador (también un archivo de raw/).
+            panel.lista_favoritos().row_at_index(0).unwrap().emit_activate();
+            esperar("abre a.md desde Favoritos", || {
+                window.0.current_entry.borrow().as_ref().map(|e| e.path.as_str().to_owned())
+                    == Some("wiki/a.md".into())
+            })
+            .await;
+            panel.lista_favoritos().row_at_index(2).unwrap().emit_activate();
+            esperar("abre el PDF desde Favoritos", || {
+                window.0.current_entry.borrow().as_ref().map(|e| e.path.as_str().to_owned())
+                    == Some("raw/fuente.pdf".into())
+            })
+            .await;
+            window.0.window.destroy();
+
+            // Reabrir la bóveda: el mismo orden.
+            let otra = ventana(&app, &root).await;
+            assert_eq!(
+                filas(otra.0.listas_panel.lista_favoritos()),
+                ["wiki/a.md", "wiki/c.html", "raw/fuente.pdf"]
+            );
+            abrir(&otra, "wiki/c.html").await;
+            assert_eq!(rotulo_menu(&otra, 0), "Quitar de favoritos");
+            WidgetExt::activate_action(&otra.0.window, "win.alternar-favorito", None).unwrap();
+            assert_eq!(
+                filas(otra.0.listas_panel.lista_favoritos()),
+                ["wiki/a.md", "raw/fuente.pdf"]
+            );
+            esperar("se escribe la quita", || {
+                en_disco(&root).contains("favoritos:\n  - wiki/a.md\n  - raw/fuente.pdf\n")
+            })
+            .await;
+            // Respaldo (research R4): la primera ventana creó el archivo (nada que respaldar) y no
+            // respaldó sus propias escrituras; la segunda respaldó una vez lo que había escrito la
+            // primera, en su primera escritura.
+            let copias: Vec<_> = std::fs::read_dir(
+                root.join(".orbital/respaldo")
+                    .read_dir()
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path()
+                    .join(".orbital"),
+            )
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| !e.file_name().to_string_lossy().ends_with(".yaml.yaml"))
+            .collect();
+            assert_eq!(copias.len(), 1, "una sola copia: {copias:?}");
+            otra.0.window.destroy();
+            assert_eq!(sumas(&root), antes, "SC-004: ninguna nota ni archivo de raw/ cambió");
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    /// 027 US2 (T020): «Guardar en…» crea con Intro (SC-005), marca y desmarca casillas, no
+    /// crea nombres repetidos ni vacíos, el menú dice «Guardada en 2 colecciones…», el modo
+    /// Guardados abre la nota y quitar de una colección no la quita de la otra ni de Favoritos.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn us2_guardar_en_colecciones() {
+        let app = app("Us2");
+        glib::MainContext::default().block_on(async {
+            let root = boveda("us2");
+            let antes = sumas(&root);
+            let window = ventana(&app, &root).await;
+            abrir(&window, "wiki/a.md").await;
+            assert_eq!(rotulo_menu(&window, 1), "Guardar en…");
+
+            // SC-005: menú → «Guardar en…» → nombre → Intro.
+            let d = window.abrir_guardar_en().expect("se abre el diálogo");
+            assert_eq!(d.casillas().count(), 0);
+            d.entrada().set_text("Para leer");
+            assert!(d.dialogo.is_response_enabled("guardar"));
+            esperar("el diálogo se muestra", || d.entrada().is_mapped()).await;
+            // Intro llega a la `GtkText` de adentro, que activa la respuesta por defecto.
+            let texto = {
+                let mut h = d.entrada().first_child();
+                while let Some(w) = h.clone() {
+                    if w.is::<gtk::Text>() {
+                        break;
+                    }
+                    h = w.next_sibling();
+                }
+                h.and_downcast::<gtk::Text>().expect("la entrada tiene su GtkText")
+            };
+            texto.emit_activate();
+            esperar("Intro guarda", || {
+                window.listas_en_memoria(Lista::Coleccion(0)) == rutas(&["wiki/a.md"])
+            })
+            .await;
+            assert_eq!(rotulo_menu(&window, 1), "Guardada en 1 colección…");
+
+            // Otra colección desde otra nota.
+            abrir(&window, "wiki/b.md").await;
+            let d = window.abrir_guardar_en().unwrap();
+            assert_eq!(
+                d.casillas().map(|c| c.is_active()).collect::<Vec<_>>(),
+                [false]
+            );
+            d.entrada().set_text("Tesis");
+            d.dialogo.emit_by_name::<()>("response", &[&"guardar"]);
+            d.dialogo.force_close();
+            assert_eq!(window.listas_en_memoria(Lista::Coleccion(1)), rutas(&["wiki/b.md"]));
+
+            // Nombre repetido (sin distinguir mayúsculas ni espacios) o solo espacios: no se
+            // puede guardar; y aunque llegara la respuesta, no se crea otra colección.
+            for nombre in ["  para LEER ", "   "] {
+                let d = window.abrir_guardar_en().unwrap();
+                d.entrada().set_text(nombre);
+                assert!(!d.dialogo.is_response_enabled("guardar"), "{nombre:?}");
+                d.dialogo.emit_by_name::<()>("response", &[&"guardar"]);
+                d.dialogo.force_close();
+            }
+            assert_eq!(
+                window.0.listas.borrow().as_ref().unwrap().listas.colecciones.len(),
+                2
+            );
+            assert_eq!(
+                window.listas_en_memoria(Lista::Coleccion(0)),
+                rutas(&["wiki/a.md", "wiki/b.md"]),
+                "«para leer» repetido apunta a la existente"
+            );
+            // Cancelar no cambia nada.
+            let d = window.abrir_guardar_en().unwrap();
+            for c in d.casillas() {
+                c.set_active(false);
+            }
+            d.dialogo.emit_by_name::<()>("response", &[&"cancelar"]);
+            d.dialogo.force_close();
+            assert_eq!(window.listas_en_memoria(Lista::Coleccion(1)), rutas(&["wiki/b.md"]));
+
+            // a.md en las dos colecciones y favorita.
+            abrir(&window, "wiki/a.md").await;
+            let d = window.abrir_guardar_en().unwrap();
+            assert_eq!(
+                d.casillas().map(|c| c.is_active()).collect::<Vec<_>>(),
+                [true, false]
+            );
+            d.casillas().nth(1).unwrap().set_active(true);
+            d.dialogo.emit_by_name::<()>("response", &[&"guardar"]);
+            d.dialogo.force_close();
+            assert_eq!(rotulo_menu(&window, 1), "Guardada en 2 colecciones…");
+            let menu = menu_abierto(&window).await;
+            assert!(menu.contains(&"Guardada en 2 colecciones…".to_owned()), "{menu:?}");
+            WidgetExt::activate_action(&window.0.window, "win.alternar-favorito", None).unwrap();
+
+            // Modo Guardados: una sección por colección; un clic abre la nota.
+            abrir(&window, "wiki/b.md").await;
+            window.0.sidebar_stack.set_visible_child_name("guardados");
+            let pagina = window.0.listas_panel.guardados().clone().upcast::<gtk::Widget>();
+            let mut filas_a = Vec::new();
+            let mut secciones = Vec::new();
+            let mut pila = vec![pagina];
+            while let Some(w) = pila.pop() {
+                if let Some(row) = w.downcast_ref::<gtk::ListBoxRow>()
+                    && row.tooltip_text().as_deref() == Some("wiki/a.md")
+                {
+                    filas_a.push(row.clone());
+                }
+                if w.has_css_class("orbital-section") {
+                    secciones.push(w.clone());
+                }
+                let mut h = w.first_child();
+                while let Some(x) = h {
+                    pila.push(x.clone());
+                    h = x.next_sibling();
+                }
+            }
+            assert_eq!(secciones.len(), 2, "una sección por colección");
+            assert_eq!(filas_a.len(), 2, "a.md está en las dos colecciones");
+            filas_a[0].emit_activate();
+            esperar("abre a.md desde Guardados", || {
+                window.0.current_entry.borrow().as_ref().map(|e| e.path.as_str().to_owned())
+                    == Some("wiki/a.md".into())
+            })
+            .await;
+
+            // Quitarla de «Para leer»: sigue en «Tesis» y en Favoritos.
+            let d = window.abrir_guardar_en().unwrap();
+            d.casillas().next().unwrap().set_active(false);
+            d.dialogo.emit_by_name::<()>("response", &[&"guardar"]);
+            d.dialogo.force_close();
+            assert_eq!(window.listas_en_memoria(Lista::Coleccion(0)), rutas(&["wiki/b.md"]));
+            assert_eq!(
+                window.listas_en_memoria(Lista::Coleccion(1)),
+                rutas(&["wiki/b.md", "wiki/a.md"])
+            );
+            assert_eq!(window.listas_en_memoria(Lista::Favoritos), rutas(&["wiki/a.md"]));
+            assert_eq!(rotulo_menu(&window, 1), "Guardada en 1 colección…");
+
+            let esperado = "format_version: 1\nfavoritos:\n  - wiki/a.md\ncolecciones:\n  - nombre: Para leer\n    notas:\n      - wiki/b.md\n  - nombre: Tesis\n    notas:\n      - wiki/b.md\n      - wiki/a.md\n";
+            esperar("se escribe el último estado", || en_disco(&root) == esperado).await;
+            assert!(
+                !root.join(".orbital/respaldo").exists(),
+                "lo que escribió esta sesión no se respalda"
+            );
+            window.0.window.destroy();
+            assert_eq!(sumas(&root), antes, "SC-004");
             std::fs::remove_dir_all(root).unwrap();
         });
     }

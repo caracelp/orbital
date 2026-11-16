@@ -14,6 +14,7 @@ pub(super) struct Izquierda {
     pub(super) pie_boveda: crate::pie_boveda::PieBoveda,
     pub(super) sidebar_view: adw::ToolbarView,
     pub(super) gone_banner: adw::Banner,
+    pub(super) listas_panel: crate::listas_panel::ListasPanel,
 }
 
 pub(super) fn construir_izquierda() -> Izquierda {
@@ -34,7 +35,7 @@ pub(super) fn construir_izquierda() -> Izquierda {
     let search_panel = crate::search_panel::SearchPanel::new(initial_search_raw);
 
     let tag_panel = crate::tag_panel::TagPanel::new();
-    // --- Explorador (025): secciones plegables Explorador, Etiquetas, Recientes y Favoritos ---
+    // --- Explorador (025): secciones plegables Favoritos, Explorador, Etiquetas y Recientes ---
     // El árbol sigue siendo un `ListView` virtual con su propio desplazamiento (con 5000 notas
     // no puede ir dentro de un scroll de altura natural); las otras secciones van debajo, en
     // un panel redimensionable.
@@ -48,22 +49,17 @@ pub(super) fn construir_izquierda() -> Izquierda {
         .build();
     recent_list.update_property(&[gtk::accessible::Property::Label("Notas recientes")]);
     let (recent_section, _) = seccion_plegable("Recientes", &recent_list, true, false);
-    let favorites_empty = gtk::Label::builder()
-        .label("Pendiente: todavía no se pueden marcar notas favoritas")
-        .wrap(true)
-        .xalign(0.0)
-        .css_classes(["orbital-count"])
-        .build();
-    let (favorites_section, favorites_toggle) =
-        seccion_plegable("Favoritos", &favorites_empty, false, false);
-    favorites_toggle.set_sensitive(false);
+    // Favoritos (027) arriba de Explorador; su contenido y la página Guardados son de
+    // `ListasPanel`, con el mismo estilo de sección.
+    let listas_panel = crate::listas_panel::ListasPanel::new(seccion_plegable);
+    let (favorites_section, _) =
+        seccion_plegable("Favoritos", listas_panel.favoritos(), true, false);
     // Las secciones de abajo comparten un desplazamiento que puede encogerse: el alto
     // mínimo de la barra no depende de cuántas etiquetas o notas recientes haya (si no, la
     // ventana se pasa de alto y GTK la desacomoda).
     let lower = gtk::Box::new(gtk::Orientation::Vertical, 0);
     lower.append(&tags_section);
     lower.append(&recent_section);
-    lower.append(&favorites_section);
     let lower_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .propagate_natural_height(true)
@@ -72,12 +68,15 @@ pub(super) fn construir_izquierda() -> Izquierda {
         .build();
     let explorer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     files_section.set_vexpand(true);
+    explorer.append(&favorites_section);
     explorer.append(&files_section);
     explorer.append(&lower_scroll);
 
     let sidebar_stack = adw::ViewStack::new();
     sidebar_stack.add_named(&explorer, Some("archivos"));
     sidebar_stack.add_named(search_panel.widget(), Some("busqueda"));
+    // Guardados (027): la página existe vacía; su contenido se arma al mostrarla por primera vez.
+    sidebar_stack.add_named(listas_panel.guardados(), Some("guardados"));
 
     let banner = adw::Banner::builder()
         .title("Estructura incompleta")
@@ -151,5 +150,6 @@ pub(super) fn construir_izquierda() -> Izquierda {
         pie_boveda,
         sidebar_view,
         gone_banner,
+        listas_panel,
     }
 }

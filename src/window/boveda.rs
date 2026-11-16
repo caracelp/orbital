@@ -187,6 +187,8 @@ impl Window {
         *i.recientes.borrow_mut() = AppState::load().recent_notes_for(arc_vault.root()).to_vec();
         self.refresh_recent();
         crate::medir_arranque::marca("show_vault: recientes");
+        // Favoritos y Guardados (027): se cargan después del primer cuadro.
+        self.listas_en_show_vault();
         self.set_list_model(tree);
         crate::medir_arranque::marca("show_vault: lista");
 

@@ -128,6 +128,7 @@ pub(super) fn conectar(this: &Window, app: &adw::Application) {
     }
 
     this.setup_actions(app);
+    this.setup_listas();
     let content = this.0.content_stack.clone();
     this.setup_drop(&content);
     this.setup_raw_drop();

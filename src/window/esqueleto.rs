@@ -35,8 +35,7 @@ pub(super) fn construir_esqueleto(
         .build();
     nombre_de_barra(&left_toggle, "barra izquierda", "Ctrl+[");
 
-    // Modos de la barra izquierda, alineados sobre ella: Explorador, Búsqueda y Guardados
-    // (pendiente: guardar notas todavía no existe).
+    // Modos de la barra izquierda, alineados sobre ella: Explorador, Búsqueda y Guardados (027).
     let modes = gtk::Box::builder()
         .spacing(8)
         .css_classes(["orbital-left-modes"])
@@ -45,10 +44,14 @@ pub(super) fn construir_esqueleto(
     let mode_files = crate::iconos::boton_alternable("crear-carpeta", "Explorador de archivos");
     let mode_search = crate::iconos::boton_alternable("buscar", "Búsqueda");
     mode_search.set_group(Some(&mode_files));
-    let mode_saved = crate::iconos::boton_alternable("marcador", "Guardados (pendiente)");
-    mode_saved.set_sensitive(false);
+    let mode_saved = crate::iconos::boton_alternable("marcador", "Guardados");
+    mode_saved.set_group(Some(&mode_files));
     mode_files.set_active(true);
-    for (b, page) in [(&mode_files, "archivos"), (&mode_search, "busqueda")] {
+    for (b, page) in [
+        (&mode_files, "archivos"),
+        (&mode_search, "busqueda"),
+        (&mode_saved, "guardados"),
+    ] {
         let stack = sidebar_stack.clone();
         b.connect_toggled(move |b| {
             if b.is_active() {
@@ -57,10 +60,11 @@ pub(super) fn construir_esqueleto(
         });
     }
     {
-        let (f, se) = (mode_files.clone(), mode_search.clone());
+        let (f, se, sa) = (mode_files.clone(), mode_search.clone(), mode_saved.clone());
         sidebar_stack.connect_visible_child_name_notify(move |st| {
             match st.visible_child_name().as_deref() {
                 Some("busqueda") => se.set_active(true),
+                Some("guardados") => sa.set_active(true),
                 _ => f.set_active(true),
             }
         });

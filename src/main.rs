@@ -1,8 +1,10 @@
 mod editor;
 mod export;
 mod grafo;
+mod guardar_en;
 mod html_view;
 mod iconos;
+mod listas_panel;
 mod medir_arranque;
 mod onstage;
 mod open_dialog;

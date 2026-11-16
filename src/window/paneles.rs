@@ -193,6 +193,7 @@ impl Window {
                 }
                 editor.close();
                 *w.0.current_entry.borrow_mut() = None;
+                w.habilitar_acciones_listas(false);
                 *w.0.current_note.borrow_mut() = None;
                 w.0.content_title.set_title("");
                 w.0.content_title.set_subtitle("");

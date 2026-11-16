@@ -28,6 +28,7 @@ pub(super) struct Centro {
     pub(super) panel: crate::panel_derecho::PanelDerecho,
     pub(super) right_split: adw::OverlaySplitView,
     pub(super) backlinks_button: gtk::ToggleButton,
+    pub(super) note_menu: gtk::Popover,
 }
 
 pub(super) fn construir_centro() -> Centro {
@@ -230,6 +231,8 @@ pub(super) fn construir_centro() -> Centro {
         "view-more-symbolic",
         "Más opciones de la nota",
         &[
+            ("Agregar a favoritos", "win.alternar-favorito", ""),
+            ("Guardar en…", "win.guardar-en", ""),
             ("Renombrar o mover…", "win.rename", "F2"),
             ("Archivar", "win.archive", "Ctrl+Mayús+A"),
             (
@@ -244,6 +247,10 @@ pub(super) fn construir_centro() -> Centro {
     note_menu_button.add_css_class("flat");
     note_menu_button.add_css_class("orbital-iconbtn");
     content_header.pack_end(&note_menu_button);
+    // `listas.rs` lo rearma al abrirse, con el estado de Favoritos y Guardados (027).
+    let note_menu = note_menu_button
+        .popover()
+        .expect("el menú de la nota tiene popover");
     // Botón de vista de la maqueta: muestra el modo actual y pasa al siguiente (Código →
     // Lectura → Dividida en `.md`; Código ↔ Visual en `.html`). El grupo del editor sigue
     // siendo el estado (y lo usan Ctrl+1/2/3), pero ya no se muestra.
@@ -354,5 +361,6 @@ pub(super) fn construir_centro() -> Centro {
         panel,
         right_split,
         backlinks_button,
+        note_menu,
     }
 }
