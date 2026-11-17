@@ -417,3 +417,44 @@ La búsqueda ignora mayúsculas y tildes, y **no** interpreta expresiones regula
 Una consulta mal escrita muestra un aviso con la columna del problema y no borra lo escrito. Los
 resultados de `raw/` llevan la marca «fuente» y se pueden ocultar. Las búsquedas guardadas viven en
 `.orbital/busquedas.yaml` (sección 9), nunca en las notas.
+
+## Bases sobre notas (029)
+
+Una base es un archivo `.base` de definición de vistas sobre notas Markdown/HTML. Los valores
+siguen en las notas; el archivo de base guarda filtros, columnas, tipos esperados y orden.
+El contrato completo está en [`specs/029-bases/contracts/formato-base.md`](../specs/029-bases/contracts/formato-base.md).
+
+```yaml
+format_version: 1
+view: table
+columns:
+  - property: title
+    label: Título
+    type: text
+  - property: precio
+    label: Precio
+    type: number
+filters:
+  - folder: wiki/libros
+  - property: estado
+    value: pendiente
+sort:
+  property: precio
+  descending: false
+```
+
+`view` admite `table` y `cards`. Los filtros se combinan con «y»; una propiedad sin `value`
+filtra por presencia. `folder` incluye subcarpetas, `tag` compara una etiqueta y `property`
+compara un valor tipado. Las propiedades del bloque prevalecen sobre los campos inline.
+
+Los tipos de columna son `auto`, `text`, `number`, `bool`, `date`, `datetime`, `link` y `list`.
+Declarar un tipo no convierte datos existentes. `file.path` y `file.name` son campos derivados
+de solo lectura. Ausente y nulo son estados distintos. Las filas no se guardan en la base.
+
+Editar una celda actualiza la propiedad en la nota original con comprobación de hash y
+GuardadoSeguro. Una definición inválida, una versión futura o campos desconocidos impiden
+reescribir la base en silencio. `raw/` sigue siendo de solo lectura.
+
+`![[x.base]]` incrusta el resultado sin copiarlo al archivo de la nota. El renombre de propiedades
+previsualiza también las referencias en bases; ante valores diferentes de origen y destino,
+la nota queda intacta y se informa el conflicto. Los cambios aplicados se pueden deshacer.

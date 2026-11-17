@@ -1,3 +1,4 @@
+mod bases;
 mod editor;
 mod export;
 mod grafo;

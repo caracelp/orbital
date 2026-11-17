@@ -115,7 +115,7 @@ pub(super) fn construir_esqueleto(
         ("selector", "Selector rápido", Some("win.quick-open")),
         ("red", "Conexiones", Some("win.ver-grafo")),
         ("canva", "Crear canva (todavía no disponible)", None),
-        ("db", "Crear base de datos (todavía no disponible)", None),
+        ("db", "Crear base de datos", Some("win.new-base")),
         (
             "comandos",
             "Paleta de comandos",

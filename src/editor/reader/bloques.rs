@@ -229,9 +229,16 @@ impl Reader {
         let buf = &s.buffer;
         let table = buf.tag_table();
         let start = end.offset();
-        let url = match &t.anchor {
-            Some(a) => format!("[[{}#{a}]]", t.target),
-            None => format!("[[{}]]", t.target),
+        let url = match &t.content {
+            Embed::Note { path, .. }
+                if path.file_name().to_ascii_lowercase().ends_with(".base") =>
+            {
+                orbital_vault::bases::path_url(path)
+            }
+            _ => match &t.anchor {
+                Some(a) => format!("[[{}#{a}]]", t.target),
+                None => format!("[[{}]]", t.target),
+            },
         };
         let shown = match &t.anchor {
             Some(a) => format!("{} › {a}", t.target),

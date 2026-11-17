@@ -33,6 +33,7 @@ impl Window {
     pub(super) fn update_graph(&self, path: RelPath, removed: bool) {
         let i = &self.0;
         // Las transclusiones de la nota abierta que incrustan a `path` se ponen al día (US5).
+        self.base_note_changed(path.clone());
         i.code_editor.dependency_changed(&path);
         let (Some(graph), Some(vault)) = (i.graph.borrow().clone(), i.vault.borrow().clone())
         else {
@@ -160,6 +161,13 @@ impl Window {
     }
 
     pub fn open_link(&self, from: Option<&RelPath>, url: &str) {
+        // Enlaces generados por las bases: rutas de bóveda, independientes de la nota anfitriona.
+        if let Some(path) = url.strip_prefix("orbital-path:") {
+            if let Ok(path) = RelPath::new(&orbital_vault::percent_decode(path)) {
+                self.show_path(path.as_str());
+            }
+            return;
+        }
         if let Some(tag) = url.strip_prefix("orbital-tag:") {
             self.search_tag(tag);
             return;
