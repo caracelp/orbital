@@ -176,6 +176,61 @@ impl Window {
         *i.current_note.borrow_mut() = None;
     }
 
+    /// Si otra nota de la bóveda usa el mismo id que `note` (en `id` o en sus delimitadores), lo
+    /// avisa en la barra de avisos de la nota. No bloquea ni reescribe nada (043). El índice de ids
+    /// se consulta en otro hilo; si al volver ya hay otra nota abierta, no muestra nada.
+    fn avisar_ids_repetidos(&self, note: &Note) {
+        let ids =
+            orbital_vault::note_ids::ids_of(note.prop("id").and_then(|v| v.as_text()), note.body());
+        if ids.is_empty() {
+            return;
+        }
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let path = note.path.clone();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let ruta = path.clone();
+            let Ok(repetido) = gio::spawn_blocking(move || {
+                ids.into_iter().find_map(|id| {
+                    let otras: Vec<_> = vault
+                        .notes_with_note_id(&id)
+                        .into_iter()
+                        .filter(|p| *p != ruta)
+                        .collect();
+                    (!otras.is_empty()).then_some((id, otras))
+                })
+            })
+            .await
+            else {
+                return;
+            };
+            let Some((id, otras)) = repetido else {
+                return;
+            };
+            let i = &this.0;
+            let sigue = i
+                .current_note
+                .borrow()
+                .as_ref()
+                .is_some_and(|n| n.path == path);
+            if !sigue || i.note_banner.is_visible() {
+                return;
+            }
+            let primera = otras[0].file_name();
+            let titulo = match otras.len() {
+                1 => format!("El id «{id}» también lo usa «{primera}»"),
+                n => format!(
+                    "El id «{id}» también lo usan «{primera}» y {} notas más",
+                    n - 1
+                ),
+            };
+            i.note_banner.set_title(&titulo);
+            i.note_banner.set_visible(true);
+        });
+    }
+
     /// Dibuja las propiedades, los avisos y el texto de una nota.
     pub(super) fn show_note(&self, note: Note) {
         let i = &self.0;
@@ -209,6 +264,8 @@ impl Window {
             if let Some(w) = warnings.iter().find(|w| **w != Warning::MissingType) {
                 i.note_banner.set_title(&w.message());
                 i.note_banner.set_visible(true);
+            } else {
+                self.avisar_ids_repetidos(&note);
             }
             match note.format {
                 Format::Md if !note.read_only => self.open_in_code(&note),

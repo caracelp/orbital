@@ -89,6 +89,9 @@ struct Inner {
     note_banner: adw::Banner,
     type_banner: adw::Banner,
     current_note: RefCell<Option<Note>>,
+    /// Ids de nota asignados en esta sesión que el índice de la bóveda puede no tener todavía
+    /// (la nota aún no se guardó): evitan dar el mismo id a dos notas seguidas (043).
+    ids_asignados: RefCell<std::collections::HashSet<String>>,
     /// Archivo que se está mostrando (nota o no).
     current_entry: RefCell<Option<Arc<Entry>>>,
     html_props: gtk::ListBox,
@@ -343,6 +346,7 @@ impl Window {
             note_banner,
             type_banner,
             current_note: RefCell::new(None),
+            ids_asignados: RefCell::default(),
             current_entry: RefCell::new(None),
             right,
             right_split,

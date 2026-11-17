@@ -30,10 +30,14 @@ const TABLA_PREFIJOS: &[(&str, &str)] = &[
     ("proyecto", "PR"),
     ("concepto", "CO"),
     ("ensayo", "EN"),
+    ("cuaderno", "CU"),
 ];
 
-/// Devuelve el prefijo en mayúsculas para construir el `id` (`<PREFIJO>-NNN`) a partir de `type`.
-/// Si el `type` no está en la tabla fija, toma sus 2 primeras letras ASCII en mayúsculas.
+/// Devuelve el prefijo en mayúsculas para construir el `id` (`<PREFIJO>-NNN`) a partir del tipo
+/// de la nota (`type` o su alias `tipo`). Si el tipo no está en la tabla fija, toma su primera
+/// letra y la siguiente que no forme un prefijo de la tabla (`cosa` → `CS`, porque `CO` es de
+/// `concepto`): depende solo del nombre del tipo, así que es estable. Sin letras,
+/// `NT`; con una sola letra o si todas chocan, la letra y `X`.
 pub fn prefijo_de_tipo(tipo: &str) -> String {
     let doblado = orbital_vault::fold(tipo.trim());
     for &(clave, pref) in TABLA_PREFIJOS {
@@ -41,25 +45,27 @@ pub fn prefijo_de_tipo(tipo: &str) -> String {
             return pref.to_owned();
         }
     }
-    let letras: String = doblado
+    let mut letras = doblado
         .chars()
-        .filter(|c| c.is_ascii_alphabetic())
-        .take(2)
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    match letras.len() {
-        2 => letras,
-        1 => format!("{letras}X"),
-        _ => "NT".to_owned(),
-    }
+        .filter(char::is_ascii_alphabetic)
+        .map(|c| c.to_ascii_uppercase());
+    let Some(primera) = letras.next() else {
+        return "NT".to_owned();
+    };
+    let de_la_tabla = |p: &str| TABLA_PREFIJOS.iter().any(|&(_, q)| q == p);
+    letras
+        .map(|segunda| format!("{primera}{segunda}"))
+        .find(|p| !de_la_tabla(p))
+        .unwrap_or_else(|| format!("{primera}X"))
 }
 
-/// Calcula el siguiente identificador `<PREFIJO>-NNN` libre para `tipo`, dados los IDs existentes.
+/// Calcula el siguiente identificador `<PREFIJO>-NNN` libre para `tipo`, dados los IDs existentes
+/// (los de toda la bóveda: `Vault::used_note_ids`).
 pub fn siguiente_id_nota<'a>(tipo: &str, existentes: impl IntoIterator<Item = &'a str>) -> String {
     let pref = prefijo_de_tipo(tipo);
     let usados: HashSet<String> = existentes
         .into_iter()
-        .map(|s| s.trim().to_ascii_uppercase())
+        .map(orbital_vault::note_ids::normalize)
         .collect();
     let mut n = 1u32;
     loop {
@@ -272,23 +278,44 @@ fn separar_frontmatter(texto: &str) -> (Option<String>, &str) {
     (None, texto)
 }
 
-fn extraer_id_y_tipo_de_frontmatter(fm: &str) -> (Option<String>, Option<String>) {
+/// `id` y tipo de las líneas de un frontmatter (sin las `---`). El tipo es `type` o, si no está,
+/// su alias `tipo` (si están las dos, gana `type`). Solo mira claves de primer nivel.
+pub fn extraer_id_y_tipo_de_frontmatter(fm: &str) -> (Option<String>, Option<String>) {
     let mut id = None;
     let mut tipo = None;
+    let mut alias = None;
+    let valor = |v: &str| {
+        let val = v.trim().trim_matches(['"', '\'']);
+        (!val.is_empty()).then(|| val.to_owned())
+    };
     for l in fm.lines() {
-        let t = l.trim();
+        let t = l.trim_end();
         if let Some(v) = t.strip_prefix("id:") {
-            let val = v.trim().trim_matches(['"', '\'']);
-            if !val.is_empty() {
-                id = Some(val.to_owned());
-            }
+            id = id.or_else(|| valor(v));
         } else if let Some(v) = t.strip_prefix("type:") {
-            let val = v.trim().trim_matches(['"', '\'']);
-            if !val.is_empty() {
-                tipo = Some(val.to_owned());
-            }
+            tipo = tipo.or_else(|| valor(v));
+        } else if let Some(v) = t.strip_prefix("tipo:") {
+            alias = alias.or_else(|| valor(v));
         }
     }
+    (id, tipo.or(alias))
+}
+
+/// `id` y tipo de una nota `.md` completa. Si el frontmatter no tiene `id`, toma el de sus
+/// delimitadores (`<!-- block … ID -->`, `<!-- summary ID -->`…).
+pub fn id_y_tipo_de_nota(texto: &str) -> (Option<String>, Option<String>) {
+    let (fm, cuerpo) = separar_frontmatter(texto);
+    let (id, tipo) = fm
+        .as_deref()
+        .map(extraer_id_y_tipo_de_frontmatter)
+        .unwrap_or_default();
+    let id = id.or_else(|| {
+        cuerpo
+            .lines()
+            .filter(|l| l.trim_start().starts_with("<!--"))
+            .find_map(orbital_vault::note_ids::delimiter_id)
+            .map(str::to_owned)
+    });
     (id, tipo)
 }
 
@@ -336,6 +363,8 @@ impl ArbolRamas {
             .or(id_de_bloques)
             .or_else(|| id_sugerido.map(str::to_owned))
             .unwrap_or_else(|| {
+                // Sin `id_sugerido` no se conocen los ids de la bóveda: la app siempre pasa uno
+                // único (`Window::con_id_de_nota`); esto queda para textos sueltos.
                 let t = tipo_fm.as_deref().unwrap_or("atomo");
                 siguiente_id_nota(t, std::iter::empty())
             });
@@ -1252,6 +1281,83 @@ Por ejemplo, la derivada de $x^4$ es $4x^3$.
 
         let id1 = siguiente_id_nota("apunte", ["AP-001", "AP-002"]);
         assert_eq!(id1, "AP-003");
+    }
+
+    /// 043: tipos libres con prefijo estable que no choca con la tabla fija.
+    #[test]
+    fn prefijo_de_tipos_libres() {
+        // `cuaderno` está en la tabla fija (decisión de la usuaria).
+        assert_eq!(prefijo_de_tipo("cuaderno"), "CU");
+        assert_eq!(prefijo_de_tipo("Cuaderno"), "CU");
+        assert_eq!(siguiente_id_nota("cuaderno", ["CU-001"]), "CU-002");
+        // `CO` es de `concepto`, `AP` de `apunte`, `CU` de `cuaderno`: se toma la letra siguiente.
+        assert_eq!(prefijo_de_tipo("cosa"), "CS");
+        assert_eq!(prefijo_de_tipo("cuento"), "CE");
+        assert_eq!(prefijo_de_tipo("apuntes"), "AU");
+        assert_eq!(prefijo_de_tipo("x"), "XX");
+        assert_eq!(prefijo_de_tipo("123"), "NT");
+        let tabla: Vec<&str> = TABLA_PREFIJOS.iter().map(|&(_, p)| p).collect();
+        for t in [
+            "cuento",
+            "cosa",
+            "apuntes",
+            "concierto",
+            "diagrama",
+            "sinopsis",
+        ] {
+            let p = prefijo_de_tipo(t);
+            assert!(!tabla.contains(&p.as_str()), "{t} → {p} choca con la tabla");
+            assert_eq!(p, prefijo_de_tipo(t), "estable");
+        }
+    }
+
+    /// 043: `tipo` es alias de `type`; con las dos gana `type`, y no se agrega `type: atomo`.
+    #[test]
+    fn tipo_alias_en_frontmatter() {
+        assert_eq!(
+            extraer_id_y_tipo_de_frontmatter("id: CU-001\ntipo: cuaderno"),
+            (Some("CU-001".into()), Some("cuaderno".into()))
+        );
+        assert_eq!(
+            extraer_id_y_tipo_de_frontmatter("tipo: cuaderno\ntype: atomo").1,
+            Some("atomo".into())
+        );
+        let arbol = ArbolRamas::parse("---\ntipo: cuaderno\n---\n# C\n", Some("CU-001"));
+        let md = arbol.serialize();
+        assert!(md.contains("tipo: cuaderno"), "{md}");
+        assert!(!md.contains("type:"), "{md}");
+        assert!(md.contains("id: CU-001"), "{md}");
+        assert_eq!(
+            id_y_tipo_de_nota("---\ntype: atomo\n---\n<!-- block 1 AT-007 -->\n# A\n<!---->\n"),
+            (Some("AT-007".into()), Some("atomo".into()))
+        );
+    }
+
+    /// 043: una bóveda con AT-001 y AT-002 da AT-003; los ids ya dados en la sesión cuentan, así
+    /// que dos notas sin id estructuradas una tras otra reciben ids distintos.
+    #[test]
+    fn ids_unicos_en_la_boveda() {
+        let boveda = ["AT-001", "AT-002"];
+        assert_eq!(siguiente_id_nota("atomo", boveda), "AT-003");
+
+        let mut asignados: Vec<String> = Vec::new();
+        let mut estructurar = |texto: &str| {
+            let id = siguiente_id_nota(
+                "atomo",
+                boveda
+                    .iter()
+                    .copied()
+                    .chain(asignados.iter().map(String::as_str)),
+            );
+            asignados.push(id.clone());
+            crate::grafo::notas_tres_partes::estructurar_en_tres_partes(texto, Some(&id)).0
+        };
+        let a = estructurar("# Uno\n\nTexto.\n");
+        let b = estructurar("# Dos\n\nTexto.\n");
+        let (id_a, _) = id_y_tipo_de_nota(&a);
+        let (id_b, _) = id_y_tipo_de_nota(&b);
+        assert_eq!(id_a.as_deref(), Some("AT-003"));
+        assert_eq!(id_b.as_deref(), Some("AT-004"));
     }
 
     /// T002/T005 (SC-002): parsea el formato real de Derivadas_AP001.md (incluido `1.1.2AP-001`),

@@ -245,20 +245,57 @@ impl Window {
         Some(props_widget)
     }
 
+    /// Id que muestra la barra de las 3 partes: el de la nota o «sin id» (el id nuevo se elige
+    /// recién al estructurarla, con `con_id_de_nota`).
     fn id_sugerido_para_nota_abierta(&self) -> String {
-        let note = self.0.current_note.borrow();
-        let tipo = note
-            .as_ref()
-            .and_then(|n| n.prop("type"))
-            .and_then(|v| v.as_text())
-            .unwrap_or("atomo");
-        let id_existente = note
+        self.0
+            .current_note
+            .borrow()
             .as_ref()
             .and_then(|n| n.prop("id"))
             .and_then(|v| v.as_text())
-            .map(str::to_owned);
-        id_existente
-            .unwrap_or_else(|| format!("{}-001", crate::grafo::ramas_libres::prefijo_de_tipo(tipo)))
+            .map_or_else(|| "sin id".to_owned(), str::to_owned)
+    }
+
+    /// Llama a `f` con el id de la nota `ruta`, cuyo texto es `texto`: el suyo si ya tiene uno (en
+    /// el frontmatter o en sus delimitadores) o uno nuevo, único en toda la bóveda (043). Los ids
+    /// de la bóveda salen de su índice, en otro hilo; si al volver ya hay otra nota en el editor,
+    /// no hace nada. Los ids dados en la sesión se recuerdan aunque la nota no se haya guardado.
+    pub(super) fn con_id_de_nota(
+        &self,
+        ruta: RelPath,
+        texto: &str,
+        f: impl FnOnce(&Window, String) + 'static,
+    ) {
+        let (id, tipo) = crate::grafo::ramas_libres::id_y_tipo_de_nota(texto);
+        if let Some(id) = id {
+            f(self, id);
+            return;
+        }
+        let tipo = tipo.unwrap_or_else(|| "atomo".to_owned());
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(usados) = gio::spawn_blocking(move || vault.used_note_ids()).await else {
+                this.toast("No se pudieron leer los ids de la bóveda");
+                return;
+            };
+            if this.0.code_editor.current_path().as_ref() != Some(&ruta) {
+                return;
+            }
+            let id = {
+                let mut asignados = this.0.ids_asignados.borrow_mut();
+                let id = crate::grafo::ramas_libres::siguiente_id_nota(
+                    &tipo,
+                    usados.iter().chain(asignados.iter()).map(String::as_str),
+                );
+                asignados.insert(id.clone());
+                id
+            };
+            f(&this, id);
+        });
     }
 
     /// Estructura la nota abierta en sus 3 partes obligatorias (`Propiedades YAML`, `Cuerpo` en
@@ -277,15 +314,19 @@ impl Window {
             return;
         }
         let texto = i.code_editor.text();
-        let id_sug = self.id_sugerido_para_nota_abierta();
-        let (nuevo, linea) =
-            crate::grafo::notas_tres_partes::estructurar_en_tres_partes(&texto, Some(&id_sug));
-        if nuevo != texto {
-            i.code_editor.replace_text(&nuevo);
-            i.code_editor.render_now();
-        }
-        i.code_editor.reveal_line(linea);
-        self.toast("Nota estructurada en 3 partes (Propiedades · Cuerpo · Conexiones)");
+        self.con_id_de_nota(entry.path.clone(), &texto, |this, id| {
+            let i = &this.0;
+            // El texto puede haber cambiado mientras se buscaba un id libre.
+            let texto = i.code_editor.text();
+            let (nuevo, linea) =
+                crate::grafo::notas_tres_partes::estructurar_en_tres_partes(&texto, Some(&id));
+            if nuevo != texto {
+                i.code_editor.replace_text(&nuevo);
+                i.code_editor.render_now();
+            }
+            i.code_editor.reveal_line(linea);
+            this.toast("Nota estructurada en 3 partes (Propiedades · Cuerpo · Conexiones)");
+        });
     }
 
     /// Inserta una de las 2 partes opcionales (`Síntesis` o `Fuentes`) en la nota abierta (041).
@@ -303,22 +344,26 @@ impl Window {
             return;
         }
         let texto = i.code_editor.text();
-        let id_sug = self.id_sugerido_para_nota_abierta();
-        let (nuevo, linea) =
-            crate::grafo::notas_tres_partes::insertar_parte_opcional(&texto, parte, Some(&id_sug));
-        if nuevo != texto {
-            i.code_editor.replace_text(&nuevo);
-            i.code_editor.render_now();
-        }
-        i.code_editor.reveal_line(linea);
-        let nombre = match parte {
-            crate::grafo::notas_tres_partes::ParteOpcional::Sintesis => "Síntesis (summary)",
-            crate::grafo::notas_tres_partes::ParteOpcional::Fuentes => "Fuentes (sources)",
-        };
-        self.toast(&format!("Se agregó la sección opcional de {nombre}"));
+        self.con_id_de_nota(entry.path.clone(), &texto, move |this, id| {
+            let i = &this.0;
+            let texto = i.code_editor.text();
+            let (nuevo, linea) =
+                crate::grafo::notas_tres_partes::insertar_parte_opcional(&texto, parte, Some(&id));
+            if nuevo != texto {
+                i.code_editor.replace_text(&nuevo);
+                i.code_editor.render_now();
+            }
+            i.code_editor.reveal_line(linea);
+            let nombre = match parte {
+                crate::grafo::notas_tres_partes::ParteOpcional::Sintesis => "Síntesis (summary)",
+                crate::grafo::notas_tres_partes::ParteOpcional::Fuentes => "Fuentes (sources)",
+            };
+            this.toast(&format!("Se agregó la sección opcional de {nombre}"));
+        });
     }
 
-    /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió.
+    /// «Completar»: agrega `type` a la nota abierta, solo porque el usuario lo pidió. No se ofrece
+    /// si la nota ya tiene el alias `tipo` (no falta el tipo).
     pub(super) fn complete_type(&self) {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
@@ -326,6 +371,9 @@ impl Window {
         let Some(note) = self.0.current_note.borrow().clone() else {
             return;
         };
+        if note.kind().is_some() {
+            return;
+        }
         let this = self.clone();
         glib::spawn_future_local(async move {
             let value = PropValue::Text(

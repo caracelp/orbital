@@ -366,32 +366,21 @@ impl Window {
         else {
             return;
         };
+        if i.code_editor.current_path().as_ref() != Some(&entry.path) {
+            self.toast("Las ramas libres solo se abren en notas editables");
+            return;
+        }
         self.guardar_estado_pestana();
-        let (fuente, id_sug) = {
-            let note = i.current_note.borrow();
-            let note = note.as_ref().filter(|n| n.path == entry.path);
-            let tipo = note
-                .and_then(|n| n.prop("type"))
-                .and_then(|v| v.as_text())
-                .unwrap_or("atomo");
-            let id_existente = note
-                .and_then(|n| n.prop("id"))
-                .and_then(|v| v.as_text())
-                .map(str::to_owned);
-            let id_sug = id_existente.unwrap_or_else(|| {
-                format!("{}-001", crate::grafo::ramas_libres::prefijo_de_tipo(tipo))
-            });
-            let fuente = if i.code_editor.current_path().as_ref() == Some(&entry.path) {
-                i.code_editor.text()
-            } else {
-                note.map(|n| n.source.clone()).unwrap_or_default()
-            };
-            (fuente, id_sug)
-        };
-        vista.cargar_nota(entry.path.as_str(), &fuente, Some(&id_sug));
-        i.pestanas
-            .abrir(crate::pestanas::RAMAS_LIBRES, "Ramas libres");
-        i.content_stack.set_visible_child_name("ramas-libres");
+        // Si la nota no tiene id, Ramas libres le pone uno: único en toda la bóveda (043).
+        let fuente = i.code_editor.text();
+        self.con_id_de_nota(entry.path.clone(), &fuente, move |this, id| {
+            let i = &this.0;
+            let fuente = i.code_editor.text();
+            vista.cargar_nota(entry.path.as_str(), &fuente, Some(&id));
+            i.pestanas
+                .abrir(crate::pestanas::RAMAS_LIBRES, "Ramas libres");
+            i.content_stack.set_visible_child_name("ramas-libres");
+        });
     }
 
     /// Cierra la pestaña de Ramas libres y vuelve a la nota.
