@@ -633,3 +633,215 @@ fn partes_especiales_en_lectura() {
         assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
     });
 }
+
+/// Cuenta las capas de cada clase en el lector.
+fn contar_capas(reader: &Reader, f: impl Fn(&capas::Capa) -> bool) -> usize {
+    reader
+        .0
+        .blocks
+        .borrow()
+        .iter()
+        .flat_map(|b| b.capas.iter())
+        .filter(|c| f(c))
+        .count()
+}
+
+/// Las transclusiones (nota entera, encabezado y bloque) se dibujan con capas y sin widgets: la
+/// incrustada lleva su encabezado enlazado, sus callouts y tarjetas con su capa y sus bloques
+/// generados completos (el índice muestra sus encabezados); su frontmatter no se ve.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn transclusiones_en_lectura() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let root = std::env::temp_dir().join(format!("orbital-044-{}", glib::uuid_string_random()));
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+    std::fs::write(
+        root.join("wiki/Origen.md"),
+        "---\ntype: atomo\nsecreto: no-se-ve\n---\n```table-of-contents\ntitle: \nstyle: nestedList\ndebugInConsole: false # depuración\n```\n\n## Primera parte\n\nUn párrafo con definición. ^def\n\n> [!warning] Cuidado\n> Texto del callout.\n\n## Segunda parte\n\n:::flashcard id=fc-1\n¿Pregunta?\n---\nRespuesta.\n:::\n",
+    )
+    .unwrap();
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new("wiki/Nota.md").unwrap();
+    let text = "# Nota\n\n![[Origen]]\n\n![[Origen#Segunda parte]]\n\n![[Origen#^def]]\n";
+    let mut prepared = Prepared::with_vault(text, &vault, &from, &[]);
+    complete_generated(&mut prepared.doc, &mut prepared.hashes, None, Some(&from));
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        reader.render(prepared, || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        assert!(!visible.contains("secreto"), "{visible:?}");
+        assert!(
+            !visible.contains("debugInConsole"),
+            "índice crudo: {visible:?}"
+        );
+        // El índice de la incrustada lista sus encabezados (además de los títulos mismos).
+        assert_eq!(visible.matches("Primera parte").count(), 2, "{visible:?}");
+        assert!(visible.contains("Origen  ›  Segunda parte"), "{visible:?}");
+        assert!(visible.contains("bloque def"), "{visible:?}");
+        assert!(
+            visible.contains("Un párrafo con definición."),
+            "{visible:?}"
+        );
+        let items = reader.all_link_items();
+        assert!(items.iter().filter(|l| l.url == "[[Origen]]").count() == 1);
+        assert!(items.iter().any(|l| l.url == "[[Origen#Segunda parte]]"));
+        let incrustaciones = contar_capas(&reader, |c| {
+            matches!(
+                c,
+                capas::Capa::Incrustacion {
+                    cuerpo: Some(_),
+                    ..
+                }
+            )
+        });
+        assert_eq!(incrustaciones, 3);
+        // El callout y las tarjetas de adentro, metidos por la derecha dentro del borde.
+        assert_eq!(
+            contar_capas(
+                &reader,
+                |c| matches!(c, capas::Capa::Callout { der, .. } if *der > 0)
+            ),
+            1
+        );
+        assert_eq!(
+            contar_capas(
+                &reader,
+                |c| matches!(c, capas::Capa::Tarjeta { der, .. } if *der > 0)
+            ),
+            2
+        );
+        assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
+        let mut it = buf.start_iter();
+        let mut anclados = 0;
+        loop {
+            if it.child_anchor().is_some() {
+                anclados += 1;
+            }
+            if !it.forward_char() {
+                break;
+            }
+        }
+        assert_eq!(anclados, 0, "ningún widget anclado al texto");
+    });
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 024: cada tarjeta de estudio es una tarjeta propia (capa, sin widgets) con su rótulo, la
+/// pregunta a la vista y la respuesta oculta hasta accionar «Mostrar respuesta» (Tab e Intro).
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn tarjetas_de_estudio_en_lectura() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "## Flashcards\n\n:::flashcard id=fc-001\n¿Qué dice el PBO?\n---\nTodo subconjunto no vacío tiene mínimo.\n:::\n\n:::flashcard id=fc-002 \n¿Y en $\\mathbb{Z}$?\n---\nNo vale.\n:::\n";
+        reader.render(Prepared::new(text, &[]), || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = || {
+            buf.text(&buf.start_iter(), &buf.end_iter(), false)
+                .to_string()
+        };
+        let v = visible();
+        assert!(v.contains("Tarjeta 1 de 2  ·  fc-001"), "{v:?}");
+        assert!(v.contains("Tarjeta 2 de 2  ·  fc-002"), "{v:?}");
+        assert!(v.contains("¿Qué dice el PBO?"), "{v:?}");
+        assert!(!v.contains("Todo subconjunto"), "la respuesta empieza oculta: {v:?}");
+        assert!(!v.contains(":::") && !v.contains("---"), "{v:?}");
+        assert_eq!(v.matches("Mostrar respuesta").count(), 2, "{v:?}");
+        assert!(!v.contains("Ocultar respuesta"), "{v:?}");
+        let items = reader.all_link_items();
+        let n = items
+            .iter()
+            .position(|l| l.url.starts_with(bloques::URL_CALLOUT))
+            .expect("el botón se recorre con Tab");
+        reader.set_focused_link(Some(n));
+        assert!(reader.activate_focused_link());
+        let v = visible();
+        assert!(v.contains("Todo subconjunto"), "{v:?}");
+        assert!(v.contains("Ocultar respuesta"), "{v:?}");
+        assert!(!v.contains("No vale."), "la otra sigue cerrada: {v:?}");
+        reader.set_focused_link(Some(n));
+        assert!(reader.activate_focused_link());
+        assert!(!visible().contains("Todo subconjunto"));
+        assert_eq!(
+            contar_capas(&reader, |c| matches!(c, capas::Capa::Tarjeta { .. })),
+            2
+        );
+        assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
+    });
+}
+
+/// Medición (no es prueba de comportamiento): abrir en Lectura una nota con muchas
+/// transclusiones. `ORBITAL_MEDIR_BOVEDA=<bóveda> ORBITAL_MEDIR_NOTA=<ruta> cargo test --release
+/// --bin orbital medir_lectura_con_transclusiones -- --ignored --nocapture`. Imprime la mediana
+/// de 9 aperturas: la preparación (hilo de fondo: análisis, transclusiones y generados) y el
+/// volcado en la vista hasta el primer cuadro dibujado.
+#[test]
+#[ignore = "medición; correr a mano con --release"]
+fn medir_lectura_con_transclusiones() {
+    use gtk::prelude::*;
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let (Some(root), Ok(nota)) = (
+        std::env::var_os("ORBITAL_MEDIR_BOVEDA"),
+        std::env::var("ORBITAL_MEDIR_NOTA"),
+    ) else {
+        eprintln!("Faltan ORBITAL_MEDIR_BOVEDA y ORBITAL_MEDIR_NOTA");
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new(&nota).unwrap();
+    let text = std::fs::read_to_string(root.join(&nota)).unwrap();
+    glib::MainContext::default().block_on(async {
+        let mut preparar = Vec::new();
+        let mut volcar = Vec::new();
+        for _ in 0..9 {
+            let t0 = std::time::Instant::now();
+            let mut p = Prepared::with_vault(&text, &vault, &from, &[]);
+            complete_generated(&mut p.doc, &mut p.hashes, None, Some(&from));
+            preparar.push(t0.elapsed().as_secs_f64() * 1000.0);
+            let reader = Reader::new();
+            let window = gtk::Window::builder()
+                .default_width(1000)
+                .default_height(1200)
+                .child(reader.widget())
+                .build();
+            window.present();
+            glib::timeout_future(Duration::from_millis(200)).await;
+            let t1 = std::time::Instant::now();
+            reader.render(p, || None, None);
+            while reader.0.blocks.borrow().is_empty() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            // Hasta que se dibuja el cuadro (disposición y capas de lo visible): el segundo
+            // tic del reloj de cuadros llega después de pintar el primero.
+            let tics = std::rc::Rc::new(std::cell::Cell::new(0));
+            let d = tics.clone();
+            reader.text_view().add_tick_callback(move |_, _| {
+                d.set(d.get() + 1);
+                if d.get() < 2 {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+            while tics.get() < 2 {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            volcar.push(t1.elapsed().as_secs_f64() * 1000.0);
+            window.close();
+        }
+        for v in [&mut preparar, &mut volcar] {
+            v.sort_by(f64::total_cmp);
+        }
+        println!(
+            "Preparar: mediana {:.1} ms (mín {:.1}, máx {:.1}); volcado hasta el cuadro: mediana {:.1} ms (mín {:.1}, máx {:.1})",
+            preparar[4], preparar[0], preparar[8], volcar[4], volcar[0], volcar[8]
+        );
+    });
+}

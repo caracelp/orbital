@@ -16,8 +16,15 @@ impl Reader {
             .flat_map(|b| b.links.iter().cloned())
             .filter(|l| {
                 let it = buf.iter_at_mark(&l.start);
-                oculto.as_ref().is_none_or(|t| !it.has_tag(t))
-                    && fuera.as_ref().is_none_or(|t| !it.has_tag(t))
+                if !(oculto.as_ref().is_none_or(|t| !it.has_tag(t))
+                    && fuera.as_ref().is_none_or(|t| !it.has_tag(t)))
+                {
+                    return false;
+                }
+                // Tampoco lo de un callout cerrado o una respuesta oculta. El botón de una
+                // tarjeta empieza en un texto que se oculta al abrirla: ese se recorre siempre.
+                l.url.starts_with(super::bloques::URL_CALLOUT)
+                    || !it.tags().iter().any(|t| t.is_invisible())
             })
             .collect()
     }
@@ -182,14 +189,51 @@ impl Reader {
         true
     }
 
-    /// Abre o cierra un callout plegable si `url` es el de su título.
+    /// Abre o cierra un callout plegable si `url` es el de su título, o muestra u oculta la
+    /// respuesta de una tarjeta de estudio (y cambia el texto de su botón).
     pub(super) fn alternar_callout(&self, url: &str) -> bool {
         let Some(nombre) = url.strip_prefix(super::bloques::URL_CALLOUT) else {
             return false;
         };
-        if let Some(tag) = self.buffer().tag_table().lookup(nombre) {
-            tag.set_invisible(!tag.is_invisible());
+        let table = self.buffer().tag_table();
+        if let Some(tag) = table.lookup(nombre) {
+            let oculto = !tag.is_invisible();
+            tag.set_invisible(oculto);
+            if let Some(t) = table.lookup(&format!("{nombre}-mostrar")) {
+                t.set_invisible(!oculto);
+            }
+            if let Some(t) = table.lookup(&format!("{nombre}-ocultar")) {
+                t.set_invisible(oculto);
+            }
             self.0.view.queue_draw();
+        }
+        true
+    }
+
+    /// Muestra la respuesta de la tarjeta de estudio con ese id (si está oculta). Para las
+    /// capturas de desarrollo (`ORBITAL_CAPTURA_TARJETA`).
+    pub fn mostrar_respuesta(&self, id: &str) -> bool {
+        let buf = self.buffer();
+        let Some((_, desde)) = buf.start_iter().forward_search(
+            &format!("·  {id}\n"),
+            gtk::TextSearchFlags::empty(),
+            None,
+        ) else {
+            return false;
+        };
+        let Some(boton) = self.all_link_items().into_iter().find(|l| {
+            l.url.starts_with(super::bloques::URL_CALLOUT)
+                && buf.iter_at_mark(&l.start).offset() >= desde.offset()
+        }) else {
+            return false;
+        };
+        let nombre = &boton.url[super::bloques::URL_CALLOUT.len()..];
+        if buf
+            .tag_table()
+            .lookup(nombre)
+            .is_some_and(|t| t.is_invisible())
+        {
+            self.alternar_callout(&boton.url);
         }
         true
     }

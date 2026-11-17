@@ -463,3 +463,52 @@ fn partes_especiales_se_agrupan_en_secciones() {
     let doc = render_markdown("<!-- connections X -->\n- [[A]]\n");
     assert!(matches!(&doc.blocks[0].kind, BlockKind::Seccion { body, .. } if body.len() == 1));
 }
+
+/// 024: las tarjetas `:::flashcard` (caso real): un bloque por tarjeta con el rango completo, el
+/// `id=` (también con espacios de más), la pregunta y la respuesta como Markdown; el `---` interno
+/// no es una regla ni convierte la pregunta en encabezado.
+#[test]
+fn tarjetas_de_estudio() {
+    use orbital_vault::render::Flashcard;
+    let text = "---\ntags: [pbo]\n---\n## **5. Flashcards**\n\n:::flashcard id=fc-001\n¿Cuál es el enunciado formal del Principio del Buen Orden (PBO)?\n---\nTodo subconjunto no vacío de enteros no negativos tiene un elemento mínimo: $$\\forall C \\subseteq \\mathbb{N}, \\; (C \\neq \\emptyset) \\implies (\\exists c_0 \\in C : \\forall c \\in C, \\; c_0 \\le c)$$.\n:::\n\n:::flashcard id=fc-002 \n¿Por qué el PBO falla en el conjunto vacío ($\\emptyset$)?\n---\nPorque el conjunto vacío carece de elementos.\n\nSegundo párrafo con **negrita**.\n:::\n\nDespués.\n";
+    let doc = render_markdown(text);
+    let tarjetas: Vec<(&Flashcard, &str)> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Flashcard(f) => Some((f, &text[b.source.clone()])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tarjetas.len(), 2, "{:#?}", doc.blocks);
+    // Nada se convirtió en encabezado (salvo el de la nota) ni en regla.
+    let encabezados = doc
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, BlockKind::Heading { .. }))
+        .count();
+    assert_eq!(encabezados, 1);
+    assert!(!doc.blocks.iter().any(|b| matches!(b.kind, BlockKind::Rule)));
+    let (f1, src1) = tarjetas[0];
+    assert!(src1.starts_with(":::flashcard id=fc-001") && src1.ends_with(":::"));
+    assert_eq!(f1.id.as_deref(), Some("fc-001"));
+    assert_eq!((f1.numero, f1.total), (1, 2));
+    assert!(
+        matches!(&f1.question[..], [q] if matches!(&q.kind, BlockKind::Paragraph(p) if plain_text(p).starts_with("¿Cuál es")))
+    );
+    assert!(
+        matches!(&f1.answer[..], [a] if matches!(&a.kind, BlockKind::Paragraph(p) if plain_text(p).contains("$$\\forall C")))
+    );
+    let (f2, _) = tarjetas[1];
+    assert_eq!(f2.id.as_deref(), Some("fc-002"));
+    assert_eq!(f2.answer.len(), 2);
+    // Los rangos y líneas de lo de adentro apuntan al texto completo.
+    let q = &f2.question[0];
+    assert!(text[q.source.clone()].starts_with("¿Por qué"));
+    assert!(text.lines().nth(q.line).unwrap().starts_with("¿Por qué"));
+    // El orden de los bloques sigue al del texto.
+    let ultimo = doc.blocks.last().unwrap();
+    assert!(matches!(&ultimo.kind, BlockKind::Paragraph(p) if plain_text(p) == "Después."));
+    let starts: Vec<usize> = doc.blocks.iter().map(|b| b.source.start).collect();
+    assert!(starts.windows(2).all(|w| w[0] < w[1]));
+}

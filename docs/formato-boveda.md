@@ -389,6 +389,7 @@ generado; en Código queda el texto plano.
   | `exclude` | — | Expresión `/patrón/banderas`: sin los encabezados que coinciden |
   | `includeLinks` | `true` | Entradas clicables; `false`: texto plano |
   | `hideWhenEmpty` | `false` | Sin encabezados: no se muestra nada (si no, un aviso) |
+  | `debugInConsole` | — | Se acepta con cualquier valor y se ignora |
 
   Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
   encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
@@ -409,7 +410,32 @@ generado; en Código queda el texto plano.
   ````
 
 - Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
-- El contenido de transclusiones incrustadas (`![[…]]`) no se genera: se ve el codeblock fuente.
+- Dentro de una transclusión (`![[…]]`) el contenido generado se completa con la nota incrustada:
+  su ` ```toc ` lista los encabezados de esa nota (o de la parte incrustada) y enlaza a ella. En la
+  tarjeta HTML de una nota `.html` se sigue viendo el codeblock fuente.
+
+### Tarjetas de estudio (024)
+
+Una tarjeta de estudio va entre `:::flashcard` y `:::`, cada uno en su renglón; un renglón `---`
+separa la pregunta de la respuesta. Las dos partes son Markdown común (negrita, listas, `$…$` y
+`$$…$$`, varias líneas o párrafos):
+
+```markdown
+:::flashcard id=fc-001
+¿Pregunta? (puede tener $\LaTeX$ y Markdown)
+---
+Respuesta, con $$…$$ y varias líneas.
+:::
+```
+
+- `id=` en el renglón de apertura es opcional y se conserva tal cual (los espacios de más se
+  ignoran). Sin `---`, todo es pregunta y la tarjeta no tiene respuesta.
+- El `---` de adentro no es una regla horizontal ni convierte la pregunta en encabezado, ni el
+  bloque es frontmatter. Un `:::flashcard` sin `:::` de cierre, o dentro de un bloque de código, se
+  ve como texto común; un `---` o `:::` dentro de un bloque de código de la respuesta no cuenta.
+- En Lectura cada tarjeta es una tarjeta propia: un rótulo con su número en la nota y su id, la
+  pregunta destacada y la respuesta oculta hasta «Mostrar respuesta» (clic, o Tab e Intro). Varias
+  seguidas forman un mazo numerado («Tarjeta 3 de 16»). La vista Código muestra el texto tal cual.
 
 ## 13. Etiquetas, campos y búsqueda (004)
 

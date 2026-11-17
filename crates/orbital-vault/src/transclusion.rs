@@ -38,8 +38,13 @@ impl Vault {
                 BlockKind::Transclusion(t) if t.content == Embed::Pending => {
                     t.content = self.embed(&t.target, t.anchor.as_deref(), visited, depth, deps);
                 }
-                BlockKind::Quote(body) | BlockKind::Callout { body, .. } => {
-                    self.expand(body, visited, depth, deps)
+                BlockKind::Quote(body)
+                | BlockKind::Callout { body, .. }
+                | BlockKind::Seccion { body, .. }
+                | BlockKind::Group(body) => self.expand(body, visited, depth, deps),
+                BlockKind::Flashcard(f) => {
+                    self.expand(&mut f.question, visited, depth, deps);
+                    self.expand(&mut f.answer, visited, depth, deps);
                 }
                 BlockKind::List { items, .. } => {
                     for item in items {
@@ -326,7 +331,14 @@ pub fn fingerprint(block: &Block) -> u64 {
                     }
                     acc.push(0);
                 }
-                BlockKind::Quote(body) | BlockKind::Callout { body, .. } => walk(body, acc),
+                BlockKind::Quote(body)
+                | BlockKind::Callout { body, .. }
+                | BlockKind::Seccion { body, .. }
+                | BlockKind::Group(body) => walk(body, acc),
+                BlockKind::Flashcard(f) => {
+                    walk(&f.question, acc);
+                    walk(&f.answer, acc);
+                }
                 BlockKind::List { items, .. } => {
                     for i in items {
                         walk(&i.blocks, acc);
@@ -555,6 +567,14 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                 out.push_str("</strong></p>");
                 blocks_html(out, body, href);
                 out.push_str("</section>");
+            }
+            // La tarjeta: la pregunta a la vista y la respuesta plegada.
+            BlockKind::Flashcard(f) => {
+                out.push_str("<div class=\"orbital-flashcard\">");
+                blocks_html(out, &f.question, href);
+                out.push_str("<details><summary>Mostrar respuesta</summary>");
+                blocks_html(out, &f.answer, href);
+                out.push_str("</details></div>");
             }
         }
     }

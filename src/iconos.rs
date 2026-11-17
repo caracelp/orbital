@@ -136,6 +136,11 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
         "seccion-libro",
         "M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7h6",
     ),
+    // Tarjetas de estudio en Lectura (024): dos tarjetas, una detrás de la otra.
+    (
+        "tarjetas",
+        "M8 7h11a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zM4 15V5a1 1 0 0 1 1-1h11",
+    ),
     // Tipos de propiedad.
     ("prop-texto", "M4 7h16M4 12h16M4 17h10"),
     ("prop-numero", "M10 4L8 20M16 4l-2 16M5 9h15M4 15h15"),

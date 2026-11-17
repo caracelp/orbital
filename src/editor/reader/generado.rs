@@ -16,6 +16,22 @@ pub fn complete_generated(
     let encabezados = headings_flat(&doc.blocks);
     let mut completado = false;
     for (n, block) in doc.blocks.iter_mut().enumerate() {
+        // Los generados dentro de transclusiones (a cualquier profundidad) se completan con los
+        // encabezados y la ruta de la nota incrustada; el hash del bloque ya incluye la huella
+        // de lo incrustado.
+        if !matches!(block.kind, BlockKind::Generated(_)) {
+            let mut huella = String::new();
+            if completar_incrustados(std::slice::from_mut(block), index, &mut huella) {
+                completado = true;
+                // Un índice incrustado depende del índice de la bóveda: entra en el hash.
+                if let Some(h) = hashes.get_mut(n) {
+                    let mut bytes = h.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(huella.as_bytes());
+                    *h = orbital_vault::write::hash(&bytes);
+                }
+            }
+            continue;
+        }
         let BlockKind::Generated(g) = &block.kind else {
             continue;
         };
@@ -127,6 +143,52 @@ pub fn complete_generated(
             *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
         }
         completado = true;
+    }
+    completado
+}
+
+/// Completa los bloques generados de las notas incrustadas en `blocks` (y en las que estas
+/// incrustan): cada una con sus propios encabezados y su ruta. En `huella` deja algo que cambia
+/// si cambia lo completado. Devuelve true si completó algo.
+fn completar_incrustados(
+    blocks: &mut [Block],
+    index: Option<&orbital_vault::SearchIndex>,
+    huella: &mut String,
+) -> bool {
+    use orbital_vault::render::Embed;
+    let mut completado = false;
+    for b in blocks {
+        match &mut b.kind {
+            BlockKind::Transclusion(t) => {
+                if let Embed::Note { path, blocks, .. } = &mut t.content {
+                    let mut sub = RenderDoc {
+                        blocks: std::mem::take(blocks),
+                    };
+                    let mut hashes = vec![0; sub.blocks.len()];
+                    if complete_generated(&mut sub, &mut hashes, index, Some(path)) {
+                        completado = true;
+                        for h in hashes.iter().filter(|h| **h != 0) {
+                            huella.push_str(&format!("{h:x}"));
+                        }
+                    }
+                    *blocks = sub.blocks;
+                }
+            }
+            BlockKind::Quote(body)
+            | BlockKind::Callout { body, .. }
+            | BlockKind::Seccion { body, .. }
+            | BlockKind::Group(body) => completado |= completar_incrustados(body, index, huella),
+            BlockKind::Flashcard(f) => {
+                completado |= completar_incrustados(&mut f.question, index, huella);
+                completado |= completar_incrustados(&mut f.answer, index, huella);
+            }
+            BlockKind::List { items, .. } => {
+                for it in items {
+                    completado |= completar_incrustados(&mut it.blocks, index, huella);
+                }
+            }
+            _ => {}
+        }
     }
     completado
 }

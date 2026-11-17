@@ -131,6 +131,11 @@ impl Editor {
         }
     }
 
+    /// Para las capturas de desarrollo: muestra la respuesta de la tarjeta de estudio con ese id.
+    pub fn mostrar_respuesta_tarjeta(&self, id: &str) {
+        self.0.reader.mostrar_respuesta(id);
+    }
+
     /// Desplaza la vista (Lectura, Dividida o Código) hacia el encabezado indicado.
     pub fn scroll_to_heading(&self, heading: &str) {
         let wanted = heading.trim();

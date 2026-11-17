@@ -236,6 +236,7 @@ impl Reader {
                 }
             }
             BlockKind::Seccion { kind, body } => self.seccion(s, end, *kind, body, depth),
+            BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth),
         }
     }
 
@@ -323,6 +324,7 @@ impl Reader {
             kind,
             chips,
             profundidad: depth,
+            der: s.embedded.get() as i32 * super::capas::INCRUSTADO_DER,
         });
     }
 
@@ -418,8 +420,10 @@ impl Reader {
         }
     }
 
-    /// Tarjeta de una transclusión (US5 de la 003): un encabezado con la nota de origen (un enlace
-    /// que la abre) y su contenido, con fondo y sangría. Lo incrustado no se edita desde acá: sus
+    /// Tarjeta de una transclusión (US5 de la 003): una franja de encabezado con el nombre de la
+    /// nota de origen (un enlace que la abre) y, debajo, su contenido con el mismo formato que en
+    /// la nota (callouts, tarjetas, partes especiales…), más adentro. El borde y la franja los
+    /// dibuja `capas`; el texto solo deja el lugar. Lo incrustado no se edita desde acá: sus
     /// casillas quedan deshabilitadas.
     pub(super) fn transclusion(
         &self,
@@ -427,11 +431,14 @@ impl Reader {
         end: &mut gtk::TextIter,
         t: &orbital_vault::render::Transclusion,
         depth: i32,
-        base: &[gtk::TextTag],
+        _base: &[gtk::TextTag],
     ) {
+        use super::capas::{CALLOUT_TITULO, Capa, INCRUSTADO_DER, NIVELES_DER};
         use orbital_vault::render::Embed;
         let buf = &s.buffer;
         let table = buf.tag_table();
+        let nivel = s.embedded.get() as i32;
+        let inicio = buf.create_mark(None, end, true);
         let start = end.offset();
         let url = match &t.content {
             Embed::Note { path, .. }
@@ -444,26 +451,45 @@ impl Reader {
                 None => format!("[[{}]]", t.target),
             },
         };
-        let shown = match &t.anchor {
-            Some(a) => format!("{} › {a}", t.target),
-            None => t.target.clone(),
+        // El nombre de la nota sin carpeta ni extensión; el ancla va aparte, tenue.
+        let nombre = match &t.content {
+            Embed::Note { path, .. }
+            | Embed::Html { path }
+            | Embed::Cycle { path }
+            | Embed::SectionMissing { path }
+            | Embed::BlockMissing { path } => {
+                let f = path.file_name();
+                f.rsplit_once('.').map_or(f, |(n, _)| n).to_owned()
+            }
+            _ => t.target.rsplit('/').next().unwrap_or(&t.target).to_owned(),
         };
+        let ancla = t.anchor.as_deref().map(|a| match a.strip_prefix('^') {
+            Some(id) => format!("  ·  bloque {id}"),
+            None => format!("  ›  {a}"),
+        });
         let link = |text: String| orbital_vault::render::Inline::Link {
             url: url.clone(),
             children: vec![orbital_vault::render::Inline::Text(text)],
         };
-        let mut title: Vec<gtk::TextTag> = base.to_vec();
+        // El renglón del encabezado: sangría con lugar para el ícono.
+        let mut cab: Vec<gtk::TextTag> = vec![self.indent_tag(depth * 24 + CALLOUT_TITULO)];
+        cab.extend(table.lookup("embed-cab"));
+        let mut title = cab.clone();
         title.extend(table.lookup("callout-title"));
-        let mut dim: Vec<gtk::TextTag> = base.to_vec();
+        let mut dim = cab.clone();
         dim.extend(table.lookup("dim"));
         let text = |end: &mut gtk::TextIter, tags: &[gtk::TextTag], t: &str| {
             buf.insert_with_tags(end, t, &tags.iter().collect::<Vec<_>>());
         };
-        text(end, &title, "↪  ");
+        let mut cuerpo: Option<gtk::TextMark> = None;
         match &t.content {
             Embed::Note { blocks, .. } => {
-                self.inlines(s, end, &[link(shown)], &title);
-                buf.insert(end, "\n");
+                self.inlines(s, end, &[link(nombre)], &title);
+                if let Some(a) = &ancla {
+                    text(end, &dim, a);
+                }
+                text(end, &cab, "\n");
+                cuerpo = Some(buf.create_mark(None, end, true));
                 s.embedded.set(s.embedded.get() + 1);
                 for b in blocks {
                     self.block(s, end, b, depth + 1);
@@ -472,33 +498,29 @@ impl Reader {
             }
             Embed::Missing => {
                 text(end, &dim, "Nota inexistente: ");
-                self.inlines(s, end, &[link(shown)], &title);
-                text(end, &dim, " (creala desde el enlace)");
-                buf.insert(end, "\n");
+                self.inlines(s, end, &[link(t.target.clone())], &title);
+                text(end, &dim, " (creala desde el enlace)\n");
             }
             Embed::BlockMissing { .. } => {
-                self.inlines(s, end, &[link(t.target.clone())], &title);
+                self.inlines(s, end, &[link(nombre)], &title);
                 let a = t.anchor.as_deref().unwrap_or("");
-                text(end, &dim, &format!(" no tiene el bloque «{a}»"));
-                buf.insert(end, "\n");
+                text(end, &dim, &format!(" no tiene el bloque «{a}»\n"));
             }
             Embed::SectionMissing { .. } => {
-                self.inlines(s, end, &[link(t.target.clone())], &title);
+                self.inlines(s, end, &[link(nombre)], &title);
                 let a = t.anchor.as_deref().unwrap_or("");
-                text(end, &dim, &format!(" no tiene el encabezado «{a}»"));
-                buf.insert(end, "\n");
+                text(end, &dim, &format!(" no tiene el encabezado «{a}»\n"));
             }
             Embed::Html { .. } => {
-                self.inlines(s, end, &[link(shown)], &title);
-                text(end, &dim, " es una nota HTML: abrila para verla");
-                buf.insert(end, "\n");
+                self.inlines(s, end, &[link(nombre)], &title);
+                text(end, &dim, " es una nota HTML: abrila para verla\n");
             }
             Embed::Ambiguous(all) => {
                 text(
                     end,
                     &dim,
                     &format!(
-                        "Hay {} notas «{}»: escribí la carpeta, por ejemplo ![[{}]]",
+                        "Hay {} notas «{}»: escribí la carpeta, por ejemplo ![[{}]]\n",
                         all.len(),
                         t.target,
                         all[0]
@@ -509,13 +531,11 @@ impl Reader {
                             .map_or("", |(p, _)| p),
                     ),
                 );
-                buf.insert(end, "\n");
             }
             Embed::Cycle { .. } => {
                 text(end, &dim, "↻ Referencia circular a ");
-                self.inlines(s, end, &[link(shown)], &title);
-                text(end, &dim, ": ya se está mostrando más arriba");
-                buf.insert(end, "\n");
+                self.inlines(s, end, &[link(nombre)], &title);
+                text(end, &dim, ": ya se está mostrando más arriba\n");
             }
             Embed::TooDeep => {
                 text(
@@ -526,20 +546,153 @@ impl Reader {
                         orbital_vault::transclusion::MAX_DEPTH
                     ),
                 );
-                self.inlines(s, end, &[link(shown)], &title);
-                buf.insert(end, "\n");
+                self.inlines(s, end, &[link(nombre)], &title);
+                text(end, &cab, "\n");
             }
             Embed::Pending => {
-                text(end, &dim, &format!("![[{}]]", t.target));
-                buf.insert(end, "\n");
+                text(end, &dim, &format!("![[{}]]\n", t.target));
             }
         }
-        if let Some(bg) = table.lookup("embed") {
-            buf.apply_tag(&bg, &buf.iter_at_offset(start), end);
+        // Relleno de abajo (dentro del borde) y el margen derecho de este nivel. Sin contenido
+        // (un aviso), el relleno es el del propio renglón: queda centrado en el recuadro.
+        let cuerpo = cuerpo.filter(|c| buf.iter_at_mark(c).offset() < end.offset());
+        if cuerpo.is_some() {
+            let pie: Vec<gtk::TextTag> = table.lookup("callout-pie").into_iter().collect();
+            buf.insert_with_tags(end, "\n", &pie.iter().collect::<Vec<_>>());
+        } else if let Some(solo) = table.lookup("embed-solo") {
+            buf.apply_tag(&solo, &buf.iter_at_offset(start), end);
         }
-        // Un espacio corto sin fondo: dos tarjetas seguidas no se ven como una sola.
-        let gap: Vec<gtk::TextTag> = table.lookup("embed-gap").into_iter().collect();
-        buf.insert_with_tags(end, "\n", &gap.iter().collect::<Vec<_>>());
+        let der = table
+            .lookup(&format!("der-{}", (nivel + 1).min(NIVELES_DER)))
+            .or_else(|| table.lookup("callout-der"));
+        if let Some(der) = der {
+            buf.apply_tag(&der, &buf.iter_at_offset(start), end);
+        }
+        s.capas.borrow_mut().push(Capa::Incrustacion {
+            inicio,
+            fin: buf.create_mark(None, end, true),
+            cuerpo,
+            profundidad: depth,
+            der: nivel * INCRUSTADO_DER,
+        });
+    }
+
+    /// Una tarjeta de estudio (024) como tarjeta propia: un rótulo con su número e id, la
+    /// pregunta destacada y la respuesta oculta hasta un clic (o Intro) en «Mostrar respuesta»,
+    /// con el mismo plegado barato de los callouts: una etiqueta invisible y un enlace interno.
+    /// El fondo, el borde, la línea y la píldora del botón los dibuja `capas`.
+    pub(super) fn flashcard(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        f: &orbital_vault::render::Flashcard,
+        depth: i32,
+    ) {
+        use super::capas::{CALLOUT_TITULO, Capa, INCRUSTADO_DER};
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let inicio = buf.create_mark(None, end, true);
+        let start = end.offset();
+        let tags = |extra: &[&str], mut base: Vec<gtk::TextTag>| -> Vec<gtk::TextTag> {
+            base.extend(extra.iter().filter_map(|n| table.lookup(n)));
+            base
+        };
+        let insertar = |end: &mut gtk::TextIter, t: &str, tags: &[gtk::TextTag]| {
+            buf.insert_with_tags(end, t, &tags.iter().collect::<Vec<_>>());
+        };
+        // El rótulo: «Tarjeta 3 de 16 · fc-003».
+        let mut rotulo = format!("Tarjeta {} de {}", f.numero, f.total);
+        if let Some(id) = &f.id {
+            rotulo.push_str("  ·  ");
+            rotulo.push_str(id);
+        }
+        let rtags = tags(
+            &["callout-cab", "tarjeta-rotulo"],
+            vec![self.indent_tag(depth * 24 + CALLOUT_TITULO)],
+        );
+        insertar(end, &rotulo, &rtags);
+        insertar(end, "\n", &rtags);
+        let pregunta = end.offset();
+        for b in &f.question {
+            self.block(s, end, b, depth + 1);
+        }
+        if let Some(tag) = table.lookup("tarjeta-pregunta") {
+            buf.apply_tag(&tag, &buf.iter_at_offset(pregunta), end);
+        }
+        let n = self.0.callouts.get() + 1;
+        self.0.callouts.set(n);
+        let nombre = format!("tarjeta-{n}");
+        let respuesta = self.new_tag(
+            s,
+            gtk::TextTag::builder()
+                .name(&nombre)
+                .invisible(true)
+                .build(),
+        );
+        let marca = |end: &gtk::TextIter| buf.create_mark(None, end, true);
+        let (mostrar, ocultar) = if f.answer.is_empty() {
+            // Sin respuesta no hay botón: marcas vacías, la capa no dibuja la píldora.
+            let m = marca(end);
+            ((m.clone(), m.clone()), (m.clone(), m))
+        } else {
+            let url = format!("{URL_CALLOUT}{nombre}");
+            let enlace = self.link_tag(s, &url);
+            let ver = self.new_tag(
+                s,
+                gtk::TextTag::builder()
+                    .name(format!("{nombre}-mostrar"))
+                    .build(),
+            );
+            let esconder = self.new_tag(
+                s,
+                gtk::TextTag::builder()
+                    .name(format!("{nombre}-ocultar"))
+                    .invisible(true)
+                    .build(),
+            );
+            let linea = tags(
+                &["tarjeta-boton"],
+                vec![self.indent_tag((depth + 1) * 24 + 12)],
+            );
+            let mut boton = tags(&["chip", "tarjeta-boton-texto"], linea.clone());
+            boton.push(enlace);
+            let a = marca(end);
+            insertar(
+                end,
+                "Mostrar respuesta",
+                &[boton.clone(), vec![ver]].concat(),
+            );
+            let b = marca(end);
+            insertar(end, "Ocultar respuesta", &[boton, vec![esconder]].concat());
+            let c = marca(end);
+            insertar(end, "\n", &linea);
+            // Con el teclado: Tab llega al botón e Intro lo acciona.
+            s.link_items.borrow_mut().push(LinkItem {
+                url,
+                start: a.clone(),
+                end: c.clone(),
+            });
+            ((a, b.clone()), (b, c))
+        };
+        let resp = end.offset();
+        for b in &f.answer {
+            self.block(s, end, b, depth + 1);
+        }
+        buf.apply_tag(&respuesta, &buf.iter_at_offset(resp), end);
+        let pie: Vec<gtk::TextTag> = table.lookup("callout-pie").into_iter().collect();
+        insertar(end, "\n", &pie);
+        if let Some(der) = table.lookup("callout-der") {
+            buf.apply_tag(&der, &buf.iter_at_offset(start), end);
+        }
+        s.capas.borrow_mut().push(Capa::Tarjeta {
+            inicio,
+            fin: buf.create_mark(None, end, true),
+            mostrar,
+            ocultar,
+            respuesta,
+            profundidad: depth,
+            der: s.embedded.get() as i32 * INCRUSTADO_DER,
+        });
     }
 
     /// Casilla de una tarea: un `CheckButton` que cambia un solo byte del texto fuente.
@@ -668,6 +821,7 @@ impl Reader {
             icono,
             cuerpo: cuerpo.map(|(t, _)| t),
             profundidad: depth,
+            der: s.embedded.get() as i32 * super::capas::INCRUSTADO_DER,
         });
     }
 
