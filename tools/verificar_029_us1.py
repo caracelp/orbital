@@ -34,8 +34,12 @@ def visible(node):
 
 
 def exact(name):
-    return next((n for n in helpers['find_all']('*', name)
-                 if n.get_name() == name and visible(n)), None)
+    # La celda de la tabla hereda el nombre de su botón y su acción es «desplazar hasta»:
+    # entre dos nodos con el mismo nombre se prefiere el botón.
+    found = [n for n in helpers['find_all']('*', name)
+             if n.get_name() == name and visible(n)]
+    found.sort(key=lambda n: 'button' not in n.get_role_name())
+    return found[0] if found else None
 
 
 def click(name):
@@ -49,10 +53,14 @@ def text(name, value):
 
 
 def open_base():
+    # Desplegar la carpeta solo si está plegada (activarla de nuevo la plegaría). La fila de la
+    # base puede quedar fuera de lo dibujado: `elegir` se desplaza hasta ella.
     folder = wait(lambda: exact('wiki'), 'No aparece wiki')
-    # El árbol puede estar ya expandido después de crear la base.
-    if not exact('precios.base'):
-        assert helpers['do_action'](folder), 'No se puede expandir wiki'
+    folder.clear_cache()
+    if not folder.get_state_set().contains(Atspi.StateType.EXPANDED):
+        assert helpers['do_action'](folder, 'listitem.expand'), 'No se puede expandir wiki'
+        wait(lambda: exact('wiki').get_state_set().contains(Atspi.StateType.EXPANDED),
+             'wiki no se desplegó')
     result = subprocess.run([sys.executable, '-I', 'tools/atspi.py', 'elegir', 'precios.base'],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -67,6 +75,7 @@ if phase == 'editar':
     text('Nombre de la base', 'nueva')
     click('Crear')
     wait(lambda: list(vault.rglob('nueva.base')), 'Crear no guardó nueva.base')
+    wait(lambda: exact('Tabla de notas de la base'), 'La base nueva no se abrió')
     print('OK: DB crea un archivo .base')
     open_base()
     click('Editar Precio de Alfa: 10')
@@ -74,6 +83,9 @@ if phase == 'editar':
     click('Guardar')
     wait(lambda: 'precio: 12' in (vault/'wiki/a.md').read_text(), 'Celda MD no guardada')
     assert (vault/'wiki/a.md').read_text() == original_md.replace('precio: 10', 'precio: 12')
+    # La tabla se vuelve a cargar tras cada edición; un diálogo abierto sobre la versión
+    # anterior rechaza el guardado, así que se espera a la tabla nueva.
+    wait(lambda: exact('Editar Precio de Alfa: 12'), 'La tabla no mostró el valor nuevo')
     click('Editar Precio de Beta: 20')
     text('Valor de la propiedad', '22')
     click('Guardar')

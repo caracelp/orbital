@@ -189,10 +189,10 @@ impl BasePanel {
                 } else {
                     "Editar propiedad"
                 })));
-                button.update_property(&[gtk::accessible::Property::Label(&format!(
-                    "Editar {} de {}: {text}",
-                    column.label, row.title
-                ))]);
+                name_button(
+                    &button,
+                    &format!("Editar {} de {}: {text}", column.label, row.title),
+                );
             } else {
                 let mut text = row.title.clone();
                 if let Some(inner) = weak.upgrade() {
@@ -209,10 +209,7 @@ impl BasePanel {
                 }
                 button.set_label(&text);
                 button.set_tooltip_text(Some(row.path.as_str()));
-                button.update_property(&[gtk::accessible::Property::Label(&format!(
-                    "Abrir nota {}",
-                    row.title
-                ))]);
+                name_button(&button, &format!("Abrir nota {}", row.title));
             }
         });
         factory
@@ -243,6 +240,14 @@ impl BasePanel {
         self.0.status.set_text(error.unwrap_or(""));
     }
 }
+/// Nombre accesible de un botón de celda. `set_label` deja al botón «etiquetado por» su
+/// etiqueta interna, y esa relación le gana a la propiedad `Label`: hay que quitarla para que
+/// el lector de pantalla diga la acción y la nota, no solo el valor.
+fn name_button(button: &gtk::Button, name: &str) {
+    button.reset_relation(gtk::AccessibleRelation::LabelledBy);
+    button.update_property(&[gtk::accessible::Property::Label(name)]);
+}
+
 fn display_value(value: Option<&PropValue>) -> String {
     match value {
         None => "(ausente)".into(),

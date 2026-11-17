@@ -1077,11 +1077,22 @@ mod tests {
             // Navegación por botones: el contenido de cada diapositiva queda volcado.
             onstage.0.adelante.emit_clicked();
             assert_eq!(onstage.0.contador_barra.label().as_str(), "2 de 3");
-            glib::timeout_future(Duration::from_millis(300)).await;
-            let buffer = onstage.0.reader.buffer();
-            let texto = buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), false)
-                .to_string();
+            // El volcado es asíncrono: se espera a que llegue en vez de un plazo fijo (en el
+            // CI, 300 ms no siempre alcanzaban).
+            // (El Reader estrena buffer en cada volcado: se lo pide de nuevo en cada lectura.)
+            let leer = || {
+                let buffer = onstage.0.reader.buffer();
+                buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .to_string()
+            };
+            for _ in 0..250 {
+                if leer().contains("Texto uno.") {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(20)).await;
+            }
+            let texto = leer();
             assert!(texto.contains("Texto uno."), "{texto:?}");
             onstage.0.adelante.emit_clicked();
             assert_eq!(onstage.0.contador_barra.label().as_str(), "3 de 3");
