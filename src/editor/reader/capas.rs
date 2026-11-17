@@ -175,7 +175,6 @@ impl Reader {
                 _ => r.dibujar_flechas(snapshot),
             }
         }));
-        self.setup_flechas_hover();
     }
 
     /// Los bloques de primer nivel que tocan lo visible, y el tramo visible en caracteres.
@@ -693,34 +692,5 @@ impl Reader {
             }
         }
         None
-    }
-
-    /// El mouse sobre la vista: la flechita de la sección de abajo aparece como sugerencia.
-    fn setup_flechas_hover(&self) {
-        let motion = gtk::EventControllerMotion::new();
-        let weak = Rc::downgrade(&self.0);
-        motion.connect_motion(move |_, x, y| {
-            let Some(i) = weak.upgrade() else { return };
-            let (bx, by) =
-                i.view
-                    .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-            let reader = Reader(i.clone());
-            let nueva = i
-                .view
-                .iter_at_location(bx, by)
-                .and_then(|it| reader.plegable_en(it.offset()));
-            if i.hover_plegable.replace(nueva) != nueva {
-                i.view.queue_draw();
-            }
-        });
-        let weak = Rc::downgrade(&self.0);
-        motion.connect_leave(move |_| {
-            if let Some(i) = weak.upgrade()
-                && i.hover_plegable.take().is_some()
-            {
-                i.view.queue_draw();
-            }
-        });
-        self.0.view.add_controller(motion);
     }
 }

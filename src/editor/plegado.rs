@@ -311,10 +311,8 @@ impl Editor {
             let Some((a, z)) = i.buffer.selection_bounds() else {
                 return;
             };
-            let (bx, by) =
-                i.view
-                    .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-            let Some(it) = i.view.iter_at_location(bx, by) else {
+            let (bx, by) = super::posicion::al_buffer(i.view.upcast_ref(), x, y);
+            let Some(it) = super::posicion::iter_en(i.view.upcast_ref(), bx, by) else {
                 return;
             };
             if it.offset() >= a.offset() && it.offset() <= z.offset() {
@@ -472,6 +470,15 @@ impl Editor {
 
     /// `win.alternar-plegado`: el elemento de la línea del cursor o, si la línea no es de un
     /// elemento, el más interno que la contiene.
+    /// En Lectura el cursor no se ve: `win.alternar-plegado` pliega la flechita con el foco o el
+    /// elemento bajo el mouse; si no hay ninguno, lo del cursor de Código.
+    pub fn alternar_plegado_en_lectura(&self) -> bool {
+        match self.0.reader.linea_para_plegar() {
+            Some(l) => self.alternar_plegado(l),
+            None => self.alternar_plegado_en_cursor(),
+        }
+    }
+
     pub fn alternar_plegado_en_cursor(&self) -> bool {
         let b = &self.0.buffer;
         let linea = b.iter_at_mark(&b.get_insert()).line() as u32;

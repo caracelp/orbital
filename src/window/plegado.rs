@@ -47,7 +47,11 @@ impl Window {
         };
         self.0.window.add_action_entries([
             accion("alternar-plegado", |e| {
-                e.alternar_plegado_en_cursor();
+                if e.current_view() == crate::editor::View::Lectura {
+                    e.alternar_plegado_en_lectura();
+                } else {
+                    e.alternar_plegado_en_cursor();
+                }
             }),
             accion("plegar-todo", Editor::plegar_todo),
             accion("desplegar-todo", Editor::desplegar_todo),
@@ -93,6 +97,11 @@ impl Window {
     /// Opciones del menú «Más opciones de la nota» para plegado y enfoque (T036).
     pub(super) fn items_menu_plegado(&self) -> Vec<MenuItem> {
         let mut items = vec![
+            MenuItem::new(
+                "Plegar o desplegar el elemento",
+                "win.alternar-plegado",
+                "Ctrl+Arriba",
+            ),
             MenuItem::new("Plegar todo", "win.plegar-todo", ""),
             MenuItem::new("Desplegar todo", "win.desplegar-todo", ""),
             MenuItem::new("Enfocar", "win.enfocar", "Alt+Derecha"),

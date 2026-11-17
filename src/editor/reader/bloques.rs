@@ -707,6 +707,9 @@ impl Reader {
             .active(task.checked)
             .valign(gtk::Align::Center)
             .build();
+        if s.embedded.get() == 0 {
+            check.set_cursor_from_name(Some("pointer"));
+        }
         // Una casilla de una nota incrustada no es de esta nota: no se marca desde acá.
         if s.embedded.get() > 0 {
             check.set_sensitive(false);

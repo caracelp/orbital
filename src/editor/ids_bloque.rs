@@ -48,9 +48,7 @@ impl Editor {
         // Desplazamiento (FR-005): si algo cae antes de lo visible, el texto de arriba no se mueve.
         let b = &i.buffer;
         let rect = i.view.visible_rect();
-        let arriba = i
-            .view
-            .iter_at_location(rect.x(), rect.y())
+        let arriba = super::posicion::iter_en(i.view.upcast_ref(), rect.x(), rect.y())
             .map(|it| (byte_de(&lineas, &it), b.create_mark(None, &it, true)));
 
         i.asignando_ids.set(true);

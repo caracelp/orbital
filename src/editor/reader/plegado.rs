@@ -148,6 +148,7 @@ impl Reader {
     }
 
     /// La flechita bajo un iterador con la etiqueta `flecha`.
+    #[cfg(test)]
     pub(super) fn flecha_en(&self, it: &gtk::TextIter) -> Option<u32> {
         let buf = self.buffer();
         let off = it.offset();
@@ -314,6 +315,17 @@ impl Reader {
             .partition_point(|b| buf.iter_at_mark(&b.mark).offset() <= off)
             .saturating_sub(1);
         blocks.get(n).map(|b| b.line as u32)
+    }
+
+    /// Línea fuente para «Plegar o desplegar» en Lectura: la flechita con el foco o, si no hay, el
+    /// elemento bajo el mouse.
+    pub fn linea_para_plegar(&self) -> Option<u32> {
+        self.0
+            .focused_link
+            .get()
+            .and_then(|idx| self.all_link_items().get(idx).cloned())
+            .and_then(|item| item.url.strip_prefix(URL_PLEGAR)?.parse().ok())
+            .or(self.0.hover_plegable.get())
     }
 
     /// Las líneas fuente de los elementos plegados cuyo contenido incluye el carácter `off` (para

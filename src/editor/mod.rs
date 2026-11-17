@@ -21,6 +21,7 @@ pub mod multi_cursor;
 pub mod notas_al_pie;
 pub mod outliner;
 mod plegado;
+pub(crate) mod posicion;
 pub mod props;
 pub mod reader;
 pub mod right_sidebar;
@@ -667,9 +668,8 @@ impl Editor {
                     && inner.mode.get() == View::Dividida
                 {
                     let rect = inner.view.visible_rect();
-                    if let Some(it) = inner.view.iter_at_location(rect.x(), rect.y()) {
-                        inner.reader.scroll_to_line(it.line() as usize);
-                    }
+                    let (it, _) = inner.view.line_at_y(rect.y());
+                    inner.reader.scroll_to_line(it.line() as usize);
                 }
             });
         this.setup_multi_cursor();

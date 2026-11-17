@@ -1848,13 +1848,22 @@ mod plegado_tests {
             let w = ventana(&app, &root).await;
             abrir(&w, "wiki/outline.md").await;
 
-            // Menú sin enfoque: Plegar todo, Desplegar todo, Enfocar (sin Salir del enfoque).
+            // Menú sin enfoque: Plegar o desplegar, Plegar todo, Desplegar todo, Enfocar (sin
+            // Salir del enfoque).
             let labels: Vec<String> = w
                 .items_menu_plegado()
                 .into_iter()
                 .map(|m| m.label)
                 .collect();
-            assert_eq!(labels, ["Plegar todo", "Desplegar todo", "Enfocar"]);
+            assert_eq!(
+                labels,
+                [
+                    "Plegar o desplegar el elemento",
+                    "Plegar todo",
+                    "Desplegar todo",
+                    "Enfocar"
+                ]
+            );
 
             let act = |name: &str| {
                 gtk::prelude::ActionGroupExt::activate_action(&w.0.window, name, None);
