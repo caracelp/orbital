@@ -550,3 +550,86 @@ fn salto_simple_es_salto_de_linea_con_la_sangria_del_contexto() {
         assert_eq!(primera, sangria(&en("Código")));
     });
 }
+
+/// Medición (no es prueba de comportamiento): volcar en Lectura una nota de ≈ 100 KB con las
+/// cinco partes (041). `cargo test --release --bin orbital medir_lectura_nota_grande -- --ignored
+/// --nocapture`. Imprime la mediana de 9 volcados.
+#[test]
+#[ignore = "medición; correr a mano con --release"]
+fn medir_lectura_nota_grande() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let mut text = String::from("---\nid: AT-001\ntype: atomo\n---\n\n");
+    text.push_str("<!-- summary AT-001 -->\n## Síntesis\n\nIdea central de la nota, con **negrita** y [[Otra]].\n<!---->\n\n");
+    for i in 0..300 {
+        text.push_str(&format!(
+            "<!-- block {i} AT-001 -->\n## Sección {i}\n\nPárrafo con **negrita**, *cursiva*, `código` y [enlace](/otra.md).\nSegunda línea del párrafo.\n\n- uno\n- [ ] tarea\n  - sub\n\n> [!nota] Título\n> cuerpo\n> más cuerpo\n\n| a | b |\n|---|---|\n| 1 | 2 |\n<!---->\n\n"
+        ));
+    }
+    text.push_str("<!-- sources AT-001 -->\n## Fuentes\n\n");
+    for i in 0..20 {
+        text.push_str(&format!("- Autor {i}, *Libro {i}*, 2020.\n"));
+    }
+    text.push_str("<!---->\n\n<!-- connections AT-001 -->\n## Conexiones\n\n");
+    for i in 0..40 {
+        text.push_str(&format!("- [[Nota {i}]]\n"));
+    }
+    text.push_str("<!---->\n");
+    println!("Nota de {} KB", text.len() / 1024);
+    glib::MainContext::default().block_on(async {
+        let mut tiempos = Vec::new();
+        for _ in 0..9 {
+            let reader = Reader::new();
+            let t0 = std::time::Instant::now();
+            reader.render(Prepared::new(&text, &[]), || None, None);
+            while reader.0.blocks.borrow().is_empty() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            tiempos.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        tiempos.sort_by(f64::total_cmp);
+        println!(
+            "Volcado en Lectura: mediana {:.1} ms (mín {:.1}, máx {:.1})",
+            tiempos[4], tiempos[0], tiempos[8]
+        );
+    });
+}
+
+/// 041: las partes especiales se dibujan como estructuras propias (capas, sin widgets): sin los
+/// comentarios ni el encabezado que repite el nombre, Fuentes numeradas y cada conexión una
+/// píldora que es un enlace (Tab llega a ella).
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn partes_especiales_en_lectura() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "---\nid: AP-001\ntype: apunte\n---\n\n<!-- summary AP-001 -->\n## Síntesis\n\nIdea central.\n<!---->\n\n<!-- block 1 AP-001 -->\n# Cuerpo\n<!---->\n\n<!-- sources AP-001 -->\n## Fuentes\n\n- Apostol\n- Spivak\n<!---->\n\n<!-- connections AP-001 -->\n## Conexiones\n\n- Prerrequisito: [[Límites]]\n- [[Integrales]]\n<!---->\n";
+        reader.render(Prepared::new(text, &[]), || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        assert!(!visible.contains("<!--"), "{visible:?}");
+        assert!(!visible.contains("SÍNTESIS"), "{visible:?}");
+        assert_eq!(visible.matches("Síntesis").count(), 1, "{visible:?}");
+        assert_eq!(visible.matches("Fuentes").count(), 1, "{visible:?}");
+        assert!(visible.contains("1. Apostol") && visible.contains("2. Spivak"));
+        assert!(visible.contains("Prerrequisito"), "{visible:?}");
+        let items = reader.all_link_items();
+        assert!(items.iter().any(|l| l.url == "[[Límites]]"));
+        assert!(items.iter().any(|l| l.url == "[[Integrales]]"));
+        let (secciones, pildoras) = reader
+            .0
+            .blocks
+            .borrow()
+            .iter()
+            .flat_map(|b| b.capas.iter())
+            .fold((0, 0), |(s, p), c| match c {
+                capas::Capa::Seccion { chips, .. } => (s + 1, p + chips.len()),
+                _ => (s, p),
+            });
+        assert_eq!((secciones, pildoras), (3, 2));
+        assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
+    });
+}

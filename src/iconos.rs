@@ -127,6 +127,15 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
         "callout-tarea",
         "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM8 12l3 3 5-5",
     ),
+    // Partes especiales de la nota en Lectura (041).
+    (
+        "seccion-chispa",
+        "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z",
+    ),
+    (
+        "seccion-libro",
+        "M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7h6",
+    ),
     // Tipos de propiedad.
     ("prop-texto", "M4 7h16M4 12h16M4 17h10"),
     ("prop-numero", "M10 4L8 20M16 4l-2 16M5 9h15M4 15h15"),

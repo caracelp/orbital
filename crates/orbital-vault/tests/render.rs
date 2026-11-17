@@ -409,3 +409,57 @@ fn casilla_junto_a_marcador_sigue_mapeando_al_mismo_byte() {
     assert!(visible.contains("activo"));
     assert!(!visible.contains("[%estado]"));
 }
+
+/// 041: cada parte especial es un bloque `Seccion` con su contenido y el rango de la sección
+/// completa (delimitadores incluidos); el Cuerpo y sus `<!-- block -->` quedan como estaban.
+#[test]
+fn partes_especiales_se_agrupan_en_secciones() {
+    use orbital_vault::render::SeccionKind;
+    let text = "---\nid: AT-001\ntype: atomo\n---\n\n<!-- summary AT-001 -->\n## Síntesis\n\nIdea central.\n<!---->\n\n<!-- block 1 AT-001 -->\n# Cuerpo\n<!---->\n\n<!-- sources AT-001 -->\n- Libro\n<!---->\n\n<!-- connections AT-001 -->\n- [[Otra]]\n- Prerrequisito: [[Base]]\n<!---->\n";
+    let doc = render_markdown(text);
+    let secciones: Vec<(SeccionKind, usize, &str)> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.kind {
+            BlockKind::Seccion { kind, body } => Some((*kind, body.len(), &text[b.source.clone()])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(secciones.len(), 3, "{:#?}", doc.blocks);
+    assert_eq!(secciones[0].0, SeccionKind::Sintesis);
+    assert_eq!(secciones[0].1, 2, "encabezado y párrafo");
+    assert!(secciones[0].2.starts_with("<!-- summary AT-001 -->"));
+    assert!(secciones[0].2.trim_end().ends_with("<!---->"));
+    assert_eq!(secciones[1].0, SeccionKind::Fuentes);
+    assert_eq!(secciones[2].0, SeccionKind::Conexiones);
+    assert!(secciones[2].2.contains("[[Base]]"));
+    // El cuerpo sigue igual: su encabezado es de primer nivel.
+    assert!(
+        doc.blocks
+            .iter()
+            .any(|b| matches!(&b.kind, BlockKind::Heading { level: 1, .. }))
+    );
+    // Los wikilinks de los ítems compactos son enlaces.
+    let conexiones = doc.blocks.iter().find_map(|b| match &b.kind {
+        BlockKind::Seccion {
+            kind: SeccionKind::Conexiones,
+            body,
+        } => Some(body),
+        _ => None,
+    });
+    let Some(BlockKind::List { items, .. }) = conexiones.and_then(|b| b.first()).map(|b| &b.kind)
+    else {
+        panic!("la lista de conexiones");
+    };
+    let BlockKind::Paragraph(p) = &items[1].blocks[0].kind else {
+        panic!()
+    };
+    assert!(
+        p.iter()
+            .any(|i| matches!(i, Inline::Link { url, .. } if url == "[[Base]]")),
+        "{p:?}"
+    );
+    // Sin cierre: llega hasta el final.
+    let doc = render_markdown("<!-- connections X -->\n- [[A]]\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Seccion { body, .. } if body.len() == 1));
+}

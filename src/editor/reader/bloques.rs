@@ -235,6 +235,186 @@ impl Reader {
                     self.block(s, end, sub, depth);
                 }
             }
+            BlockKind::Seccion { kind, body } => self.seccion(s, end, *kind, body, depth),
+        }
+    }
+
+    /// Una parte especial de la nota (041) como estructura propia, igual que un callout: el texto
+    /// deja el lugar (márgenes y renglones de relleno) y `capas` dibuja la tarjeta, el ícono y las
+    /// píldoras. Sin widgets: las píldoras de las Conexiones son enlaces de texto.
+    pub(super) fn seccion(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        kind: SeccionKind,
+        body: &[Block],
+        depth: i32,
+    ) {
+        use super::capas::{CALLOUT_TITULO, Capa};
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let inicio = buf.create_mark(None, end, true);
+        let start = end.offset();
+        // Encabezado chico con lugar para el ícono.
+        let mut ttags: Vec<gtk::TextTag> = vec![self.indent_tag(depth * 24 + CALLOUT_TITULO)];
+        ttags.extend(table.lookup("callout-title"));
+        ttags.extend(table.lookup("callout-cab"));
+        ttags.extend(table.lookup(match kind {
+            SeccionKind::Sintesis => "seccion-cab-acento",
+            _ => "seccion-cab",
+        }));
+        buf.insert_with_tags(end, kind.label(), &ttags.iter().collect::<Vec<_>>());
+        buf.insert_with_tags(end, "\n", &ttags.iter().collect::<Vec<_>>());
+        // Un encabezado al principio que repite el nombre de la parte («## Síntesis») ya lo
+        // dice la tarjeta.
+        let body = match body.first().map(|b| &b.kind) {
+            Some(BlockKind::Heading { inlines, .. })
+                if repite_nombre(kind, &plain_text(inlines)) =>
+            {
+                &body[1..]
+            }
+            _ => body,
+        };
+        let body_start = end.offset();
+        let mut chips: Vec<(gtk::TextMark, gtk::TextMark)> = Vec::new();
+        match kind {
+            SeccionKind::Conexiones => self.conexiones(s, end, body, depth + 1, &mut chips),
+            SeccionKind::Fuentes => {
+                for sub in body {
+                    // La bibliografía va numerada.
+                    if let BlockKind::List { start: None, items } = &sub.kind {
+                        let numerada = Block {
+                            kind: BlockKind::List {
+                                start: Some(1),
+                                items: items.clone(),
+                            },
+                            source: sub.source.clone(),
+                            line: sub.line,
+                            id: None,
+                        };
+                        self.block(s, end, &numerada, depth + 1);
+                    } else {
+                        self.block(s, end, sub, depth + 1);
+                    }
+                }
+            }
+            SeccionKind::Sintesis => {
+                for sub in body {
+                    self.block(s, end, sub, depth + 1);
+                }
+            }
+        }
+        let cuerpo = match kind {
+            SeccionKind::Sintesis => "seccion-sintesis",
+            SeccionKind::Fuentes => "seccion-fuentes",
+            SeccionKind::Conexiones => "",
+        };
+        if let Some(tag) = table.lookup(cuerpo) {
+            buf.apply_tag(&tag, &buf.iter_at_offset(body_start), end);
+        }
+        let pie: Vec<gtk::TextTag> = table.lookup("callout-pie").into_iter().collect();
+        buf.insert_with_tags(end, "\n", &pie.iter().collect::<Vec<_>>());
+        if let Some(der) = table.lookup("callout-der") {
+            buf.apply_tag(&der, &buf.iter_at_offset(start), end);
+        }
+        s.capas.borrow_mut().push(Capa::Seccion {
+            inicio,
+            fin: buf.create_mark(None, end, true),
+            kind,
+            chips,
+            profundidad: depth,
+        });
+    }
+
+    /// Las Conexiones: cada enlace es una píldora (texto enlazado; el fondo lo dibuja `capas`) y
+    /// las píldoras corren seguidas, con el texto de cada ítem («Prerrequisito:») como rótulo
+    /// tenue antes de las suyas. Lo que no tiene enlaces se muestra como siempre.
+    fn conexiones(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        body: &[Block],
+        depth: i32,
+        chips: &mut Vec<(gtk::TextMark, gtk::TextMark)>,
+    ) {
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let mut fila: Vec<gtk::TextTag> = vec![self.indent_tag(depth * 24)];
+        fila.extend(table.lookup("seccion-chips"));
+        let mut rotulo = fila.clone();
+        rotulo.extend(table.lookup("seccion-rotulo"));
+        let mut pildora = fila.clone();
+        pildora.extend(table.lookup("chip"));
+        let refs = |t: &[gtk::TextTag]| -> Vec<gtk::TextTag> { t.to_vec() };
+        // Los párrafos con enlaces (sueltos o de ítems, a cualquier profundidad), en orden.
+        fn parrafos<'b>(blocks: &'b [Block], out: &mut Vec<&'b [Inline]>) -> bool {
+            let mut todos = true;
+            for b in blocks {
+                match &b.kind {
+                    BlockKind::Paragraph(p)
+                        if p.iter().any(|i| matches!(i, Inline::Link { .. })) =>
+                    {
+                        out.push(p)
+                    }
+                    BlockKind::List { items, .. } => {
+                        for it in items {
+                            todos &= parrafos(&it.blocks, out);
+                        }
+                    }
+                    _ => todos = false,
+                }
+            }
+            todos
+        }
+        let mut grupos: Vec<&[Inline]> = Vec::new();
+        let mut abierta = false;
+        for b in body {
+            grupos.clear();
+            let solo_enlaces = parrafos(std::slice::from_ref(b), &mut grupos);
+            if grupos.is_empty() || !solo_enlaces {
+                if abierta {
+                    buf.insert_with_tags(end, "\n", &fila.iter().collect::<Vec<_>>());
+                    abierta = false;
+                }
+                self.block(s, end, b, depth);
+                continue;
+            }
+            for p in &grupos {
+                let texto: String = p
+                    .iter()
+                    .filter(|i| !matches!(i, Inline::Link { .. }))
+                    .map(|i| plain_text(std::slice::from_ref(i)))
+                    .collect();
+                let texto = texto
+                    .trim()
+                    .trim_end_matches([':', '-', '—', '–', ','])
+                    .trim();
+                if abierta {
+                    buf.insert_with_tags(end, "\u{2003}\u{2003}", &fila.iter().collect::<Vec<_>>());
+                }
+                abierta = true;
+                if !texto.is_empty() {
+                    buf.insert_with_tags(end, texto, &rotulo.iter().collect::<Vec<_>>());
+                    buf.insert_with_tags(end, "\u{2002}\u{2002}", &fila.iter().collect::<Vec<_>>());
+                }
+                let mut primera = true;
+                for i in p.iter().filter(|i| matches!(i, Inline::Link { .. })) {
+                    if !primera {
+                        buf.insert_with_tags(
+                            end,
+                            "\u{2002}\u{2002}",
+                            &fila.iter().collect::<Vec<_>>(),
+                        );
+                    }
+                    primera = false;
+                    let a = buf.create_mark(None, end, true);
+                    self.inlines(s, end, std::slice::from_ref(i), &refs(&pildora));
+                    chips.push((a, buf.create_mark(None, end, true)));
+                }
+            }
+        }
+        if abierta {
+            buf.insert_with_tags(end, "\n", &fila.iter().collect::<Vec<_>>());
         }
     }
 
@@ -691,6 +871,24 @@ impl Reader {
             }
         }
     }
+}
+
+/// Si el texto de un encabezado es el nombre de la parte (o un sinónimo): «Síntesis», «Resumen»,
+/// «Fuentes», «Bibliografía», «Conexiones»…
+fn repite_nombre(kind: SeccionKind, texto: &str) -> bool {
+    let t = texto.trim().to_lowercase();
+    let nombres: &[&str] = match kind {
+        SeccionKind::Sintesis => &["síntesis", "sintesis", "resumen", "summary"],
+        SeccionKind::Fuentes => &[
+            "fuentes",
+            "bibliografía",
+            "bibliografia",
+            "referencias",
+            "sources",
+        ],
+        SeccionKind::Conexiones => &["conexiones", "connections", "enlaces"],
+    };
+    nombres.contains(&t.as_str())
 }
 
 /// Imagen local reducida al ancho de la columna. La vista de texto da a los widgets anclados su

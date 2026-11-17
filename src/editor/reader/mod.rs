@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use gtk::prelude::*;
 use gtk::{glib, pango};
 use orbital_vault::render::{
-    Align, Block, BlockKind, CalloutKind, Inline, ListItem, RenderDoc, plain_text,
+    Align, Block, BlockKind, CalloutKind, Inline, ListItem, RenderDoc, SeccionKind, plain_text,
 };
 
 /// Tiempo máximo de volcado por tramo, para no pasar el cuadro de 16 ms.

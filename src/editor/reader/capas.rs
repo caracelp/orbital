@@ -40,6 +40,16 @@ pub(super) enum Capa {
         cuerpo: Option<gtk::TextTag>,
         profundidad: i32,
     },
+    /// Una parte especial de la nota (041): la tarjeta de la Síntesis o de las Fuentes, o el
+    /// bloque final de las Conexiones con sus píldoras.
+    Seccion {
+        inicio: gtk::TextMark,
+        fin: gtk::TextMark,
+        kind: SeccionKind,
+        /// Comienzo y final del texto de cada píldora.
+        chips: Vec<(gtk::TextMark, gtk::TextMark)>,
+        profundidad: i32,
+    },
     /// Línea vertical de una lista anidada, a la altura de la viñeta de su ítem.
     Guia {
         inicio: gtk::TextMark,
@@ -175,15 +185,29 @@ impl Reader {
         for b in &blocks[rango] {
             for c in &b.capas {
                 let (inicio, fin) = match c {
-                    Capa::Callout { inicio, fin, .. } | Capa::Guia { inicio, fin, .. } => {
-                        (inicio, fin)
-                    }
+                    Capa::Callout { inicio, fin, .. }
+                    | Capa::Guia { inicio, fin, .. }
+                    | Capa::Seccion { inicio, fin, .. } => (inicio, fin),
                 };
                 if buf.iter_at_mark(fin).offset() < a || buf.iter_at_mark(inicio).offset() > z {
                     continue;
                 }
                 match c {
                     Capa::Callout { .. } => callouts.push(c),
+                    Capa::Seccion {
+                        inicio,
+                        fin,
+                        kind,
+                        chips,
+                        profundidad,
+                    } => self.dibujar_seccion(
+                        snapshot,
+                        (inicio, fin),
+                        *kind,
+                        chips,
+                        side + (24 * profundidad) as f32,
+                        side + ancho,
+                    ),
                     Capa::Guia {
                         inicio,
                         fin,
@@ -208,7 +232,7 @@ impl Reader {
         // Los de afuera primero: un callout anidado se dibuja encima del que lo contiene.
         callouts.sort_by_key(|c| match c {
             Capa::Callout { profundidad, .. } => *profundidad,
-            Capa::Guia { .. } => 0,
+            _ => 0,
         });
         for c in callouts {
             let Capa::Callout {
@@ -270,6 +294,113 @@ impl Reader {
                     FLECHA,
                     &tinta,
                 );
+            }
+        }
+    }
+
+    /// La tarjeta de una parte especial (041) entre `x0` y `x1`: la Síntesis con fondo rosa suave
+    /// y borde de acento a la izquierda; las Fuentes con borde tenue; las Conexiones, una línea
+    /// que las separa del cuerpo y una píldora redondeada detrás de cada enlace.
+    fn dibujar_seccion(
+        &self,
+        snapshot: &gtk::Snapshot,
+        (inicio, fin): (&gtk::TextMark, &gtk::TextMark),
+        kind: SeccionKind,
+        chips: &[(gtk::TextMark, gtk::TextMark)],
+        x0: f32,
+        x1: f32,
+    ) {
+        use crate::style::*;
+        let view = &self.0.view;
+        let buf = self.buffer();
+        let ini = buf.iter_at_mark(inicio);
+        let (y0, h0) = view.line_yrange(&ini);
+        let mut f = buf.iter_at_mark(fin);
+        f.backward_char();
+        let (y1, h1) = view.line_yrange(&f);
+        let arriba = (y0 + CALLOUT_SEPARACION) as f32;
+        let abajo = (y1 + h1 - CALLOUT_SEPARACION) as f32;
+        if abajo <= arriba {
+            return;
+        }
+        let rect = graphene::Rect::new(x0, arriba, (x1 - x0).max(1.0), abajo - arriba);
+        let redondo = gsk::RoundedRect::from_rect(rect, RADIO);
+        let (icono, tinta) = match kind {
+            SeccionKind::Sintesis => {
+                snapshot.push_rounded_clip(&redondo);
+                snapshot.append_color(&ACCENT_TEXT.rgba(0.07), &rect);
+                snapshot.append_color(
+                    &ACCENT_TEXT.rgba(0.85),
+                    &graphene::Rect::new(x0, arriba, 3.0, abajo - arriba),
+                );
+                snapshot.pop();
+                ("seccion-chispa", ACCENT_TEXT.rgba(1.0))
+            }
+            SeccionKind::Fuentes => {
+                snapshot.push_rounded_clip(&redondo);
+                snapshot.append_color(&gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 0.025), &rect);
+                snapshot.pop();
+                let borde = gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 0.10);
+                snapshot.append_border(&redondo, &[1.0; 4], &[borde, borde, borde, borde]);
+                ("seccion-libro", MUTED_FG.rgba(1.0))
+            }
+            SeccionKind::Conexiones => {
+                snapshot.append_color(
+                    &gtk::gdk::RGBA::new(1.0, 1.0, 1.0, 0.12),
+                    &graphene::Rect::new(x0, arriba, (x1 - x0).max(1.0), 1.0),
+                );
+                ("red", MUTED_FG.rgba(1.0))
+            }
+        };
+        // El ícono, centrado en el renglón del encabezado.
+        let renglon = view.iter_location(&ini);
+        let centro = if renglon.height() > 0 && renglon.y() >= y0 {
+            renglon.y() as f32 + renglon.height() as f32 / 2.0
+        } else {
+            y0 as f32 + (CALLOUT_SEPARACION + CALLOUT_RELLENO) as f32 + h0 as f32 / 4.0
+        };
+        crate::iconos::dibujar(
+            snapshot,
+            icono,
+            x0 + CALLOUT_ICONO_X,
+            centro - CALLOUT_ICONO / 2.0,
+            CALLOUT_ICONO,
+            &tinta,
+        );
+        let fondo = CHIP_BG.rgba(1.0);
+        let borde = CHIP_BORDER.rgba(1.0);
+        for (a, z) in chips {
+            let a = buf.iter_at_mark(a);
+            let mut ultimo = buf.iter_at_mark(z);
+            if !ultimo.backward_char() || ultimo.offset() < a.offset() {
+                continue;
+            }
+            let ra = view.iter_location(&a);
+            let rz = view.iter_location(&ultimo);
+            if ra.height() == 0 {
+                continue;
+            }
+            // Una píldora cortada por el ajuste de línea: un tramo por renglón.
+            let tramos = if ra.y() == rz.y() {
+                vec![(ra.x(), rz.x() + rz.width(), ra.y(), ra.height())]
+            } else {
+                vec![
+                    (ra.x(), (x1 - 8.0) as i32, ra.y(), ra.height()),
+                    ((x0 + 24.0) as i32, rz.x() + rz.width(), rz.y(), rz.height()),
+                ]
+            };
+            for (xa, xz, y, h) in tramos {
+                let r = graphene::Rect::new(
+                    xa as f32 - 8.0,
+                    y as f32 - 2.0,
+                    (xz - xa) as f32 + 16.0,
+                    h as f32 + 4.0,
+                );
+                let pill = gsk::RoundedRect::from_rect(r, r.height() / 2.0);
+                snapshot.push_rounded_clip(&pill);
+                snapshot.append_color(&fondo, &r);
+                snapshot.pop();
+                snapshot.append_border(&pill, &[1.0; 4], &[borde, borde, borde, borde]);
             }
         }
     }

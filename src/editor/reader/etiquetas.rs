@@ -42,6 +42,39 @@ impl Reader {
             .family("monospace")
             .background("rgba(255,255,255,0.08)")
             .build());
+        // Partes especiales de la nota (041). Van antes de los enlaces: un enlace dentro de las
+        // Fuentes sigue rosa.
+        add(gtk::TextTag::builder()
+            .name("seccion-sintesis")
+            .scale(1.1)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("seccion-fuentes")
+            .scale(0.9)
+            .foreground("rgba(255,255,255,0.62)")
+            .build());
+        add(gtk::TextTag::builder()
+            .name("seccion-cab")
+            .scale(0.85)
+            .foreground(crate::style::MUTED_FG.hex())
+            .build());
+        add(gtk::TextTag::builder()
+            .name("seccion-cab-acento")
+            .scale(0.85)
+            .foreground(crate::style::ACCENT_TEXT.hex())
+            .build());
+        add(gtk::TextTag::builder()
+            .name("seccion-rotulo")
+            .scale(0.9)
+            .foreground(crate::style::MUTED_FG.hex())
+            .build());
+        // Renglones de píldoras: aire entre filas para el fondo que dibuja `capas`.
+        add(gtk::TextTag::builder()
+            .name("seccion-chips")
+            .pixels_above_lines(4)
+            .pixels_below_lines(6)
+            .pixels_inside_wrap(10)
+            .build());
         add(gtk::TextTag::builder()
             .name("link")
             .foreground(crate::style::LINK_FG.hex())
@@ -51,6 +84,13 @@ impl Reader {
             .name("link-missing")
             .foreground(crate::style::LINK_MISSING_FG.hex())
             .underline(pango::Underline::Single)
+            .build());
+        // Texto de una píldora de las Conexiones: sin subrayado (el fondo lo dibuja `capas`). Va
+        // después de los enlaces y antes del foco, que la sigue resaltando.
+        add(gtk::TextTag::builder()
+            .name("chip")
+            .foreground(crate::style::CHIP_FG.hex())
+            .underline(pango::Underline::None)
             .build());
         add(gtk::TextTag::builder()
             .name("link-focused")
@@ -208,7 +248,13 @@ impl Reader {
         };
         let h = self.0.scroller.hadjustment();
         apply(h.page_size());
-        h.connect_page_size_notify(move |a| apply(a.page_size()));
+        // El ancho cambia durante la disposición: cambiar márgenes y etiquetas ahí mismo invalida
+        // renglones que GTK está validando (aborta con `onscreen_validated`). Se aplica después.
+        let apply = Rc::new(apply);
+        h.connect_page_size_notify(move |a| {
+            let (apply, w) = (apply.clone(), a.page_size());
+            glib::idle_add_local_once(move || apply(w));
+        });
     }
 
     /// Etiqueta de un renglón con la flechita del plegado colgada en el margen: el margen
