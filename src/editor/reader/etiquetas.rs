@@ -19,6 +19,15 @@ impl Reader {
                 .pixels_below_lines(6)
                 .build());
         }
+        // GTK multiplica las escalas de las etiquetas: la flechita de un encabezado lleva la
+        // inversa, así queda del tamaño del texto común (y su ancho, el que mide `center`).
+        for (n, s) in scales.iter().enumerate() {
+            add(gtk::TextTag::builder()
+                .name(format!("flecha-h{}", n + 1))
+                .scale(1.0 / s)
+                .weight(400)
+                .build());
+        }
         add(gtk::TextTag::builder().name("strong").weight(700).build());
         add(gtk::TextTag::builder()
             .name("emph")
@@ -89,28 +98,28 @@ impl Reader {
             .pixels_above_lines(10)
             .pixels_below_lines(10)
             .build());
-        for (name, bg) in [
-            ("callout-nota", crate::style::CALLOUT_NOTA_BG.hex()),
-            ("callout-consejo", crate::style::CALLOUT_CONSEJO_BG.hex()),
-            (
-                "callout-importante",
-                crate::style::CALLOUT_IMPORTANTE_BG.hex(),
-            ),
-            (
-                "callout-advertencia",
-                crate::style::CALLOUT_ADVERTENCIA_BG.hex(),
-            ),
-            ("callout-peligro", crate::style::CALLOUT_PELIGRO_BG.hex()),
-            ("callout-otro", crate::style::CARD_BG.hex()),
-        ] {
-            add(gtk::TextTag::builder()
-                .name(name)
-                .paragraph_background(bg)
-                .build());
-        }
+        // Callouts (el fondo y el ícono los dibuja `capas`): relleno arriba del título, un renglón
+        // bajo al final y el margen derecho (se ajusta con la columna en `center`).
+        add(gtk::TextTag::builder()
+            .name("callout-cab")
+            .pixels_above_lines(super::capas::CALLOUT_SEPARACION + super::capas::CALLOUT_RELLENO)
+            .pixels_below_lines(6)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("callout-pie")
+            .scale(0.5)
+            .pixels_above_lines(0)
+            .pixels_below_lines(super::capas::CALLOUT_SEPARACION)
+            .build());
+        add(gtk::TextTag::builder().name("callout-der").build());
         add(gtk::TextTag::builder()
             .name("callout-title")
             .weight(700)
+            .build());
+        // Viñeta de lista: un punto tenue, como en Obsidian.
+        add(gtk::TextTag::builder()
+            .name("vineta")
+            .foreground("rgba(255,255,255,0.45)")
             .build());
         add(gtk::TextTag::builder()
             .name("embed-gap")
@@ -123,9 +132,17 @@ impl Reader {
             .build());
         // Plegado (028): compartidas por todos los bloques (nunca con `new_tag`, que las borraría
         // de la tabla con su bloque).
+        // El glifo es casi transparente (con alfa 0 Pango lo dibuja opaco) y del tamaño del texto
+        // común, también en un encabezado: así su ancho es fijo y la sangría `colgar` lo deja justo
+        // en el margen. La flechita visible la dibuja `capas`.
         add(gtk::TextTag::builder()
             .name("flecha")
-            .foreground("rgba(255,255,255,0.70)")
+            .foreground_rgba(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.001))
+            .weight(400)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("flecha-sep")
+            .weight(400)
             .build());
         add(gtk::TextTag::builder()
             .name("plegado")
@@ -174,6 +191,17 @@ impl Reader {
             });
             i.view.set_left_margin(side);
             i.view.set_right_margin(side);
+            let table = i.view.buffer().tag_table();
+            if let Some(t) = table.lookup("callout-der") {
+                t.set_right_margin(side + 16);
+            }
+            // La flechita y su espacio cuelgan a la izquierda del renglón.
+            let flecha = i.view.create_pango_layout(Some("\u{25be} ")).pixel_size().0;
+            i.ancho_flecha.set(flecha);
+            for (tag, extra) in i.colgados.borrow().iter() {
+                tag.set_left_margin(side + extra - flecha);
+                tag.set_indent(-flecha);
+            }
             for (tag, extra) in i.indents.borrow().iter() {
                 tag.set_left_margin(side + extra);
             }
@@ -181,6 +209,27 @@ impl Reader {
         let h = self.0.scroller.hadjustment();
         apply(h.page_size());
         h.connect_page_size_notify(move |a| apply(a.page_size()));
+    }
+
+    /// Etiqueta de un renglón con la flechita del plegado colgada en el margen: el margen
+    /// izquierdo retrocede su ancho y la sangría negativa de Pango devuelve los renglones
+    /// siguientes (si el texto se parte) a `extra`. Se crea después de `indent_tag(extra)`, así
+    /// gana su margen.
+    pub(super) fn colgar_tag(&self, extra: i32) -> gtk::TextTag {
+        let name = format!("colgar-{extra}");
+        let table = self.buffer().tag_table();
+        if let Some(t) = table.lookup(&name) {
+            return t;
+        }
+        let w = self.0.ancho_flecha.get();
+        let tag = gtk::TextTag::builder()
+            .name(&name)
+            .left_margin(self.0.side.get() + extra - w)
+            .indent(-w)
+            .build();
+        table.add(&tag);
+        self.0.colgados.borrow_mut().push((tag.clone(), extra));
+        tag
     }
 
     pub(super) fn new_tag(&self, s: &RenderState, tag: gtk::TextTag) -> gtk::TextTag {

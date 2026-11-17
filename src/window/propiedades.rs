@@ -68,6 +68,46 @@ impl Window {
         Some(rows)
     }
 
+    /// `sources` en las propiedades de arriba de la vista formateada: una fila con un botón por
+    /// fuente, que la abre.
+    fn source_fila(&self, note: &RelPath, e: &PropEntry) -> Option<gtk::Widget> {
+        let PropValue::List(items) = &e.value else {
+            return None;
+        };
+        if e.key != "sources" {
+            return None;
+        }
+        let caja = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for item in items {
+            let PropValue::Map(fields) = item else {
+                continue;
+            };
+            let get = |k: &str| {
+                fields
+                    .iter()
+                    .find(|(key, _)| key == k)
+                    .and_then(|(_, v)| v.as_text())
+            };
+            let Some(resource) = get("resource") else {
+                continue;
+            };
+            let title = get("title").or(get("id")).unwrap_or("fuente");
+            let open = gtk::Button::builder()
+                .label(title)
+                .tooltip_text(resource)
+                .halign(gtk::Align::Start)
+                .css_classes(["flat", "orbital-prop-boton"])
+                .build();
+            open.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Abrir la fuente {title}"
+            ))]);
+            let (this, from, res) = (self.clone(), note.clone(), resource.to_owned());
+            open.connect_clicked(move |_| this.open_source(&from, &res));
+            caja.append(&open);
+        }
+        Some(editor::props::fila(&e.key, "prop-enlace", &caja, None))
+    }
+
     /// Lista editable de propiedades arriba de la vista formateada (US3 de la 002).
     pub(super) fn props_header(&self, path: &RelPath, h: &editor::Header) -> Option<gtk::Widget> {
         use editor::props::{Actions, Mode, list};
@@ -136,7 +176,7 @@ impl Window {
         });
         let this = self.clone();
         let note = path.clone();
-        let custom = move |e: &PropEntry| this.source_rows(&note, e);
+        let custom = move |e: &PropEntry| this.source_fila(&note, e).map(|f| vec![f]);
         let props_widget = list(&h.entries, mode, actions, &custom);
         if path.as_str().ends_with(".md")
             && let Some(col) = props_widget.downcast_ref::<gtk::Box>()

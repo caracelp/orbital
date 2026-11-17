@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Prefijo del «enlace» que abre y cierra un callout plegable (el resto es su etiqueta).
+pub(super) const URL_CALLOUT: &str = "orbital-callout:";
+
 impl Reader {
     pub(super) fn top_block(
         &self,
@@ -13,6 +16,7 @@ impl Reader {
         let mark = s.buffer.create_mark(None, end, true);
         let base = Rc::new(Cell::new(block.source.start));
         s.plegables_lector.borrow_mut().clear();
+        s.capas.borrow_mut().clear();
         *s.block_base.borrow_mut() = base.clone();
         s.block_start.set(block.source.start);
         self.block(s, end, block, 0);
@@ -33,6 +37,7 @@ impl Reader {
             links: std::mem::take(&mut *s.link_items.borrow_mut()),
             nivel,
             plegables: std::mem::take(&mut *s.plegables_lector.borrow_mut()),
+            capas: std::mem::take(&mut *s.capas.borrow_mut()),
         }
     }
 
@@ -58,7 +63,9 @@ impl Reader {
                 tags.extend(table.lookup(&format!("h{level}")));
                 // Un encabezado de primer nivel del documento con contenido: flechita (028).
                 if depth == 0 && s.es_plegable(b.line) {
-                    self.glifos(s, end, b.line as u32, &tags, " ");
+                    let mut g = tags.clone();
+                    g.extend(table.lookup(&format!("flecha-h{level}")));
+                    self.glifos(s, end, b.line as u32, &g, " ", 0);
                 }
                 self.inlines(s, end, inlines, &tags);
                 buf.insert(end, "\n");
@@ -80,24 +87,26 @@ impl Reader {
                         .map(|b| b.line)
                         .filter(|l| s.es_plegable(*l));
                     let indice = s.plegables_lector.borrow().len();
+                    // Un ítem con subítems: la flechita cuelga a la izquierda de la viñeta (028).
                     if let Some(l) = plegable {
-                        let espacio = if item.task.is_some() || start.is_some() {
-                            " "
-                        } else {
-                            "  "
-                        };
-                        self.glifos(s, end, l as u32, &tags, espacio);
+                        self.glifos(s, end, l as u32, &tags, " ", (depth + 1) * 24);
                     }
                     let mut desde: Option<gtk::TextMark> = None;
                     if let Some(task) = item.task {
                         self.task(s, end, item, task);
-                    } else if plegable.is_none() || start.is_some() {
-                        let bullet = match start {
-                            Some(s) => format!("{}. ", s + n as u64),
-                            None => "•  ".to_owned(),
-                        };
+                    } else {
                         let refs: Vec<&gtk::TextTag> = tags.iter().collect();
-                        buf.insert_with_tags(end, &bullet, &refs);
+                        match start {
+                            Some(s) => {
+                                buf.insert_with_tags(end, &format!("{}. ", s + n as u64), &refs)
+                            }
+                            None => {
+                                let mut v = tags.clone();
+                                v.extend(table.lookup("vineta"));
+                                buf.insert_with_tags(end, "•", &v.iter().collect::<Vec<_>>());
+                                buf.insert_with_tags(end, "  ", &refs);
+                            }
+                        }
                     }
                     for (k, sub) in item.blocks.iter().enumerate() {
                         match &sub.kind {
@@ -105,6 +114,16 @@ impl Reader {
                             BlockKind::Paragraph(p) if k == 0 => {
                                 self.inlines(s, end, p, &tags);
                                 buf.insert(end, "\n");
+                            }
+                            // Una sublista lleva una guía vertical bajo la viñeta del ítem.
+                            BlockKind::List { .. } => {
+                                let inicio = buf.create_mark(None, end, true);
+                                self.block(s, end, sub, depth + 1);
+                                s.capas.borrow_mut().push(super::capas::Capa::Guia {
+                                    inicio,
+                                    fin: buf.create_mark(None, end, true),
+                                    profundidad: depth + 1,
+                                });
                             }
                             _ => self.block(s, end, sub, depth + 1),
                         }
@@ -391,6 +410,9 @@ impl Reader {
         s.buffer.insert(end, " ");
     }
 
+    /// Callout como el de Obsidian: el texto deja el lugar (márgenes, rellenos y un renglón bajo
+    /// al final) y `capas` dibuja el fondo redondeado, el ícono y la flechita. Uno plegable se
+    /// abre y cierra con un clic en el título (un «enlace» interno), sin widgets.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn callout(
         &self,
@@ -401,62 +423,82 @@ impl Reader {
         folded: Option<bool>,
         body: &[Block],
         depth: i32,
-        base: &[gtk::TextTag],
+        _base: &[gtk::TextTag],
     ) {
+        use super::capas::{CALLOUT_TITULO, Capa, estilo_callout};
         let buf = &s.buffer;
         let table = buf.tag_table();
-        let (name, glyph) = match kind {
-            CalloutKind::Nota => ("callout-nota", "ⓘ"),
-            CalloutKind::Consejo => ("callout-consejo", "✦"),
-            CalloutKind::Importante => ("callout-importante", "✱"),
-            CalloutKind::Advertencia => ("callout-advertencia", "⚠"),
-            CalloutKind::Peligro => ("callout-peligro", "✖"),
-            CalloutKind::Otro(_) => ("callout-otro", "ⓘ"),
-        };
+        let (color, icono) = estilo_callout(kind);
+        let inicio = buf.create_mark(None, end, true);
         let start = end.offset();
-        let mut ttags: Vec<gtk::TextTag> = base.to_vec();
+        // El título: en el color del tipo, con lugar a la izquierda para el ícono.
+        let mut ttags: Vec<gtk::TextTag> = vec![self.indent_tag(depth * 24 + CALLOUT_TITULO)];
         ttags.extend(table.lookup("callout-title"));
-        let trefs: Vec<&gtk::TextTag> = ttags.iter().collect();
-        buf.insert_with_tags(end, &format!("{glyph}  {title}"), &trefs);
-        // Plegable: un botón que oculta el cuerpo (el único widget del callout).
-        let fold = folded.map(|f| {
-            let tag = self.new_tag(s, gtk::TextTag::builder().invisible(f).build());
-            let icon = |open: bool| {
-                if open {
-                    "pan-down-symbolic"
-                } else {
-                    "pan-end-symbolic"
-                }
-            };
-            let button = gtk::ToggleButton::builder()
-                .icon_name(icon(!f))
-                .active(!f)
-                .valign(gtk::Align::Center)
-                .css_classes(["flat", "circular"])
-                .build();
-            button.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Mostrar u ocultar «{title}»"
-            ))]);
-            let t = tag.clone();
-            button.connect_toggled(move |b| {
-                t.set_invisible(!b.is_active());
-                b.set_icon_name(icon(b.is_active()));
-            });
-            buf.insert(end, " ");
-            self.anchor(s, end, button.upcast());
-            tag
+        ttags.extend(table.lookup("callout-cab"));
+        ttags.push(self.color_tag(color));
+        let cuerpo = folded.map(|f| {
+            let n = self.0.callouts.get() + 1;
+            self.0.callouts.set(n);
+            let nombre = format!("callout-cuerpo-{n}");
+            let tag = self.new_tag(
+                s,
+                gtk::TextTag::builder().name(&nombre).invisible(f).build(),
+            );
+            let url = format!("{URL_CALLOUT}{nombre}");
+            ttags.push(self.link_tag(s, &url));
+            (tag, url)
         });
-        buf.insert(end, "\n");
+        let trefs: Vec<&gtk::TextTag> = ttags.iter().collect();
+        let titulo_inicio = buf.create_mark(None, end, true);
+        buf.insert_with_tags(end, title, &trefs);
+        let titulo_fin = buf.create_mark(None, end, true);
+        if let Some((_, url)) = &cuerpo {
+            // Lugar para la flechita, clicable como el título; Tab llega al título.
+            buf.insert_with_tags(end, "\u{2003}\u{2003}", &trefs);
+            s.link_items.borrow_mut().push(LinkItem {
+                url: url.clone(),
+                start: titulo_inicio,
+                end: titulo_fin.clone(),
+            });
+        }
+        buf.insert_with_tags(end, "\n", &trefs);
         let body_start = end.offset();
         for sub in body {
             self.block(s, end, sub, depth + 1);
         }
-        if let Some(bg) = table.lookup(name) {
-            buf.apply_tag(&bg, &buf.iter_at_offset(start), end);
-        }
-        if let Some(tag) = &fold {
+        if let Some((tag, _)) = &cuerpo {
             buf.apply_tag(tag, &buf.iter_at_offset(body_start), end);
         }
+        // Relleno de abajo (dentro del fondo) y separación con lo que sigue.
+        let pie: Vec<gtk::TextTag> = table.lookup("callout-pie").into_iter().collect();
+        buf.insert_with_tags(end, "\n", &pie.iter().collect::<Vec<_>>());
+        if let Some(der) = table.lookup("callout-der") {
+            buf.apply_tag(&der, &buf.iter_at_offset(start), end);
+        }
+        s.capas.borrow_mut().push(Capa::Callout {
+            inicio,
+            fin: buf.create_mark(None, end, true),
+            titulo_fin,
+            color,
+            icono,
+            cuerpo: cuerpo.map(|(t, _)| t),
+            profundidad: depth,
+        });
+    }
+
+    /// Etiqueta compartida de texto de un color (se crea una vez por color).
+    fn color_tag(&self, c: crate::style::Rgb) -> gtk::TextTag {
+        let table = self.buffer().tag_table();
+        let nombre = format!("color-{}", c.hex());
+        if let Some(t) = table.lookup(&nombre) {
+            return t;
+        }
+        let t = gtk::TextTag::builder()
+            .name(&nombre)
+            .foreground(c.hex())
+            .build();
+        table.add(&t);
+        t
     }
 
     /// Tabla como texto con tabulaciones: sin widgets, seleccionable y barata de dibujar.
@@ -676,4 +718,6 @@ pub(super) struct RenderState {
     pub(super) plegables: Rc<Vec<u32>>,
     /// Elementos plegables del bloque de primer nivel en curso.
     pub(super) plegables_lector: RefCell<Vec<super::plegado::PlegableLector>>,
+    /// Lo que se dibuja a mano sobre el bloque de primer nivel en curso.
+    pub(super) capas: RefCell<Vec<super::capas::Capa>>,
 }

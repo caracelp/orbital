@@ -28,6 +28,12 @@ pub struct AppState {
     pub html_view: Option<String>,
     /// Si la búsqueda incluye archivos de `raw/` (T017 de la 004).
     pub search_raw: bool,
+    /// Ancho guardado de la ventana.
+    pub window_width: Option<i32>,
+    /// Alto guardado de la ventana.
+    pub window_height: Option<i32>,
+    /// Si la ventana estaba maximizada.
+    pub window_maximized: bool,
 }
 
 fn state_file() -> PathBuf {
@@ -88,6 +94,21 @@ impl AppState {
                 _ => None,
             })
             .unwrap_or(false);
+        let window_width = find(&entries, "window_width").and_then(|e| match &e.value {
+            PropValue::Number(s) | PropValue::Text(s) => s.parse().ok(),
+            _ => None,
+        });
+        let window_height = find(&entries, "window_height").and_then(|e| match &e.value {
+            PropValue::Number(s) | PropValue::Text(s) => s.parse().ok(),
+            _ => None,
+        });
+        let window_maximized = find(&entries, "window_maximized")
+            .and_then(|e| match &e.value {
+                PropValue::Bool(b) => Some(*b),
+                PropValue::Text(s) => Some(s == "true"),
+                _ => None,
+            })
+            .unwrap_or(false);
         Self {
             last_vault,
             recent,
@@ -95,6 +116,9 @@ impl AppState {
             md_view,
             html_view,
             search_raw,
+            window_width,
+            window_height,
+            window_maximized,
         }
     }
 
@@ -161,6 +185,15 @@ impl AppState {
         if self.search_raw {
             entries.push(("search_raw", PropValue::Bool(true)));
         }
+        if let Some(w) = self.window_width {
+            entries.push(("window_width", PropValue::Number(w.to_string())));
+        }
+        if let Some(h) = self.window_height {
+            entries.push(("window_height", PropValue::Number(h.to_string())));
+        }
+        if self.window_maximized {
+            entries.push(("window_maximized", PropValue::Bool(true)));
+        }
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }
 }
@@ -177,6 +210,9 @@ mod tests {
         s.opened(Path::new("/tmp/a"));
         s.opened(Path::new("/home/ejemplo/Documentos/Bóveda"));
         s.opened(Path::new("/tmp/a"));
+        s.window_width = Some(1200);
+        s.window_height = Some(800);
+        s.window_maximized = true;
         assert_eq!(
             s.recent,
             vec![

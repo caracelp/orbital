@@ -2,10 +2,11 @@
 //! R2 y R3 de la 002).
 //!
 //! El `GtkTextView` va directo en su `GtkScrolledWindow` (si no, GTK calcula todo el documento en
-//! cada cambio). Casi todo es texto con etiquetas: tablas con tabulaciones, callouts con un glifo y
-//! separadores como una franja. Solo son widgets anclados las propiedades, las casillas, las
-//! imágenes y el botón de los callouts plegables: cada widget anclado cuesta, y con miles la vista
-//! tardaba segundos en dibujarse.
+//! cada cambio). Casi todo es texto con etiquetas: tablas con tabulaciones y separadores como una
+//! franja. Los fondos de los callouts, las guías de las listas y las flechitas del plegado se
+//! dibujan a mano en capas de la vista (`capas`). Solo son widgets anclados las propiedades, las
+//! casillas y las imágenes: cada widget anclado cuesta, y con miles la vista tardaba segundos en
+//! dibujarse.
 //!
 //! Al abrir una nota el documento se arma en un buffer nuevo, por tramos de a lo sumo ~8 ms. Al
 //! editar (Dividida) solo se reemplazan los bloques de primer nivel que cambiaron: se comparan por
@@ -69,6 +70,8 @@ struct BlockInfo {
     nivel: Option<u8>,
     /// Elementos plegables del bloque (028).
     plegables: Vec<plegado::PlegableLector>,
+    /// Lo que se dibuja a mano sobre el bloque (fondos de callouts, guías de listas).
+    capas: Vec<capas::Capa>,
 }
 
 struct Inner {
@@ -110,6 +113,14 @@ struct Inner {
     enfoque: RefCell<Option<(u32, u32)>>,
     on_enfocar: RefCell<Option<EnfocarFn>>,
     on_subir_enfoque: RefCell<Option<SubirEnfoqueFn>>,
+    /// El elemento plegable bajo el mouse: su flechita se ve aunque esté desplegado.
+    hover_plegable: Cell<Option<u32>>,
+    /// Contador para nombrar la etiqueta del cuerpo de cada callout plegable.
+    callouts: Cell<u64>,
+    /// Etiquetas de renglones con flechita colgada: (etiqueta, sangría del texto).
+    colgados: RefCell<Vec<(gtk::TextTag, i32)>>,
+    /// Ancho de la flechita y su espacio.
+    ancho_flecha: Cell<i32>,
 }
 
 #[derive(Clone)]
@@ -136,18 +147,18 @@ pub struct Prepared {
 
 impl Reader {
     pub fn new() -> Self {
-        let view = gtk::TextView::builder()
-            .editable(false)
-            .cursor_visible(false)
-            .focusable(true)
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .top_margin(28)
-            .bottom_margin(64)
-            .pixels_below_lines(4)
-            .pixels_inside_wrap(3)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
+        // Una subclase solo para dibujar las capas propias (callouts, guías, flechitas).
+        let view: gtk::TextView = capas::VistaLector::new().upcast();
+        view.set_editable(false);
+        view.set_cursor_visible(false);
+        view.set_focusable(true);
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        view.set_top_margin(28);
+        view.set_bottom_margin(64);
+        view.set_pixels_below_lines(4);
+        view.set_pixels_inside_wrap(3);
+        view.set_vexpand(true);
+        view.set_hexpand(true);
         view.add_css_class("orbital-reader");
         view.update_property(&[gtk::accessible::Property::Label("Nota formateada")]);
         let scroller = gtk::ScrolledWindow::builder()
@@ -181,6 +192,10 @@ impl Reader {
             enfoque: RefCell::new(None),
             on_enfocar: RefCell::new(None),
             on_subir_enfoque: RefCell::new(None),
+            hover_plegable: Cell::new(None),
+            callouts: Cell::new(0),
+            colgados: RefCell::new(Vec::new()),
+            ancho_flecha: Cell::new(14),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -217,6 +232,7 @@ impl Reader {
         }
         this.center();
         this.setup_links();
+        this.setup_capas();
         let weak = Rc::downgrade(&this.0);
         let v = this.0.scroller.vadjustment();
         let attach = move |_: &gtk::Adjustment| {
@@ -365,6 +381,7 @@ impl Reader {
 
 mod actualizar;
 mod bloques;
+mod capas;
 mod enlaces;
 mod etiquetas;
 mod generado;

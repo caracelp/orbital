@@ -417,3 +417,97 @@ fn us5_toc_reader_lists_headings() {
         assert!(!visible.contains("```"), "{visible:?}");
     });
 }
+
+/// Espera a que el lector termine de volcar el documento.
+async fn esperar_volcado(reader: &Reader) {
+    for _ in 0..200 {
+        if !reader.0.blocks.borrow().is_empty() {
+            return;
+        }
+        glib::timeout_future(Duration::from_millis(10)).await;
+    }
+    panic!("el lector no volcó el documento");
+}
+
+/// Un callout plegable se abre y cierra desde su título (Tab llega a él), sin widgets anclados,
+/// y deja su fondo para la capa de dibujo.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn callout_plegable_se_alterna_desde_el_titulo() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "> [!warning]- Cuidado\n> Oculto.\n\n> [!tip] Abierto\n> Visible.\n";
+        reader.render(Prepared::new(text, &[]), || None, None);
+        esperar_volcado(&reader).await;
+        let items = reader.all_link_items();
+        let n = items
+            .iter()
+            .position(|l| l.url.starts_with(bloques::URL_CALLOUT))
+            .expect("el título del callout plegable se recorre con Tab");
+        let nombre = items[n].url[bloques::URL_CALLOUT.len()..].to_owned();
+        let tag = reader.buffer().tag_table().lookup(&nombre).unwrap();
+        assert!(tag.is_invisible(), "empieza plegado (`-`)");
+        reader.set_focused_link(Some(n));
+        assert!(reader.activate_focused_link());
+        assert!(!tag.is_invisible());
+        reader.set_focused_link(Some(n));
+        assert!(reader.activate_focused_link());
+        assert!(tag.is_invisible());
+        // Solo uno es plegable; los dos tienen su fondo.
+        assert_eq!(
+            items
+                .iter()
+                .filter(|l| l.url.starts_with(bloques::URL_CALLOUT))
+                .count(),
+            1
+        );
+        let fondos: usize = reader
+            .0
+            .blocks
+            .borrow()
+            .iter()
+            .map(|b| {
+                b.capas
+                    .iter()
+                    .filter(|c| matches!(c, capas::Capa::Callout { .. }))
+                    .count()
+            })
+            .sum();
+        assert_eq!(fondos, 2);
+        assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
+    });
+}
+
+/// La flechita sugerida con el mouse es la del elemento más interno: el ítem con subítems sobre
+/// su texto y la sección del encabezado más cercano en el resto.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn flecha_sugerida_es_la_del_elemento_mas_interno() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "# A\n\nUno.\n\n## B\n\n- ítem\n  - sub\n- otro\n\nDos.\n";
+        let mut prepared = Prepared::new(text, &[]);
+        prepared.con_plegables(&orbital_vault::plegado::plegables(text));
+        reader.render(prepared, || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), true)
+            .to_string();
+        let en = |t: &str| {
+            visible
+                .find(t)
+                .map(|b| visible[..b].chars().count() as i32)
+                .unwrap()
+        };
+        assert_eq!(reader.plegable_en(en("Uno")), Some(0));
+        assert_eq!(reader.plegable_en(en("ítem")), Some(6));
+        assert_eq!(reader.plegable_en(en("sub")), Some(6));
+        assert_eq!(reader.plegable_en(en("otro")), Some(4));
+        assert_eq!(reader.plegable_en(en("Dos")), Some(4));
+        // La viñeta queda aunque el ítem tenga flechita.
+        assert!(visible.contains("•  ítem"), "{visible:?}");
+    });
+}

@@ -177,11 +177,27 @@ pub(super) fn toc_items(
     let Some(path) = path else {
         return Vec::new();
     };
-    // Apilar por nivel: cada encabezado entra en la lista de su nivel; los niveles menores
-    // cerradas se agregan como lista anidada en el ítem anterior.
+    // Una pila de listas abiertas, de la menos a la más profunda. Un encabezado más profundo
+    // abre una sublista; uno de nivel igual o menor cierra las más profundas, que quedan
+    // anidadas en el último ítem de su lista madre.
     struct Pila {
         nivel: u8,
         items: Vec<ListItem>,
+    }
+    fn cerrar(pilas: &mut Vec<Pila>) {
+        let Some(cerrada) = pilas.pop() else { return };
+        let lista = Block {
+            line: 0,
+            id: None,
+            source: 0..0,
+            kind: BlockKind::List {
+                start: None,
+                items: cerrada.items,
+            },
+        };
+        if let Some(ultimo) = pilas.last_mut().and_then(|p| p.items.last_mut()) {
+            ultimo.blocks.push(lista);
+        }
     }
     let mut pilas: Vec<Pila> = Vec::new();
     for (nivel, titulo) in encabezados {
@@ -200,53 +216,34 @@ pub(super) fn toc_items(
                 }]),
             }],
         };
-        while pilas.last().is_some_and(|p| p.nivel >= *nivel) {
-            let cerrada = pilas.pop().expect("verificada no vacía");
-            let lista = Block {
-                line: 0,
-                id: None,
-                source: 0..0,
-                kind: BlockKind::List {
-                    start: None,
-                    items: cerrada.items,
-                },
-            };
+        loop {
+            let madre = pilas.len().checked_sub(2).map(|k| pilas[k].nivel);
             match pilas.last_mut() {
-                Some(padre) => match &mut padre.items.last_mut() {
-                    Some(ultimo) => ultimo.blocks.push(lista),
-                    None => padre.items.push(ListItem {
-                        task: None,
-                        blocks: vec![lista],
-                    }),
-                },
                 None => pilas.push(Pila {
                     nivel: *nivel,
-                    items: vec![item.clone()],
+                    items: vec![item],
                 }),
+                Some(p) if p.nivel < *nivel => pilas.push(Pila {
+                    nivel: *nivel,
+                    items: vec![item],
+                }),
+                Some(p) if p.nivel == *nivel => p.items.push(item),
+                // Más profunda que este encabezado: se cierra si la madre llega a su nivel;
+                // si no (saltos de nivel, o la nota empieza con `##`), sube a su nivel.
+                Some(_) if madre.is_some_and(|m| m >= *nivel) => {
+                    cerrar(&mut pilas);
+                    continue;
+                }
+                Some(p) => {
+                    p.nivel = *nivel;
+                    p.items.push(item);
+                }
             }
-        }
-        match pilas.last_mut() {
-            Some(p) if p.nivel < *nivel => p.items.push(item),
-            _ => pilas.push(Pila {
-                nivel: *nivel,
-                items: vec![item],
-            }),
+            break;
         }
     }
     while pilas.len() > 1 {
-        let cerrada = pilas.pop().expect("verificada no vacía");
-        let lista = Block {
-            line: 0,
-            id: None,
-            source: 0..0,
-            kind: BlockKind::List {
-                start: None,
-                items: cerrada.items,
-            },
-        };
-        if let Some(ultimo) = pilas.last_mut().and_then(|p| p.items.last_mut()) {
-            ultimo.blocks.push(lista);
-        }
+        cerrar(&mut pilas);
     }
     pilas.pop().map(|p| p.items).unwrap_or_default()
 }
@@ -404,5 +401,53 @@ impl Prepared {
             }
             *h = orbital_vault::write::hash(&bytes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La forma del TOC: cada ítem con su título y, entre paréntesis, sus hijos.
+    fn forma(items: &[ListItem]) -> String {
+        items
+            .iter()
+            .map(|it| {
+                let mut s = String::new();
+                for b in &it.blocks {
+                    match &b.kind {
+                        BlockKind::Paragraph(p) => s.push_str(&plain_text(p)),
+                        BlockKind::List { items, .. } => {
+                            s.push('(');
+                            s.push_str(&forma(items));
+                            s.push(')');
+                        }
+                        _ => {}
+                    }
+                }
+                s
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn toc(encabezados: &[(u8, &str)]) -> String {
+        let e: Vec<(u8, String)> = encabezados
+            .iter()
+            .map(|(n, t)| (*n, (*t).to_owned()))
+            .collect();
+        let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
+        forma(&toc_items(&e, Some(&path), 0, 6))
+    }
+
+    #[test]
+    fn toc_anida_por_nivel() {
+        assert_eq!(
+            toc(&[(1, "A"), (2, "B"), (3, "C"), (2, "D"), (1, "E")]),
+            "A(B(C) D) E"
+        );
+        // Saltos de nivel y una nota que empieza más profunda.
+        assert_eq!(toc(&[(1, "A"), (3, "B"), (2, "C")]), "A(B C)");
+        assert_eq!(toc(&[(2, "A"), (3, "B"), (1, "C"), (2, "D")]), "A(B) C(D)");
     }
 }

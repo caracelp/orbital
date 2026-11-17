@@ -301,7 +301,6 @@ pub(super) fn construir_centro() -> Centro {
     note_menu_button.set_child(Some(&crate::iconos::Icono::new("mas", 18)));
     note_menu_button.add_css_class("flat");
     note_menu_button.add_css_class("orbital-iconbtn");
-    content_header.pack_end(&note_menu_button);
     // `listas.rs` lo rearma al abrirse, con el estado de Favoritos y Guardados (027).
     let note_menu = note_menu_button
         .popover()
@@ -347,10 +346,18 @@ pub(super) fn construir_centro() -> Centro {
             .sync_create()
             .build();
     }
-    content_header.pack_end(&view_button);
     let content_view = adw::ToolbarView::new();
     // Pestañas de notas (025) arriba de la barra de la nota.
     let pestanas = crate::pestanas::Pestanas::new();
+    let note_actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .margin_end(8)
+        .build();
+    note_actions.append(&view_button);
+    note_actions.append(&note_menu_button);
+    pestanas.barra().set_end_action_widget(Some(&note_actions));
     content_view.add_top_bar(pestanas.barra());
     content_view.add_top_bar(&content_header);
     // Avisos de la nota abierta: falta `type` (con «Completar») o propiedades inválidas.

@@ -171,4 +171,27 @@ pub(super) fn conectar(this: &Window, app: &adw::Application) {
             }
         });
     }
+    {
+        let weak = Rc::downgrade(&this.0);
+        this.0.window.connect_close_request(move |win| {
+            if let Some(i) = weak.upgrade()
+                && i.persist.get()
+            {
+                let w = win.width();
+                let h = win.height();
+                let max = win.is_maximized();
+                glib::spawn_future_local(async move {
+                    let _ = gio::spawn_blocking(move || {
+                        let mut s = AppState::load();
+                        s.window_width = Some(w);
+                        s.window_height = Some(h);
+                        s.window_maximized = max;
+                        s.save()
+                    })
+                    .await;
+                });
+            }
+            glib::Propagation::Proceed
+        });
+    }
 }

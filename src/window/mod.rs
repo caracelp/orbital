@@ -257,15 +257,23 @@ impl Window {
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stack));
 
+        let state = AppState::load();
+        let default_w = state.window_width.unwrap_or(1100).max(640);
+        let default_h = state.window_height.unwrap_or(720).max(450);
+
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Orbital")
-            .default_width(1000)
-            .default_height(680)
-            .width_request(360)
-            .height_request(300)
+            .default_width(default_w)
+            .default_height(default_h)
+            .width_request(640)
+            .height_request(450)
             .content(&toasts)
             .build();
+
+        if state.window_maximized {
+            window.maximize();
+        }
 
         // Anchos de la maqueta: 260/280 px y, en ventanas más chicas, 220/220 y 190/170. La
         // maqueta lo hace a 900 y 680 px; acá el centro tiene un ancho mínimo real (la columna del

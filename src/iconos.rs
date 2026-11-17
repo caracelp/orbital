@@ -38,7 +38,7 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
     ),
     (
         "estrella",
-        "M12 3l2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z",
+        "M12 2.5l2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z",
     ),
     (
         "configuracion",
@@ -48,13 +48,13 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
     ("arriba", "M6 15l6-6 6 6"),
     (
         "planeta",
-        "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0zM7.5 12a4.5 4.5 0 1 0 9 0a4.5 4.5 0 1 0 -9 0z",
+        "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0zM8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0z",
     ),
     ("derecha", "M9 6l6 6-6 6"),
     ("codigo", "M8 8l-4 4 4 4m8-8 4 4-4 4M14 4l-4 16"),
     (
         "mas",
-        "M11 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0zM11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0zM11 19a1 1 0 1 0 2 0a1 1 0 1 0 -2 0z",
+        "M12 5a1.2 1.2 0 1 0 0.01 0M12 12a1.2 1.2 0 1 0 0.01 0M12 19a1.2 1.2 0 1 0 0.01 0",
     ),
     (
         "buscar",
@@ -64,11 +64,11 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
     ("selector", "M4 5h16v14H4zM8 9h8m-8 4h5M15 15l2 2 4-4"),
     (
         "canva",
-        "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2zM7 8h5v5H7zM12 10h5m-7 3v4",
+        "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM7 8h5v5H7zM12 10h5m-7 3v4",
     ),
     (
         "db",
-        "M4 5a8 3 0 1 0 16 0a8 3 0 1 0 -16 0zM4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0",
+        "M4 5a8 3 0 1 0 16 0a8 3 0 1 0 -16 0zM4 5v14c0 3 16 3 16 0V5M4 12c0 3 16 3 16 0",
     ),
     (
         "comandos",
@@ -92,6 +92,56 @@ pub(crate) const TRAZOS: &[(&str, &str)] = &[
         "brujula",
         "M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0zM16.2 7.8l-2.6 5.8-5.8 2.6 2.6-5.8z",
     ),
+    (
+        "etiqueta",
+        "M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82zM7 7h.01",
+    ),
+    ("reloj", "M12 4a8 8 0 1 0 8 8 8 8 0 0 0-8-8zm0 4v4l2.5 2.5"),
+    // Callouts de la vista formateada.
+    ("callout-lapiz", "M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"),
+    (
+        "callout-info",
+        "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 11v6M12 7.5v.5",
+    ),
+    (
+        "callout-llama",
+        "M12 3c1 3 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5c0 2 1 3 2 3c0-3-1-5 1-8.5z",
+    ),
+    ("callout-alerta", "M12 4L2.5 20h19zM12 10v4.5M12 17.5v.5"),
+    ("callout-rayo", "M13 2L4 14h7l-1 8 9-12h-7z"),
+    ("callout-check", "M5 12.5l4.5 4.5L19 7"),
+    (
+        "callout-pregunta",
+        "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7M12 16.5v.5",
+    ),
+    ("callout-cruz", "M6 6l12 12M18 6L6 18"),
+    (
+        "callout-lista",
+        "M9 6h11M9 12h11M9 18h11M4.5 6h.5M4.5 12h.5M4.5 18h.5",
+    ),
+    (
+        "callout-cita",
+        "M5 17c2-1 3-3 3-6V7H4v4h4M15 17c2-1 3-3 3-6V7h-4v4h4",
+    ),
+    (
+        "callout-tarea",
+        "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM8 12l3 3 5-5",
+    ),
+    // Tipos de propiedad.
+    ("prop-texto", "M4 7h16M4 12h16M4 17h10"),
+    ("prop-numero", "M10 4L8 20M16 4l-2 16M5 9h15M4 15h15"),
+    (
+        "prop-casilla",
+        "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM8 12l3 3 5-6",
+    ),
+    (
+        "prop-fecha",
+        "M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM4 10h16M8 3v4M16 3v4",
+    ),
+    (
+        "prop-enlace",
+        "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
+    ),
 ];
 
 thread_local! {
@@ -110,6 +160,28 @@ fn trazo(nombre: &str) -> Option<gsk::Path> {
         c.insert(clave, p.clone());
         Some(p)
     })
+}
+
+/// Dibuja el ícono `nombre` en un cuadrado de `lado` px con esquina en (`x`, `y`), con trazo
+/// del `color` (para capas dibujadas a mano, como la vista formateada).
+pub(crate) fn dibujar(
+    snapshot: &gtk::Snapshot,
+    nombre: &str,
+    x: f32,
+    y: f32,
+    lado: f32,
+    color: &gdk::RGBA,
+) {
+    let Some(path) = trazo(nombre) else { return };
+    let escala = lado / 24.0;
+    snapshot.save();
+    snapshot.translate(&graphene::Point::new(x, y));
+    snapshot.scale(escala, escala);
+    let stroke = gsk::Stroke::new(if lado <= 16.0 { 1.6 } else { 1.8 });
+    stroke.set_line_cap(gsk::LineCap::Round);
+    stroke.set_line_join(gsk::LineJoin::Round);
+    snapshot.append_stroke(&path, &stroke, color);
+    snapshot.restore();
 }
 
 mod imp {
@@ -181,7 +253,7 @@ impl Icono {
         let imp = this.imp();
         *imp.nombre.borrow_mut() = nombre;
         imp.tamano.set(tamano);
-        imp.grosor.set(if tamano <= 16 { 1.7 } else { 1.8 });
+        imp.grosor.set(if tamano <= 16 { 1.25 } else { 1.35 });
         this.set_valign(gtk::Align::Center);
         this.set_halign(gtk::Align::Center);
         this

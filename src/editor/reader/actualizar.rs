@@ -144,6 +144,7 @@ impl Reader {
             embedded: Cell::new(0),
             plegables,
             plegables_lector: RefCell::new(Vec::new()),
+            capas: RefCell::new(Vec::new()),
         });
         if let Some(h) = header() {
             let mut end = state.buffer.end_iter();
@@ -251,6 +252,7 @@ impl Reader {
             embedded: Cell::new(0),
             plegables,
             plegables_lector: RefCell::new(Vec::new()),
+            capas: RefCell::new(Vec::new()),
         };
         i.focused_link.set(None);
         let mut old = std::mem::take(&mut *i.blocks.borrow_mut());

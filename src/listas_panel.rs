@@ -134,6 +134,8 @@ fn fila(
     total: usize,
 ) -> gtk::ListBoxRow {
     let caja = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let icono_archivo = crate::iconos::Icono::new("archivo", 16);
+    caja.append(&icono_archivo);
     let nombre = gtk::Label::builder()
         .label(nombre_de(ruta))
         .xalign(0.0)
