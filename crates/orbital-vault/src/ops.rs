@@ -100,13 +100,16 @@ impl Vault {
             title: text("title").unwrap_or_else(|| stem(path).to_owned()),
             link,
             description: text("description").unwrap_or_default(),
-            section: text("type").unwrap_or_else(|| {
-                match format {
-                    Format::Md => "atomo",
-                    Format::Html => "sintesis",
-                }
-                .to_owned()
-            }),
+            section: crate::props::find_type(entries)
+                .and_then(|e| e.value.as_text())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    match format {
+                        Format::Md => "atomo",
+                        Format::Html => "sintesis",
+                    }
+                    .to_owned()
+                }),
         }))
     }
 

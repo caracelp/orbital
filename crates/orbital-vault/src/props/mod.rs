@@ -60,6 +60,32 @@ pub fn find<'a>(entries: &'a [PropEntry], key: &str) -> Option<&'a PropEntry> {
     entries.iter().find(|e| e.key == key)
 }
 
+/// Clave OKF del tipo de la nota. Las notas nuevas la escriben siempre así.
+pub const TYPE_KEY: &str = "type";
+/// Alias en español de [`TYPE_KEY`]: una nota con `tipo: cuaderno` tiene tipo `cuaderno`.
+pub const TYPE_ALIAS: &str = "tipo";
+
+/// `type` o su alias `tipo`.
+pub fn is_type_key(key: &str) -> bool {
+    key == TYPE_KEY || key == TYPE_ALIAS
+}
+
+/// La entrada que da el tipo de la nota: `type` si tiene valor; si no, `tipo`. Si la nota tiene
+/// las dos, gana `type`.
+pub fn find_type(entries: &[PropEntry]) -> Option<&PropEntry> {
+    let with_value = |key| find(entries, key).filter(|e| e.value != PropValue::Null);
+    with_value(TYPE_KEY).or_else(|| with_value(TYPE_ALIAS))
+}
+
+/// La clave en la que hay que escribir el tipo para no duplicarlo: `tipo` si la nota solo tiene el
+/// alias; si no, `type`.
+pub fn type_key_for(entries: &[PropEntry]) -> &'static str {
+    match find_type(entries) {
+        Some(e) if e.key == TYPE_ALIAS => TYPE_ALIAS,
+        _ => TYPE_KEY,
+    }
+}
+
 /// Bloque de propiedades de una nota.
 #[derive(Clone, PartialEq, Debug)]
 pub struct PropBlock {
@@ -130,7 +156,7 @@ pub fn validate(entries: &[PropEntry], in_wiki: bool) -> Vec<Warning> {
         seen.push(&e.key);
         let v = &e.value;
         let ok = match e.key.as_str() {
-            "type" | "title" | "description" | "resource" => is_text(v),
+            "type" | "tipo" | "title" | "description" | "resource" => is_text(v),
             "tags" | "aliases" => is_text_list(v),
             "status" => match v.as_text() {
                 Some("draft" | "stable" | "deprecated") => true,
@@ -154,11 +180,7 @@ pub fn validate(entries: &[PropEntry], in_wiki: bool) -> Vec<Warning> {
             out.push(Warning::UnexpectedType { key: e.key.clone() });
         }
     }
-    if in_wiki
-        && !entries
-            .iter()
-            .any(|e| e.key == "type" && e.value != PropValue::Null)
-    {
+    if in_wiki && find_type(entries).is_none() {
         out.push(Warning::MissingType);
     }
     out

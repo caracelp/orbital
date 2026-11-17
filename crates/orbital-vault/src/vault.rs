@@ -140,6 +140,28 @@ impl Vault {
             .query(definition)
     }
 
+    /// Usa el índice de la bóveda (lo arma la primera vez: lee todas las notas). Fuera del hilo GTK.
+    fn with_base_index<T>(&self, f: impl FnOnce(&crate::bases::BaseIndex) -> T) -> T {
+        let mut cache = self.base_index.lock().unwrap_or_else(|e| e.into_inner());
+        f(cache.get_or_insert_with(|| crate::bases::BaseIndex::build(self)))
+    }
+
+    /// Identificadores de nota usados en toda la bóveda (`id` y delimitadores), normalizados.
+    /// Ejecutar fuera del hilo GTK: la primera vez lee todas las notas.
+    pub fn used_note_ids(&self) -> std::collections::HashSet<String> {
+        self.with_base_index(|i| i.note_ids().map(str::to_owned).collect())
+    }
+
+    /// Notas que usan el identificador `id`. Ejecutar fuera del hilo GTK.
+    pub fn notes_with_note_id(&self, id: &str) -> Vec<RelPath> {
+        self.with_base_index(|i| i.notes_with_id(id))
+    }
+
+    /// Identificadores repetidos en la bóveda con las notas que los usan. Fuera del hilo GTK.
+    pub fn duplicate_note_ids(&self) -> Vec<(String, Vec<RelPath>)> {
+        self.with_base_index(|i| i.duplicate_ids())
+    }
+
     /// Actualiza únicamente la ruta modificada, sin inicializar un índice que nadie usa.
     pub fn update_base_index(&self, path: &RelPath) {
         let mut cache = self.base_index.lock().unwrap_or_else(|e| e.into_inner());

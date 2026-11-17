@@ -11,11 +11,20 @@ pub struct BaseRow {
     pub error: Option<String>,
 }
 impl BaseRow {
+    /// Valor de una propiedad. `type` lee también su alias `tipo` (gana `type` si están las dos).
     pub fn value(&self, key: &str) -> Option<&PropValue> {
-        self.properties
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v)
+        let get = |key: &str| {
+            self.properties
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v)
+        };
+        match get(key) {
+            None | Some(PropValue::Null) if key == crate::props::TYPE_KEY => {
+                get(crate::props::TYPE_ALIAS).or(get(key))
+            }
+            found => found,
+        }
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -27,6 +36,10 @@ pub struct BaseSnapshot {
 pub struct BaseIndex {
     rows: BTreeMap<RelPath, (BaseRow, Vec<String>)>,
     errors: BTreeMap<RelPath, String>,
+    /// Identificadores de nota (propiedad `id` y delimitadores `<!-- block … ID -->`) de cada
+    /// nota, y las notas que usan cada uno: dan ids nuevos únicos y avisan de los repetidos.
+    ids: BTreeMap<RelPath, Vec<String>>,
+    by_id: std::collections::HashMap<String, Vec<RelPath>>,
 }
 impl BaseIndex {
     pub fn build(vault: &Vault) -> Self {
@@ -41,6 +54,14 @@ impl BaseIndex {
     pub fn update(&mut self, vault: &Vault, path: &RelPath) {
         self.rows.remove(path);
         self.errors.remove(path);
+        for id in self.ids.remove(path).unwrap_or_default() {
+            if let Some(paths) = self.by_id.get_mut(&id) {
+                paths.retain(|p| p != path);
+                if paths.is_empty() {
+                    self.by_id.remove(&id);
+                }
+            }
+        }
         if crate::Format::from_name(path.file_name()).is_none()
             || !path.to_path(vault.root()).exists()
         {
@@ -90,6 +111,14 @@ impl BaseIndex {
             .into_iter()
             .map(|t| t.tag)
             .collect();
+        let ids =
+            crate::note_ids::ids_of(note.prop("id").and_then(PropValue::as_text), note.body());
+        for id in &ids {
+            self.by_id.entry(id.clone()).or_default().push(path.clone());
+        }
+        if !ids.is_empty() {
+            self.ids.insert(path.clone(), ids);
+        }
         let row = BaseRow {
             path: path.clone(),
             title,
@@ -99,6 +128,35 @@ impl BaseIndex {
             error,
         };
         self.rows.insert(path.clone(), (row, tags));
+    }
+    /// Todos los identificadores de nota usados en la bóveda (normalizados).
+    pub fn note_ids(&self) -> impl Iterator<Item = &str> {
+        self.by_id.keys().map(String::as_str)
+    }
+    /// Las notas que usan `id` (propiedad o delimitadores), en orden.
+    pub fn notes_with_id(&self, id: &str) -> Vec<RelPath> {
+        let mut v = self
+            .by_id
+            .get(&crate::note_ids::normalize(id))
+            .cloned()
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+    /// Identificadores que usan dos notas o más, con sus notas, ordenados.
+    pub fn duplicate_ids(&self) -> Vec<(String, Vec<RelPath>)> {
+        let mut v: Vec<_> = self
+            .by_id
+            .iter()
+            .filter(|(_, paths)| paths.len() > 1)
+            .map(|(id, paths)| {
+                let mut paths = paths.clone();
+                paths.sort();
+                (id.clone(), paths)
+            })
+            .collect();
+        v.sort();
+        v
     }
     pub fn query(&self, definition: &BaseDefinition) -> BaseSnapshot {
         let mut rows: Vec<_> = self

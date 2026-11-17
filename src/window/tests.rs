@@ -1891,3 +1891,92 @@ mod plegado_tests {
         });
     }
 }
+
+mod tipo_e_ids_tests {
+    //! 043: `tipo` como alias de `type` e ids de nota únicos en toda la bóveda.
+    use super::super::*;
+    use super::listas_tests::{abrir, app, esperar};
+
+    /// Dos notas sin id estructuradas una tras otra reciben ids distintos, después de los de la
+    /// bóveda (AT-001, AT-002); una nota con `tipo` no pide `type`; un id repetido se avisa.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn ids_unicos_y_tipo_alias() {
+        let app = app("TipoIds");
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-043-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("wiki")).unwrap();
+            let escribir = |p: &str, c: &str| std::fs::write(root.join(p), c).unwrap();
+            escribir("wiki/uno.md", "---\nid: AT-001\ntype: atomo\n---\n# Uno\n");
+            escribir(
+                "wiki/dos.md",
+                "---\ntype: atomo\n---\n<!-- block 1 AT-002 -->\n# Dos\n<!---->\n",
+            );
+            escribir(
+                "wiki/copia.md",
+                "---\nid: AT-001\ntype: atomo\n---\n# Copia\n",
+            );
+            escribir("wiki/a.md", "# A\n\nTexto a.\n");
+            escribir("wiki/b.md", "# B\n\nTexto b.\n");
+            escribir("wiki/cuaderno.md", "---\ntipo: cuaderno\n---\n# Cuaderno\n");
+
+            let w = Window::new(&app);
+            w.set_persist(false);
+            w.0.window.present();
+            w.open_path(root.clone()).await;
+
+            let id_en_editor = |w: &Window| {
+                crate::grafo::ramas_libres::id_y_tipo_de_nota(&w.0.code_editor.text()).0
+            };
+            abrir(&w, "wiki/a.md").await;
+            esperar("se carga a.md", || {
+                w.0.code_editor.text().contains("Texto a.")
+            })
+            .await;
+            w.estructurar_nota_tres_partes();
+            esperar("a.md recibe id", || id_en_editor(&w).is_some()).await;
+            assert_eq!(id_en_editor(&w).as_deref(), Some("AT-003"));
+
+            // Sin esperar el guardado: el id dado en la sesión cuenta igual.
+            abrir(&w, "wiki/b.md").await;
+            esperar("se carga b.md", || {
+                w.0.code_editor.text().contains("Texto b.")
+            })
+            .await;
+            w.estructurar_nota_tres_partes();
+            esperar("b.md recibe id", || id_en_editor(&w).is_some()).await;
+            assert_eq!(id_en_editor(&w).as_deref(), Some("AT-004"));
+
+            // `tipo: cuaderno`: sin aviso de `type`; al estructurarla, no se agrega `type`.
+            abrir(&w, "wiki/cuaderno.md").await;
+            esperar("se carga cuaderno.md", || {
+                w.0.code_editor.text().contains("# Cuaderno")
+            })
+            .await;
+            assert!(
+                !w.0.type_banner.is_visible(),
+                "una nota con tipo no pide type"
+            );
+            w.estructurar_nota_tres_partes();
+            esperar("cuaderno.md recibe id", || id_en_editor(&w).is_some()).await;
+            let texto = w.0.code_editor.text();
+            assert_eq!(id_en_editor(&w).as_deref(), Some("CU-001"), "{texto}");
+            assert!(texto.contains("tipo: cuaderno"), "{texto}");
+            assert!(!texto.contains("type:"), "{texto}");
+
+            // AT-001 está en uno.md y en copia.md: aviso no bloqueante, sin escribir nada.
+            let antes = std::fs::read(root.join("wiki/uno.md")).unwrap();
+            abrir(&w, "wiki/uno.md").await;
+            esperar("aviso de id repetido", || {
+                w.0.note_banner.is_visible() && w.0.note_banner.title().contains("AT-001")
+            })
+            .await;
+            assert!(w.0.note_banner.title().contains("copia.md"));
+            assert_eq!(std::fs::read(root.join("wiki/uno.md")).unwrap(), antes);
+
+            w.0.window.destroy();
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+}

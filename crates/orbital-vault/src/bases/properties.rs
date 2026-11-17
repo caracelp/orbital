@@ -9,6 +9,7 @@ fn reserved(key: &str) -> bool {
     matches!(
         key,
         "type"
+            | "tipo"
             | "title"
             | "description"
             | "resource"
@@ -88,6 +89,12 @@ pub fn edit_cell(
     if note.hash != expected_hash {
         return Err(VaultError::Conflict { path: path.clone() });
     }
+    // La columna `type` muestra el alias `tipo`: editarla cambia el alias, sin duplicar el tipo.
+    let key = if key == crate::props::TYPE_KEY {
+        note.type_key()
+    } else {
+        key
+    };
     let updated = match value {
         Some(v) => note.with_prop(key, v)?,
         None => note.without_prop(key)?,

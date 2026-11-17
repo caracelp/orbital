@@ -112,7 +112,20 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
 - Obligatoria en `wiki/`: `type` (no bloqueante; Orbital avisa si falta).
 - Reconocidas: las de OKF v0.2 (`type`, `title`, `description`, `resource`, `tags`, `status`, `sources`,
   `generated`, `verified`, `stale_after`) y las de Orbital (`aliases`, `archived`, `created`, `updated`).
-- Valores de `type` usados por Orbital: `atomo`, `sintesis`, `plantilla`, `diario`. Se aceptan otros.
+- Valores de `type` usados por Orbital: `atomo`, `sintesis`, `plantilla`, `diario`. Se aceptan otros
+  (tipos libres, como `cuaderno`): no son un error.
+- `tipo` es alias pleno de `type`: una nota con `tipo: cuaderno` tiene tipo `cuaderno` y no recibe el
+  aviso de que falta `type`. Orbital no le agrega `type` y, si cambia el tipo (por ejemplo desde Bases),
+  escribe en `tipo`. Si una nota tiene las dos claves, **gana `type`** y `tipo` se conserva sin usarse.
+  Las notas nuevas se crean con `type`.
+- `id` (040/041): identificador de la nota, `<PREFIJO>-NNN` (`AT-001`). El prefijo sale del tipo: tabla
+  fija (`atomo` → `AT`, `apunte` → `AP`, `concepto` → `CO`, `cuaderno` → `CU`…) o, para un tipo libre,
+  su primera letra y la siguiente que no forme un prefijo de la tabla (`cosa` → `CS`, `cuento` → `CE`).
+  El prefijo depende solo del nombre del tipo; dos tipos libres pueden compartirlo. El número es el
+  primero libre en **toda la bóveda**: cuenta los `id` de todas las notas y los ids de los delimitadores
+  `<!-- block … ID -->`, `<!-- summary ID -->`, `<!-- sources ID -->` y `<!-- connections ID -->`.
+  Orbital solo pone un `id` cuando se le pide (Estructurar en 3 partes, una parte opcional, Ramas
+  libres). Si dos notas tienen el mismo id, avisa en la nota (sin bloquear ni reescribir nada).
 - Las fechas con hora llevan desplazamiento explícito (OKF §5).
 - Las claves desconocidas se conservan. Editar una propiedad no cambia el resto del bloque ni del archivo.
 

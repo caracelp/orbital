@@ -119,6 +119,7 @@ impl DiagnosticoTresPartes {
             .or(id_de_bloque)
             .or_else(|| id_sugerido.map(str::to_owned))
             .unwrap_or_else(|| {
+                // Solo para mostrar: el id que se escribe lo da `Window::con_id_de_nota`.
                 let t = tipo_fm.as_deref().unwrap_or("atomo");
                 siguiente_id_nota(t, std::iter::empty())
             });
@@ -314,27 +315,21 @@ fn analizar_frontmatter_nota(texto: &str) -> (bool, Option<String>, Option<Strin
     else {
         return (false, None, None);
     };
-    let mut id = None;
-    let mut tipo = None;
-    let mut cerrado = false;
-    for l in resto.lines() {
+    let mut fin = None;
+    let mut offset = 0usize;
+    for l in resto.split_inclusive('\n') {
         let t = l.trim();
         if t == "---" || t == "..." {
-            cerrado = true;
+            fin = Some(offset);
             break;
         }
-        if let Some(v) = t.strip_prefix("id:") {
-            let val = v.trim().trim_matches(['"', '\'']);
-            if !val.is_empty() {
-                id = Some(val.to_owned());
-            }
-        } else if let Some(v) = t.strip_prefix("type:") {
-            let val = v.trim().trim_matches(['"', '\'']);
-            if !val.is_empty() {
-                tipo = Some(val.to_owned());
-            }
-        }
+        offset += l.len();
     }
+    let cerrado = fin.is_some();
+    // El tipo es `type` o su alias `tipo` (gana `type` si están las dos).
+    let (id, tipo) = crate::grafo::ramas_libres::extraer_id_y_tipo_de_frontmatter(
+        &resto[..fin.unwrap_or(resto.len())],
+    );
     let tiene_props = cerrado && id.is_some() && tipo.is_some();
     (tiene_props, id, tipo)
 }

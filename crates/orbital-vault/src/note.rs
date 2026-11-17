@@ -77,6 +77,21 @@ impl Note {
             .map(|e| &e.value)
     }
 
+    /// El tipo de la nota: `type` o, si no está, su alias `tipo` (gana `type` si están las dos).
+    pub fn kind(&self) -> Option<&str> {
+        self.props
+            .as_ref()
+            .and_then(|b| props::find_type(&b.entries))
+            .and_then(|e| e.value.as_text())
+    }
+
+    /// La clave donde se escribe el tipo de esta nota (`tipo` si solo tiene el alias).
+    pub fn type_key(&self) -> &'static str {
+        self.props
+            .as_ref()
+            .map_or(props::TYPE_KEY, |b| props::type_key_for(&b.entries))
+    }
+
     /// Avisos no bloqueantes sobre las propiedades.
     pub fn warnings(&self) -> Vec<Warning> {
         let entries = self.props.as_ref().map_or(&[][..], |b| &b.entries[..]);
@@ -118,10 +133,13 @@ impl Note {
     /// Huella de lo que muestra `index.md` de esta nota: si cambia al guardar, hay que ponerlo al día.
     pub(crate) fn index_key(&self) -> u64 {
         let mut text = String::new();
-        for key in ["title", "description", "type", "archived"] {
+        for key in ["title", "description", "archived"] {
             if let Some(v) = self.prop(key) {
                 text.push_str(&format!("{key}={v:?}\n"));
             }
+        }
+        if let Some(t) = self.kind() {
+            text.push_str(&format!("type={t:?}\n"));
         }
         hash(text.as_bytes())
     }
@@ -317,7 +335,7 @@ impl Vault {
         receipt: &mut WriteReceipt,
     ) -> Result<(), VaultError> {
         if !receipt.written.is_empty()
-            && matches!(key, "title" | "description" | "type" | "archived")
+            && matches!(key, "title" | "description" | "type" | "tipo" | "archived")
         {
             receipt
                 .written
@@ -409,16 +427,13 @@ impl Vault {
         };
         let (rendered, unknown) = crate::template::render(&tpl.source, &vars);
         let note = parse(path.clone(), self.zone(&path), rendered, false)?;
-        let keep_type = note
-            .prop("type")
-            .and_then(PropValue::as_text)
-            .is_some_and(|t| t != "plantilla");
+        let keep_type = note.kind().is_some_and(|t| t != "plantilla");
         let content = if keep_type {
             note.source
         } else {
             edit(
                 &note,
-                "type",
+                note.type_key(),
                 Some(&PropValue::Text(tpl.format.default_type().to_owned())),
             )?
         };
@@ -530,7 +545,7 @@ impl Vault {
                 continue;
             };
             let entries = &block.entries;
-            if props::find(entries, "type").and_then(|p| p.value.as_text()) == Some("plantilla") {
+            if props::find_type(entries).and_then(|p| p.value.as_text()) == Some("plantilla") {
                 meta.templates.push(e.path.clone());
             }
             if props::find(entries, "archived").is_some_and(|p| p.value == PropValue::Bool(true)) {

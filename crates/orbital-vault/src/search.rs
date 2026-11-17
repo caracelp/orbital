@@ -579,6 +579,16 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         }
     }
 
+    // `tipo` es alias de `type`: `[type:cuaderno]` encuentra `tipo: cuaderno` (si no hay `type`).
+    if yaml_keys.contains(crate::props::TYPE_ALIAS) && !yaml_keys.contains(crate::props::TYPE_KEY) {
+        let alias: Vec<_> = yaml_props
+            .iter()
+            .filter(|(k, _)| k == crate::props::TYPE_ALIAS)
+            .map(|(_, v)| (crate::props::TYPE_KEY.to_owned(), v.clone()))
+            .collect();
+        yaml_props.extend(alias);
+        yaml_keys.insert(crate::props::TYPE_KEY.to_owned());
+    }
     let mut props = yaml_props;
     for (k, v) in inline_props {
         if !yaml_keys.contains(&k) {
