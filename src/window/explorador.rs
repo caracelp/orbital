@@ -177,14 +177,17 @@ impl Window {
         }
         for ruta in recientes.iter().take(5) {
             let nombre = ruta.rsplit('/').next().unwrap_or(ruta);
+            let fila = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            fila.append(&crate::iconos::Icono::new("archivo", 16));
+            fila.append(
+                &gtk::Label::builder()
+                    .label(nombre)
+                    .xalign(0.0)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .build(),
+            );
             let b = gtk::Button::builder()
-                .child(
-                    &gtk::Label::builder()
-                        .label(nombre)
-                        .xalign(0.0)
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
-                        .build(),
-                )
+                .child(&fila)
                 .tooltip_text(ruta.as_str())
                 .css_classes(["flat", "orbital-list-item"])
                 .build();

@@ -128,6 +128,18 @@ fn imagenes(widget: &impl IsA<gtk::Widget>) -> (gtk::IconPaintable, gtk::IconPai
     (cargar("pan-down-symbolic"), cargar("pan-end-symbolic"))
 }
 
+/// La línea del elemento plegable más interno que contiene `linea` (la suya o su contenido).
+fn plegable_bajo(ps: &[nucleo::Plegable], linea: u32) -> Option<u32> {
+    let n = ps.partition_point(|p| p.linea <= linea).checked_sub(1)?;
+    let mut p = &ps[n];
+    loop {
+        if p.ultima >= linea {
+            return Some(p.linea);
+        }
+        p = &ps[p.padre? as usize];
+    }
+}
+
 impl Editor {
     pub(super) fn setup_flechas(&self) {
         let i = &self.0;
@@ -140,10 +152,46 @@ impl Editor {
         // miles de líneas ocultas y GtkSourceView consulta el canal por cada una.
         let cuadro: Rc<RefCell<Option<Cuadro>>> = Rc::default();
         let weak = Rc::downgrade(&self.0);
+        // La flechita de un elemento desplegado aparece solo con el mouse sobre él (su línea o
+        // su contenido), como sugerencia; la de uno plegado se ve siempre. Se calcula una vez por
+        // movimiento (el elemento más interno bajo el mouse), no por línea dibujada.
+        let hover: Rc<Cell<Option<u32>>> = Rc::default();
+        let motion = gtk::EventControllerMotion::new();
+        let weak_motion = Rc::downgrade(&self.0);
+        let h = hover.clone();
+        motion.connect_motion(move |_, x, y| {
+            let Some(inner) = weak_motion.upgrade() else {
+                return;
+            };
+            let (bx, by) =
+                inner
+                    .view
+                    .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+            let nuevo = inner.view.iter_at_location(bx, by).and_then(|it| {
+                let arbol = inner.arbol.borrow();
+                plegable_bajo(&arbol.as_ref()?.plegables, it.line() as u32)
+            });
+            if h.replace(nuevo) != nuevo {
+                inner.flechas.queue_draw();
+            }
+        });
+        let weak_leave = Rc::downgrade(&self.0);
+        let h = hover.clone();
+        motion.connect_leave(move |_| {
+            if h.take().is_some()
+                && let Some(inner) = weak_leave.upgrade()
+            {
+                inner.flechas.queue_draw();
+            }
+        });
+        i.view.add_controller(motion);
+        // Gris suave, como el resto de lo secundario.
+        r.set_opacity(0.55);
+
         r.connect_query_data(move |r, lineas, linea| {
             let Some(i) = weak.upgrade() else { return };
             let e = Editor(i);
-            let f = match lineas.downcast_ref::<sourceview5::GutterLines>() {
+            let mut f = match lineas.downcast_ref::<sourceview5::GutterLines>() {
                 Some(l) if e.tiene_pliegues() => {
                     let mut c = cuadro.borrow_mut();
                     let clave = (
@@ -174,6 +222,9 @@ impl Editor {
                 }
                 _ => e.flecha(linea),
             };
+            if f == Flecha::Abierta && hover.get() != Some(linea) {
+                f = Flecha::Ninguna;
+            }
             // El renderer es uno para todas las líneas: se cambia la imagen solo si cambia.
             if f != ultima.get() {
                 ultima.set(f);
@@ -263,5 +314,24 @@ impl Editor {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plegable_bajo_el_mouse_es_el_mas_interno() {
+        let texto = "# A\n\ntexto\n\n## B\n\n- uno\n  - dos\n- tres\n\n# C\n";
+        let ps = nucleo::plegables(texto);
+        // En el texto de A, A; en B o su lista, B; en el ítem con subítem, el ítem.
+        assert_eq!(plegable_bajo(&ps, 2), Some(0));
+        assert_eq!(plegable_bajo(&ps, 4), Some(4));
+        assert_eq!(plegable_bajo(&ps, 6), Some(6));
+        assert_eq!(plegable_bajo(&ps, 7), Some(6));
+        assert_eq!(plegable_bajo(&ps, 8), Some(4));
+        // C no tiene nada abajo: no es plegable ni está dentro de otro.
+        assert_eq!(plegable_bajo(&ps, 10), None);
     }
 }

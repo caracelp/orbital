@@ -361,8 +361,27 @@ generado; en Código queda el texto plano.
   notas con esa etiqueta y sus hijas, anidada por jerarquía y ordenada alfabéticamente. **Solo
   vista**: nunca escribe enlaces en el disco y el grafo no la ve. Tag sin notas: aviso «sin notas
   con #tag». Las filas son clicables: una nota se abre; una etiqueta abre la búsqueda `tag:`.
-- ` ```toc ` con `minLevel`/`maxLevel` opcionales (números, 0 = sin límite): índice de encabezados
-  de la nota, anidado por nivel; cada entrada lleva al encabezado. Sin encabezados: aviso discreto.
+- ` ```toc ` (también ` ```table-of-contents ` o ` ```tabla-de-contenidos `): tabla de contenidos
+  de la nota, anidada por nivel; cada entrada lleva al encabezado y se actualiza sola al editar.
+  El cuerpo son líneas `clave: valor` (no YAML estricto): un `# comentario` al final de la línea se
+  ignora, y una opción vacía toma su valor por defecto. Opciones:
+
+  | Opción | Por defecto | Qué hace |
+  |---|---|---|
+  | `title` | vacío | Texto (Markdown en línea) antes de la tabla; acá `#` es parte del texto |
+  | `style` | `nestedList` | `nestedList` (`lista`): viñetas anidadas; `nestedOrderedList` (`lista-ordenada`): numerada; `inlineFirstLevel` (`linea-primer-nivel`): solo el primer nivel, en una línea separada por ` \| ` |
+  | `minLevel` | `0` | Nivel desde el que se incluye; `0`: el menor nivel presente en la nota |
+  | `maxLevel` | `0` | Nivel hasta el que se incluye; `0`: sin límite |
+  | `include` | — | Expresión `/patrón/banderas` (`i`, `m`, `s`): solo los encabezados que coinciden. Gana sobre `exclude` |
+  | `exclude` | — | Expresión `/patrón/banderas`: sin los encabezados que coinciden |
+  | `includeLinks` | `true` | Entradas clicables; `false`: texto plano |
+  | `hideWhenEmpty` | `false` | Sin encabezados: no se muestra nada (si no, un aviso) |
+
+  Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
+  encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
+  lugar de la tabla. Con la bandera `i`, un patrón escrito en minúsculas
+  encuentra también las mayúsculas acentuadas (`/módulo/i` encuentra «MÓDULO»); uno con mayúsculas
+  acentuadas solo las iguala en ASCII.
 - ` ```cardlink ` (013): tarjeta de una URL. El cuerpo es YAML con `url` más los metadatos
   (`title`, `description`, `host`, `favicon`, `image`); Lectura lo muestra como tarjeta clicable y
   el archivo conserva el fuente. Compatible con el formato del plugin de Obsidian.

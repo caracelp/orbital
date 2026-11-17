@@ -69,22 +69,28 @@ pub const DIFF_ADDED_BG: Rgb = Rgb(0x16, 0x29, 0x1f);
 pub const DIFF_ADDED_FG: Rgb = Rgb(0xa6, 0xf5, 0xc0);
 pub const DIFF_ADDED_MARKER: Rgb = Rgb(0x8f, 0xf0, 0xa4);
 
-// Callouts
-pub const CALLOUT_NOTA_BG: Rgb = Rgb(0x1b, 0x24, 0x33);
-#[allow(dead_code)]
-pub const CALLOUT_NOTA_FG: Rgb = Rgb(0xcb, 0xe0, 0xff);
-
-pub const CALLOUT_CONSEJO_BG: Rgb = Rgb(0x16, 0x29, 0x1f);
-#[allow(dead_code)]
-pub const CALLOUT_CONSEJO_FG: Rgb = Rgb(0xa6, 0xf5, 0xc0);
-
-pub const CALLOUT_IMPORTANTE_BG: Rgb = Rgb(0x2a, 0x1a, 0x33);
-#[allow(dead_code)]
-pub const CALLOUT_IMPORTANTE_FG: Rgb = Rgb(0xf0, 0xc2, 0xff);
-
-pub const CALLOUT_ADVERTENCIA_BG: Rgb = Rgb(0x33, 0x29, 0x0f);
-#[allow(dead_code)]
-pub const CALLOUT_ADVERTENCIA_FG: Rgb = Rgb(0xff, 0xe0, 0x82);
+// Callouts: los colores de Obsidian en modo oscuro, aclarados lo justo para que el título (en
+// ese color) llegue a 4,5:1 sobre el fondo, que es el mismo color al 10 % sobre la vista.
+pub const CALLOUT_AZUL: Rgb = Rgb(0x4d, 0x9b, 0xff);
+pub const CALLOUT_CIAN: Rgb = Rgb(0x53, 0xdf, 0xdd);
+pub const CALLOUT_VERDE: Rgb = Rgb(0x44, 0xcf, 0x6e);
+pub const CALLOUT_NARANJA: Rgb = Rgb(0xe9, 0x97, 0x3f);
+pub const CALLOUT_ROJO: Rgb = Rgb(0xff, 0x5c, 0x62);
+pub const CALLOUT_VIOLETA: Rgb = Rgb(0xa8, 0x82, 0xff);
+pub const CALLOUT_GRIS: Rgb = Rgb(0x9e, 0x9e, 0x9e);
+/// Opacidad del fondo de un callout.
+pub const CALLOUT_ALFA: f64 = 0.10;
+/// Todos los colores de callout (para las pruebas de contraste).
+#[cfg(test)]
+const CALLOUTS: [Rgb; 7] = [
+    CALLOUT_AZUL,
+    CALLOUT_CIAN,
+    CALLOUT_VERDE,
+    CALLOUT_NARANJA,
+    CALLOUT_ROJO,
+    CALLOUT_VIOLETA,
+    CALLOUT_GRIS,
+];
 
 // Búsqueda en la nota (US3)
 /// Resaltado de coincidencias de búsqueda (paleta cálida sobre fondo oscuro, WCAG AA ≥ 4,5:1).
@@ -93,10 +99,6 @@ pub const SEARCH_MATCH_FG: Rgb = Rgb(0xff, 0xe0, 0x82);
 /// Coincidencia actual seleccionada.
 pub const SEARCH_CURRENT_BG: Rgb = Rgb(0x80, 0x58, 0x0a);
 pub const SEARCH_CURRENT_FG: Rgb = Rgb(0xff, 0xff, 0xff);
-
-pub const CALLOUT_PELIGRO_BG: Rgb = Rgb(0x36, 0x1a, 0x1d);
-#[allow(dead_code)]
-pub const CALLOUT_PELIGRO_FG: Rgb = Rgb(0xff, 0xb3, 0xba);
 
 // Resaltado de sintaxis (paleta rosa y negro)
 pub const SYNTAX_TEXT: Rgb = Rgb(0xe6, 0xe6, 0xe6);
@@ -124,6 +126,16 @@ pub const FORMAT_VIOLETA: Rgb = Rgb(0xb1, 0x97, 0xfc);
 pub const FORMAT_GRIS: Rgb = Rgb(0xad, 0xb5, 0xbd);
 
 impl Rgb {
+    /// El color con opacidad, para dibujar con `gtk::Snapshot`.
+    pub fn rgba(self, alpha: f32) -> gtk::gdk::RGBA {
+        gtk::gdk::RGBA::new(
+            f32::from(self.0) / 255.0,
+            f32::from(self.1) / 255.0,
+            f32::from(self.2) / 255.0,
+            alpha,
+        )
+    }
+
     pub fn hex(self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
     }
@@ -184,6 +196,7 @@ fn css() -> String {
          popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
          listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
     );
+    out.push_str(&props_css());
     out.push_str(&v13_css());
     for (name, c) in vars {
         out.push_str(&format!(
@@ -195,13 +208,51 @@ fn css() -> String {
     out
 }
 
+/// Propiedades arriba de la vista formateada, como las de Obsidian: filas bajas sin caja, la clave
+/// en gris con el ícono de su tipo y el valor editable sin borde hasta que se lo toca.
+fn props_css() -> String {
+    format!(
+        ".orbital-props {{ margin-bottom: 14px; }}\n\
+         button.orbital-props-titulo {{ min-height: 26px; padding: 0 6px; margin-bottom: 2px; color: {muted}; font-weight: 700; }}\n\
+         button.orbital-props-titulo:hover {{ color: {text}; }}\n\
+         .orbital-prop {{ min-height: 32px; padding: 0 4px 0 8px; border-radius: 6px; }}\n\
+         .orbital-prop:hover, .orbital-prop:focus-within {{ background: alpha(white, 0.04); }}\n\
+         .orbital-prop-clave {{ color: {muted}; }}\n\
+         .orbital-prop orbital-icono {{ color: {muted}; }}\n\
+         entry.orbital-prop-valor {{ background: transparent; border: none; box-shadow: none; outline: none; min-height: 28px; padding: 0 6px; }}\n\
+         entry.orbital-prop-valor:focus-within {{ background: alpha(white, 0.06); }}\n\
+         .orbital-prop-texto {{ padding: 0 6px; }}\n\
+         .orbital-prop button.orbital-prop-boton, .orbital-prop menubutton.orbital-prop-boton > button {{ min-height: 26px; padding: 0 6px; }}\n\
+         .orbital-prop-boton label, .orbital-props-agregar label {{ font-weight: normal; }}\n\
+         .orbital-prop button.orbital-prop-quitar {{ opacity: 0; min-height: 26px; min-width: 26px; padding: 0; color: {muted}; }}\n\
+         .orbital-prop:hover button.orbital-prop-quitar, button.orbital-prop-quitar:focus-visible {{ opacity: 1; }}\n\
+         .orbital-pastilla {{ background: {chip_bg}; color: {chip_fg}; border-radius: 999px; padding: 1px 2px 1px 10px; }}\n\
+         .orbital-pastilla.solo {{ padding: 1px 10px; }}\n\
+         .orbital-pastilla button {{ min-height: 20px; min-width: 20px; padding: 0; color: {chip_fg}; }}\n\
+         .orbital-props button.orbital-props-agregar {{ min-height: 28px; padding: 0 8px; color: {muted}; font-weight: normal; }}\n\
+         .orbital-props button.orbital-props-agregar:hover {{ color: {text}; }}\n\
+         .orbital-props-error {{ padding: 6px 8px; border-radius: 6px; background: alpha({warn}, 0.10); }}\n\
+         .orbital-props-sep {{ min-height: 1px; background: {line}; margin-top: 10px; }}\n",
+        muted = MUTED_FG.hex(),
+        text = TEXT_FG.hex(),
+        chip_bg = CHIP_BG.hex(),
+        chip_fg = CHIP_FG.hex(),
+        warn = CALLOUT_NARANJA.hex(),
+        line = LINE.hex(),
+    )
+}
+
 /// Estilos del diseño de interfaz (025): medidas y tonos de la maqueta. Los pesos de letra son los
 /// estándar (normal y 700): pesos intermedios como 650 o 750, y `font-feature-settings`, obligan a
 /// cargar otras caras de la fuente en la primera disposición (≈ 50 ms de arranque, medido). Por lo
 /// mismo, el texto chico usa un solo tamaño (11 px) y el planeta de la marca es un ícono de trazo.
 fn v13_css() -> String {
     format!(
-        "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; }}\n\
+        "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; padding-left: 0; }}\n\
+         headerbar.orbital-top > windowhandle > box {{ padding-left: 0; margin-left: 0; }}\n\
+         headerbar.orbital-top box.start {{ padding-left: 0; margin-left: 0; }}\n\
+         .orbital-left-slot {{ min-width: 58px; max-width: 58px; padding: 0; margin: 0; }}\n\
+         .orbital-left-slot button.orbital-iconbtn, button.orbital-rail-toggle {{ min-width: 38px; min-height: 38px; margin: 0 10px; }}\n\
          .orbital-brand {{ font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }}\n\
          .orbital-planet {{ color: {pink}; }}\n\
          .orbital-pink {{ color: {pink}; }}\n\
@@ -358,20 +409,12 @@ mod tests {
 
     #[test]
     fn callout_colors_meet_wcag_aa() {
-        let pairs = [
-            (CALLOUT_NOTA_FG, CALLOUT_NOTA_BG, "nota"),
-            (CALLOUT_CONSEJO_FG, CALLOUT_CONSEJO_BG, "consejo"),
-            (CALLOUT_IMPORTANTE_FG, CALLOUT_IMPORTANTE_BG, "importante"),
-            (
-                CALLOUT_ADVERTENCIA_FG,
-                CALLOUT_ADVERTENCIA_BG,
-                "advertencia",
-            ),
-            (CALLOUT_PELIGRO_FG, CALLOUT_PELIGRO_BG, "peligro"),
-        ];
-        for (fg, bg, name) in pairs {
-            let r = contrast_ratio(fg, bg);
-            assert!(r >= 4.5, "callout {name}: {r:.2} < 4.5");
+        for c in CALLOUTS {
+            let fondo = blend(c, CALLOUT_ALFA, VIEW_BG);
+            let titulo = contrast_ratio(c, fondo);
+            assert!(titulo >= 4.5, "título {}: {titulo:.2} < 4.5", c.hex());
+            let cuerpo = contrast_ratio(TEXT_FG, fondo);
+            assert!(cuerpo >= 4.5, "cuerpo sobre {}: {cuerpo:.2} < 4.5", c.hex());
         }
     }
 

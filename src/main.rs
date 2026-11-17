@@ -214,7 +214,12 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
                 return;
             }
             // WebKit dibuja en otro proceso: se le da tiempo para que la página aparezca.
-            glib::timeout_future(Duration::from_millis(2500)).await;
+            glib::timeout_future(Duration::from_millis(1500)).await;
+            // Dos veces: el primer desplazamiento usa alturas de renglón todavía estimadas.
+            for _ in 0..2 {
+                window.preparar_captura();
+                glib::timeout_future(Duration::from_millis(700)).await;
+            }
             match window.capture(&cap.out) {
                 Ok(()) => println!("Captura guardada en {}", cap.out.display()),
                 Err(e) => eprintln!("No se pudo capturar la ventana: {e}"),

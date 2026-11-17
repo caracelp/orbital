@@ -244,10 +244,10 @@ pub struct ArbolRamas {
     pub summary: Option<String>,
     /// Raíces de nivel 1.
     pub raices: Vec<NodoRama>,
-    /// Parte 3 obligatoria: Conexiones (`<!-- connections <ID> --> ... <!---->`).
-    pub connections: Option<String>,
-    /// Parte opcional B: Fuentes (`<!-- sources <ID> --> ... <!---->`).
+    /// Parte opcional B: Fuentes (`<!-- sources <ID> --> ... <!---->`), antes de las Conexiones.
     pub sources: Option<String>,
+    /// Parte 3 obligatoria: Conexiones (`<!-- connections <ID> --> ... <!---->`), siempre última.
+    pub connections: Option<String>,
     proximo_uid: usize,
 }
 
@@ -467,16 +467,7 @@ impl ArbolRamas {
         for r in &self.raices {
             serializar_nodo(r, &self.id_nota, &mut out, &mut primero);
         }
-        if let Some(c) = &self.connections {
-            if !out.ends_with("\n\n") {
-                out.push('\n');
-            }
-            out.push_str(&format!(
-                "<!-- connections {} -->\n{}\n<!---->\n",
-                self.id_nota,
-                c.trim_matches(['\n', '\r'])
-            ));
-        }
+        // Orden canónico (041): Fuentes antes de Conexiones, que siempre va última.
         if let Some(src) = &self.sources {
             if !out.ends_with("\n\n") {
                 out.push('\n');
@@ -485,6 +476,16 @@ impl ArbolRamas {
                 "<!-- sources {} -->\n{}\n<!---->\n",
                 self.id_nota,
                 src.trim_matches(['\n', '\r'])
+            ));
+        }
+        if let Some(c) = &self.connections {
+            if !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "<!-- connections {} -->\n{}\n<!---->\n",
+                self.id_nota,
+                c.trim_matches(['\n', '\r'])
             ));
         }
         out

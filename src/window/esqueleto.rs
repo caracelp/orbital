@@ -95,9 +95,11 @@ pub(super) fn construir_esqueleto(
     let left_slot = gtk::Box::builder()
         .width_request(58)
         .halign(gtk::Align::Start)
+        .css_classes(["orbital-left-slot"])
         .build();
     left_toggle.set_halign(gtk::Align::Center);
     left_toggle.set_hexpand(true);
+    left_toggle.add_css_class("orbital-rail-toggle");
     left_slot.append(&left_toggle);
     main_header.pack_start(&left_slot);
     main_header.pack_start(&modes);

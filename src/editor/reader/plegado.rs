@@ -2,7 +2,9 @@
 //!
 //! Sin widgets nuevos: cada elemento plegable lleva un glifo de texto con la etiqueta compartida
 //! `flecha`, `▾` desplegado o `▸` plegado (se reemplaza el carácter: un glifo invisible recortaría
-//! el texto accesible de la vista, porque GTK lo deja afuera pero cuenta su largo). Lo plegado se oculta
+//! el texto accesible de la vista, porque GTK lo deja afuera pero cuenta su largo). El glifo es
+//! transparente y cuelga en el margen: la flechita que se ve la dibuja `capas`, siempre si está
+//! plegado y, desplegado, solo con el mouse sobre la sección. Lo plegado se oculta
 //! con la etiqueta compartida `plegado`, sobre la unión de los rangos y tocando solo los tramos
 //! que cambian. Las etiquetas son de la tabla (creadas en `create_tags`), nunca de un bloque: lo
 //! de `new_tag` se borra de la tabla con su bloque. El estado lo decide el editor (las marcas de
@@ -14,6 +16,11 @@ use std::ops::Range;
 
 const ABIERTA: &str = "▾";
 const CERRADA: &str = "▸";
+
+/// El glifo bajo `it` es el de un elemento plegado.
+pub(super) fn es_cerrada(it: &gtk::TextIter) -> bool {
+    it.char() == '▸'
+}
 
 /// Prefijo de los «enlaces» de las flechitas en la lista que recorre Tab.
 pub(super) const URL_PLEGAR: &str = "orbital-plegar:";
@@ -84,7 +91,8 @@ fn tramos(buf: &gtk::TextBuffer, tag: &gtk::TextTag) -> Vec<Range<u32>> {
 }
 
 impl Reader {
-    /// El glifo de un elemento plegable, con `despues` (espacio hasta el texto).
+    /// El glifo de un elemento plegable, con `despues` (espacio hasta el texto). `sangria`: la
+    /// del renglón (el glifo cuelga a su izquierda).
     pub(super) fn glifos(
         &self,
         s: &RenderState,
@@ -92,15 +100,21 @@ impl Reader {
         linea: u32,
         base: &[gtk::TextTag],
         despues: &str,
+        sangria: i32,
     ) {
         let buf = &s.buffer;
         let table = buf.tag_table();
         let inicio = buf.create_mark(None, end, true);
         let mut tags: Vec<gtk::TextTag> = base.to_vec();
         tags.extend(table.lookup("flecha"));
+        // Cuelga a la izquierda del texto (sangría negativa del renglón): el texto queda alineado
+        // con el resto y la flechita, en el margen.
+        tags.push(self.colgar_tag(sangria));
         buf.insert_with_tags(end, ABIERTA, &tags.iter().collect::<Vec<_>>());
         let fin = buf.create_mark(None, end, false);
-        buf.insert_with_tags(end, despues, &base.iter().collect::<Vec<_>>());
+        let mut sep: Vec<gtk::TextTag> = base.to_vec();
+        sep.extend(table.lookup("flecha-sep"));
+        buf.insert_with_tags(end, despues, &sep.iter().collect::<Vec<_>>());
         // Tab llega a la flechita como a un enlace; Enter o Espacio la alternan.
         s.link_items.borrow_mut().push(LinkItem {
             url: format!("{URL_PLEGAR}{linea}"),

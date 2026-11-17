@@ -19,6 +19,7 @@ excluir=(
     "sc1_cursor_latency"      # medición de multi-cursor
     "command_filter_latency"  # medición de la paleta
     "captura_modos_panel"     # captura de desarrollo
+    "medir_lectura"           # medición del volcado en Lectura
     "us4_webkit"              # maneja la barra de formato por AT-SPI (tools/verificar-us4.sh)
 )
 

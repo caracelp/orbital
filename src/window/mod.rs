@@ -257,15 +257,23 @@ impl Window {
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&stack));
 
+        let state = AppState::load();
+        let default_w = state.window_width.unwrap_or(1100).max(640);
+        let default_h = state.window_height.unwrap_or(720).max(450);
+
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Orbital")
-            .default_width(1000)
-            .default_height(680)
-            .width_request(360)
-            .height_request(300)
+            .default_width(default_w)
+            .default_height(default_h)
+            .width_request(640)
+            .height_request(450)
             .content(&toasts)
             .build();
+
+        if state.window_maximized {
+            window.maximize();
+        }
 
         // Anchos de la maqueta: 260/280 px y, en ventanas más chicas, 220/220 y 190/170. La
         // maqueta lo hace a 900 y 680 px; acá el centro tiene un ancho mínimo real (la columna del
@@ -448,6 +456,20 @@ impl Window {
             }
             glib::ControlFlow::Break
         });
+    }
+
+    /// Para las capturas de desarrollo: tamaño de la ventana y desplazamiento a un encabezado de
+    /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`).
+    pub fn preparar_captura(&self) {
+        if let Ok(t) = std::env::var("ORBITAL_CAPTURA_TAMANO")
+            && let Some((a, b)) = t.split_once('x')
+            && let (Ok(a), Ok(b)) = (a.parse(), b.parse())
+        {
+            self.0.window.set_default_size(a, b);
+        }
+        if let Ok(h) = std::env::var("ORBITAL_CAPTURA_ENCABEZADO") {
+            self.0.code_editor.scroll_to_heading(&h);
+        }
     }
 
     /// Dibuja la ventana en un PNG, sin depender de capturas del compositor.

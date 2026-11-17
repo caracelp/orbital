@@ -70,6 +70,50 @@ pub enum BlockKind {
     /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
     /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
     Transclusion(Transclusion),
+    /// Una parte especial de la nota (041): `<!-- summary|sources|connections ID -->`, su
+    /// contenido y el cierre `<!---->`. El rango fuente es la sección completa, delimitadores
+    /// incluidos; `body` es el contenido analizado como Markdown.
+    Seccion {
+        kind: SeccionKind,
+        body: Vec<Block>,
+    },
+    /// Bloques que la vista dibuja seguidos, como uno solo (el contenido generado de una tabla
+    /// de contenidos con título). Vacío: no se muestra nada.
+    Group(Vec<Block>),
+}
+
+/// Las partes especiales de una nota (041), además de las Propiedades y el Cuerpo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeccionKind {
+    /// `<!-- summary ID -->`: la Síntesis, entre las Propiedades y el Cuerpo.
+    Sintesis,
+    /// `<!-- sources ID -->`: las Fuentes, después del Cuerpo.
+    Fuentes,
+    /// `<!-- connections ID -->`: las Conexiones, siempre al final.
+    Conexiones,
+}
+
+impl SeccionKind {
+    /// La sección que abre una línea `<!-- summary ID -->` (o sus alias en español).
+    pub fn apertura(linea: &str) -> Option<Self> {
+        let interior = linea.trim().strip_prefix("<!--")?.strip_suffix("-->")?;
+        let clave = interior.split_whitespace().next()?.to_lowercase();
+        match clave.as_str() {
+            "summary" | "sintesis" | "síntesis" => Some(Self::Sintesis),
+            "sources" | "fuentes" | "bibliography" => Some(Self::Fuentes),
+            "connections" | "conexiones" => Some(Self::Conexiones),
+            _ => None,
+        }
+    }
+
+    /// Nombre que muestra la Lectura.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sintesis => "Síntesis",
+            Self::Fuentes => "Fuentes",
+            Self::Conexiones => "Conexiones",
+        }
+    }
 }
 
 /// Clases de codeblock que la vista completa con contenido generado (005).
@@ -77,7 +121,9 @@ pub enum BlockKind {
 pub enum GeneratedKind {
     /// Lista de notas con una etiqueta (subárbol del árbol de etiquetas).
     Indice,
-    /// Índice de encabezados de la nota, con opciones de nivel.
+    /// Tabla de contenidos automática de la nota (`toc`, `table-of-contents` o
+    /// `tabla-de-contenidos`; opciones en
+    /// [`crate::toc`]).
     Toc,
     /// Tarjeta de enlace externo (013): url, title, description, host, favicon, image.
     CardLink,
@@ -88,7 +134,7 @@ impl GeneratedKind {
     fn from_lang(lang: &str) -> Option<Self> {
         match lang {
             "indice" => Some(Self::Indice),
-            "toc" => Some(Self::Toc),
+            "toc" | "table-of-contents" | "tabla-de-contenidos" => Some(Self::Toc),
             "cardlink" => Some(Self::CardLink),
             _ => None,
         }
@@ -439,7 +485,51 @@ fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc
     let mut i = 0;
     let mut blocks = parse_blocks(&ctx, &events, &mut i, None);
     extraer_ids(&mut blocks);
+    agrupar_secciones(&mut blocks);
     RenderDoc { blocks }
+}
+
+/// Junta cada `<!-- summary|sources|connections ID -->` de primer nivel con su contenido y su
+/// cierre `<!---->` en un [`BlockKind::Seccion`] (041). pulldown-cmark da los comentarios como
+/// bloques HTML sueltos; una sección sin cierre llega hasta la próxima apertura o el final.
+/// Sin secciones no se mueve nada (un solo recorrido que solo mira los bloques HTML).
+fn agrupar_secciones(blocks: &mut Vec<Block>) {
+    let abre = |b: &Block| match &b.kind {
+        BlockKind::Html(t) => t.lines().next().and_then(SeccionKind::apertura),
+        _ => None,
+    };
+    if !blocks.iter().any(|b| abre(b).is_some()) {
+        return;
+    }
+    let es_cierre = |b: &Block| matches!(&b.kind, BlockKind::Html(t) if t.trim() == "<!---->");
+    let es_apertura_de_bloque = |b: &Block| matches!(&b.kind, BlockKind::Html(t) if t.trim_start().starts_with("<!-- block"));
+    let viejos = std::mem::take(blocks);
+    let mut it = viejos.into_iter().peekable();
+    while let Some(b) = it.next() {
+        let Some(kind) = abre(&b) else {
+            blocks.push(b);
+            continue;
+        };
+        let mut source = b.source.clone();
+        let mut body = Vec::new();
+        while let Some(sig) = it.peek() {
+            if abre(sig).is_some() || es_apertura_de_bloque(sig) {
+                break;
+            }
+            let sig = it.next().expect("peek");
+            source.end = sig.source.end;
+            if es_cierre(&sig) {
+                break;
+            }
+            body.push(sig);
+        }
+        blocks.push(Block {
+            kind: BlockKind::Seccion { kind, body },
+            source,
+            line: b.line,
+            id: None,
+        });
+    }
 }
 
 /// Saca los identificadores de bloque (`^id`, 026) del texto que se muestra y los guarda en cada
@@ -687,7 +777,9 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
                 blocks.push(Block {
                     line: ctx.line(r.start),
                     source: r,
-                    kind: BlockKind::Paragraph(std::mem::take(loose)),
+                    // Como en los párrafos: texto contiguo junto y wikilinks expandidos (en un
+                    // ítem «compacto» `[[x]]` también es un enlace).
+                    kind: BlockKind::Paragraph(collapse_and_expand_inlines(std::mem::take(loose))),
                     id: None,
                 });
             }
@@ -736,6 +828,11 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
 /// Valida y completa los parámetros de un codeblock generado. `None` = no es un bloque
 /// generado (el codeblock queda común): YAML inválido o un `indice` sin tag.
 fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
+    // La tabla de contenidos lee su cuerpo línea por línea ([`crate::toc::parse_options`]), con
+    // comentarios y valores vacíos que no siempre son YAML válido: siempre es generada.
+    if kind == GeneratedKind::Toc {
+        return Some(Vec::new());
+    }
     let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;
     if kind == GeneratedKind::Indice {
         let tag = crate::props::find(&params, "tag")

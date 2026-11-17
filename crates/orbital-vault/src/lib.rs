@@ -38,6 +38,7 @@ pub mod search;
 pub mod session;
 pub mod tags;
 pub mod template;
+pub mod toc;
 pub mod transclusion;
 pub mod vault;
 pub mod write;

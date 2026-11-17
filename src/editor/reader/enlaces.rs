@@ -71,6 +71,12 @@ impl Reader {
             }
             for tag in iter.tags() {
                 let url = i.links.borrow().get(&tag).cloned();
+                if let Some(u) = &url
+                    && reader.alternar_callout(u)
+                {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    return;
+                }
                 if let (Some(url), Some(f)) = (url, i.on_link.borrow().as_ref()) {
                     g.set_state(gtk::EventSequenceState::Claimed);
                     f(&url);
@@ -167,8 +173,23 @@ impl Reader {
             self.plegar(linea);
             return true;
         }
+        if self.alternar_callout(&item.url) {
+            return true;
+        }
         if let Some(f) = self.0.on_link.borrow().as_ref() {
             f(&item.url);
+        }
+        true
+    }
+
+    /// Abre o cierra un callout plegable si `url` es el de su título.
+    pub(super) fn alternar_callout(&self, url: &str) -> bool {
+        let Some(nombre) = url.strip_prefix(super::bloques::URL_CALLOUT) else {
+            return false;
+        };
+        if let Some(tag) = self.buffer().tag_table().lookup(nombre) {
+            tag.set_invisible(!tag.is_invisible());
+            self.0.view.queue_draw();
         }
         true
     }

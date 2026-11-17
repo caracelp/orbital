@@ -73,6 +73,14 @@ pub(super) fn seccion_plegable(
     expandir: bool,
 ) -> (gtk::Box, gtk::Button) {
     let chevron = crate::iconos::Icono::new("abajo", 14);
+    let icono_nombre = match titulo.to_lowercase().as_str() {
+        "favoritos" => "estrella",
+        "explorador" => "tipo-carpeta",
+        "etiquetas" => "etiqueta",
+        "recientes" => "reloj",
+        _ => "marcador",
+    };
+    let icono_sec = crate::iconos::Icono::new(icono_nombre, 14);
     // Recortado: el nombre de una colección (027) puede ser largo y no tiene que ensanchar la barra.
     let rotulo = gtk::Label::builder()
         .label(titulo.to_uppercase())
@@ -81,6 +89,7 @@ pub(super) fn seccion_plegable(
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
     let fila = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    fila.append(&icono_sec);
     fila.append(&rotulo);
     fila.append(&chevron);
     let boton = gtk::Button::builder()
