@@ -459,8 +459,12 @@ impl Window {
     }
 
     /// Para las capturas de desarrollo: tamaño de la ventana y desplazamiento a un encabezado de
-    /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`).
+    /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`);
+    /// `ORBITAL_CAPTURA_TARJETA=id` muestra la respuesta de esa tarjeta de estudio.
     pub fn preparar_captura(&self) {
+        if let Ok(id) = std::env::var("ORBITAL_CAPTURA_TARJETA") {
+            self.0.code_editor.mostrar_respuesta_tarjeta(&id);
+        }
         if let Ok(t) = std::env::var("ORBITAL_CAPTURA_TAMANO")
             && let Some((a, b)) = t.split_once('x')
             && let (Ok(a), Ok(b)) = (a.parse(), b.parse())

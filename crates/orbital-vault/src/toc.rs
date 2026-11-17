@@ -125,16 +125,18 @@ pub fn parse_options(body: &str) -> Result<TocOptions, InvalidOption> {
                     o.exclude = Some(re);
                 }
             }
-            "includeLinks" | "hideWhenEmpty" | "debugInConsole" => {
+            // Depuración de otros programas: se acepta con cualquier valor y no hace nada.
+            "debugInConsole" => {}
+            "includeLinks" | "hideWhenEmpty" => {
                 let b = match plain() {
                     "true" => true,
                     "false" => false,
                     _ => return Err(invalid()),
                 };
-                match key {
-                    "includeLinks" => o.include_links = b,
-                    "hideWhenEmpty" => o.hide_when_empty = b,
-                    _ => {}
+                if key == "includeLinks" {
+                    o.include_links = b;
+                } else {
+                    o.hide_when_empty = b;
                 }
             }
             _ => {}
@@ -273,6 +275,16 @@ mod tests {
         // Vacío también.
         let o = parse_options("").unwrap();
         assert_eq!(o.style, TocStyle::NestedList);
+    }
+
+    /// `debugInConsole` se acepta con cualquier valor y no cambia nada.
+    #[test]
+    fn debug_in_console_se_ignora() {
+        for v in ["true", "false", "sí # comentario", "1", ""] {
+            let o = parse_options(&format!("debugInConsole: {v}\nmaxLevel: 2")).unwrap();
+            assert_eq!(o.max_level, 2, "{v}");
+            assert!(o.include_links);
+        }
     }
 
     #[test]

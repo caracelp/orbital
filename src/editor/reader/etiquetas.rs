@@ -152,23 +152,51 @@ impl Reader {
             .pixels_below_lines(super::capas::CALLOUT_SEPARACION)
             .build());
         add(gtk::TextTag::builder().name("callout-der").build());
+        // Margen derecho de lo incrustado, por nivel de transclusión: van después de
+        // `callout-der` (y cada nivel después del anterior), así el más profundo gana.
+        for n in 1..=super::capas::NIVELES_DER {
+            add(gtk::TextTag::builder().name(format!("der-{n}")).build());
+        }
+        // Transclusiones: el encabezado (nombre de la nota) y el ancla, tenue.
+        add(gtk::TextTag::builder()
+            .name("embed-cab")
+            .pixels_above_lines(super::capas::CALLOUT_SEPARACION + 7)
+            .pixels_below_lines(9)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("embed-solo")
+            .pixels_below_lines(super::capas::CALLOUT_SEPARACION + 7)
+            .build());
+        // Tarjetas de estudio (024).
+        add(gtk::TextTag::builder()
+            .name("tarjeta-rotulo")
+            .scale(0.85)
+            .foreground(crate::style::MUTED_FG.hex())
+            .build());
+        add(gtk::TextTag::builder()
+            .name("tarjeta-pregunta")
+            .weight(700)
+            .scale(1.05)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("tarjeta-boton")
+            .pixels_above_lines(14)
+            .pixels_below_lines(8)
+            .build());
+        // El color del texto del botón es el de las píldoras (`chip`, antes del foco).
+        add(gtk::TextTag::builder()
+            .name("tarjeta-boton-texto")
+            .scale(0.9)
+            .weight(700)
+            .build());
         add(gtk::TextTag::builder()
             .name("callout-title")
             .weight(700)
             .build());
-        // Viñeta de lista: un punto tenue, como en Obsidian.
+        // Viñeta de lista: un punto tenue.
         add(gtk::TextTag::builder()
             .name("vineta")
             .foreground("rgba(255,255,255,0.45)")
-            .build());
-        add(gtk::TextTag::builder()
-            .name("embed-gap")
-            .scale(0.4)
-            .pixels_below_lines(0)
-            .build());
-        add(gtk::TextTag::builder()
-            .name("embed")
-            .paragraph_background(crate::style::EMBED_BG.hex())
             .build());
         // Plegado (028): compartidas por todos los bloques (nunca con `new_tag`, que las borraría
         // de la tabla con su bloque).
@@ -234,6 +262,11 @@ impl Reader {
             let table = i.view.buffer().tag_table();
             if let Some(t) = table.lookup("callout-der") {
                 t.set_right_margin(side + 16);
+            }
+            for n in 1..=super::capas::NIVELES_DER {
+                if let Some(t) = table.lookup(&format!("der-{n}")) {
+                    t.set_right_margin(side + 16 + n * super::capas::INCRUSTADO_DER);
+                }
             }
             // La flechita y su espacio cuelgan a la izquierda del renglón.
             let flecha = i.view.create_pango_layout(Some("\u{25be} ")).pixel_size().0;

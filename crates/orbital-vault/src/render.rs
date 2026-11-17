@@ -80,6 +80,21 @@ pub enum BlockKind {
     /// Bloques que la vista dibuja seguidos, como uno solo (el contenido generado de una tabla
     /// de contenidos con título). Vacío: no se muestra nada.
     Group(Vec<Block>),
+    /// Una tarjeta de estudio `:::flashcard id=…` … `---` … `:::` (024). El rango fuente va del
+    /// `:::flashcard` al `:::` de cierre; el `---` interno separa la pregunta de la respuesta.
+    Flashcard(Flashcard),
+}
+
+/// Una tarjeta de estudio (024): la pregunta y la respuesta, analizadas como Markdown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flashcard {
+    /// El valor de `id=` del renglón de apertura.
+    pub id: Option<String>,
+    /// Posición de la tarjeta entre las de la nota (desde 1) y cuántas tiene la nota.
+    pub numero: usize,
+    pub total: usize,
+    pub question: Vec<Block>,
+    pub answer: Vec<Block>,
 }
 
 /// Las partes especiales de una nota (041), además de las Propiedades y el Cuerpo.
@@ -288,7 +303,7 @@ type Ev<'a> = (Event<'a>, Range<usize>);
 struct Ctx<'a> {
     text: &'a str,
     base: usize,
-    line_starts: Vec<usize>,
+    line_starts: &'a [usize],
     tags: Vec<crate::tags::TagOccurrence>,
 }
 
@@ -431,21 +446,99 @@ fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc
         None => markdown::bom_len(text),
     };
     let body = &text[base..];
+    let mut line_starts = vec![0];
+    line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+    let mut tags = crate::tags::extract_tags(text, false);
+    tags.retain(|tag| !tag.from_prop);
+    let tarjetas = crate::tarjetas::regiones(body);
+    let mut blocks = if tarjetas.is_empty() {
+        parse_fragment(text, base, body, repl, &line_starts, tags)
+    } else {
+        // Las tarjetas (024) se analizan aparte: en el resto del texto quedan como renglones en
+        // blanco (mismos bytes de largo, así los rangos no cambian).
+        let mut limpio = body.as_bytes().to_vec();
+        for r in &tarjetas {
+            for b in &mut limpio[r.completa.clone()] {
+                if *b != b'\n' {
+                    *b = b' ';
+                }
+            }
+        }
+        let limpio = String::from_utf8(limpio).expect("los cortes caen en comienzos de renglón");
+        let mut blocks = parse_fragment(text, base, &limpio, repl, &line_starts, tags.clone());
+        let total = tarjetas.len();
+        for (n, r) in tarjetas.into_iter().enumerate() {
+            let parte = |rango: &Range<usize>| {
+                let sus: Vec<_> = tags
+                    .iter()
+                    .filter(|t| {
+                        t.byte_range.start >= base + rango.start
+                            && t.byte_range.end <= base + rango.end
+                    })
+                    .cloned()
+                    .collect();
+                parse_fragment(
+                    text,
+                    base + rango.start,
+                    &body[rango.clone()],
+                    repl,
+                    &line_starts,
+                    sus,
+                )
+            };
+            let source = base + r.completa.start..base + r.completa.end;
+            let block = Block {
+                kind: BlockKind::Flashcard(Flashcard {
+                    id: r.id,
+                    numero: n + 1,
+                    total,
+                    question: parte(&r.pregunta),
+                    answer: parte(&r.respuesta),
+                }),
+                line: line_starts
+                    .partition_point(|&s| s <= source.start)
+                    .saturating_sub(1),
+                source,
+                id: None,
+            };
+            let at = blocks.partition_point(|b| b.source.start < block.source.start);
+            blocks.insert(at, block);
+        }
+        blocks
+    };
+    agrupar_secciones(&mut blocks);
+    RenderDoc { blocks }
+}
+
+/// Analiza el tramo `fragment` del texto, que empieza en el byte `base` de `text` (el cuerpo de la
+/// nota o una parte de una tarjeta). Los marcadores de `repl` fuera del tramo se ignoran.
+fn parse_fragment(
+    text: &str,
+    base: usize,
+    fragment: &str,
+    repl: &[(std::ops::Range<usize>, String)],
+    line_starts: &[usize],
+    mut tags: Vec<crate::tags::TagOccurrence>,
+) -> Vec<Block> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
-    let events: Vec<Ev> = Parser::new_ext(body, opts).into_offset_iter().collect();
+    let events: Vec<Ev> = Parser::new_ext(fragment, opts).into_offset_iter().collect();
+    let end = base + fragment.len();
     let events = if repl.is_empty() {
         events
-    } else {
+    } else if repl.iter().all(|(r, _)| r.start >= base && r.end <= end) {
         substitute_runs(events, base, repl)
+    } else {
+        let dentro: Vec<_> = repl
+            .iter()
+            .filter(|(r, _)| r.start >= base && r.end <= end)
+            .cloned()
+            .collect();
+        substitute_runs(events, base, &dentro)
     };
-    let mut line_starts = vec![0];
-    line_starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
-    let mut tags = crate::tags::extract_tags(text, false);
-    tags.retain(|tag| !tag.from_prop);
     // Rangos excluidos fusionados: un solo barrido, sin recorrer las etiquetas por evento.
     let mut excluded: Vec<Range<usize>> = events
         .iter()
@@ -485,8 +578,7 @@ fn parse_doc(text: &str, repl: &[(std::ops::Range<usize>, String)]) -> RenderDoc
     let mut i = 0;
     let mut blocks = parse_blocks(&ctx, &events, &mut i, None);
     extraer_ids(&mut blocks);
-    agrupar_secciones(&mut blocks);
-    RenderDoc { blocks }
+    blocks
 }
 
 /// Junta cada `<!-- summary|sources|connections ID -->` de primer nivel con su contenido y su

@@ -37,6 +37,7 @@ pub mod scan;
 pub mod search;
 pub mod session;
 pub mod tags;
+pub mod tarjetas;
 pub mod template;
 pub mod toc;
 pub mod transclusion;
