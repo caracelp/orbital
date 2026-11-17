@@ -10,6 +10,7 @@
 //! si no (se está escribiendo), una regla local sobre la línea y las siguientes. Nada global por
 //! tecla.
 
+use super::posicion;
 use super::*;
 use orbital_vault::plegado as nucleo;
 
@@ -159,20 +160,37 @@ impl Editor {
         let motion = gtk::EventControllerMotion::new();
         let weak_motion = Rc::downgrade(&self.0);
         let h = hover.clone();
+        // La mano sobre el canal, solo a la altura de una línea con flechita.
+        let mano = Rc::new(Cell::new(false));
+        let m = mano.clone();
         motion.connect_motion(move |_, x, y| {
             let Some(inner) = weak_motion.upgrade() else {
                 return;
             };
-            let (bx, by) =
-                inner
-                    .view
-                    .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-            let nuevo = inner.view.iter_at_location(bx, by).and_then(|it| {
+            let (_, by) = posicion::al_buffer(inner.view.upcast_ref(), x, y);
+            // Por renglón y no por carácter: con el mouse en el canal (fuera del texto) la
+            // flechita tiene que seguir a la vista, y `iter_at_location` puede abortar
+            // (`editor::posicion`).
+            let (it, _) = inner.view.line_at_y(by);
+            let linea = it.line() as u32;
+            let nuevo = {
                 let arbol = inner.arbol.borrow();
-                plegable_bajo(&arbol.as_ref()?.plegables, it.line() as u32)
-            });
+                arbol
+                    .as_ref()
+                    .and_then(|a| plegable_bajo(&a.plegables, linea))
+            };
             if h.replace(nuevo) != nuevo {
                 inner.flechas.queue_draw();
+            }
+            let en_canal = inner.flechas.compute_bounds(&inner.view).is_some_and(|b| {
+                let (x, y) = (x as f32, y as f32);
+                x >= b.x() && x < b.x() + b.width() && y >= b.y() && y < b.y() + b.height()
+            });
+            let quiere = en_canal && Editor(inner.clone()).flecha(linea) != Flecha::Ninguna;
+            if m.replace(quiere) != quiere {
+                inner
+                    .flechas
+                    .set_cursor_from_name(quiere.then_some("pointer"));
             }
         });
         let weak_leave = Rc::downgrade(&self.0);

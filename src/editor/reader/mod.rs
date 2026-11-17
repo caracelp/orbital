@@ -121,6 +121,8 @@ struct Inner {
     colgados: RefCell<Vec<(gtk::TextTag, i32)>>,
     /// Ancho de la flechita y su espacio.
     ancho_flecha: Cell<i32>,
+    /// La forma del puntero puesta (`None`: todavía ninguna); se cambia solo si cambia.
+    zona: Cell<Option<puntero::Zona>>,
 }
 
 #[derive(Clone)]
@@ -196,6 +198,7 @@ impl Reader {
             callouts: Cell::new(0),
             colgados: RefCell::new(Vec::new()),
             ancho_flecha: Cell::new(14),
+            zona: Cell::new(None),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -212,7 +215,19 @@ impl Reader {
                 };
                 let (tx, ty) =
                     vista_closure.window_to_buffer_coords(gtk::TextWindowType::Widget, x, y);
-                let Some(inicio) = vista_closure.iter_at_location(tx, ty) else {
+                // La franja de una flechita dice qué hace y su atajo.
+                match Reader(i.clone()).accion_en(tx, ty) {
+                    Some(puntero::Accion::Plegar(_)) => {
+                        tooltip.set_text(Some("Plegar o desplegar (Ctrl+Arriba)"));
+                        return true;
+                    }
+                    Some(puntero::Accion::Callout(_)) => {
+                        tooltip.set_text(Some("Abrir o cerrar"));
+                        return true;
+                    }
+                    None => {}
+                }
+                let Some(inicio) = crate::editor::posicion::iter_en(&vista_closure, tx, ty) else {
                     return false;
                 };
                 for tag in inicio.tags() {
@@ -233,6 +248,7 @@ impl Reader {
         this.center();
         this.setup_links();
         this.setup_capas();
+        this.setup_puntero();
         let weak = Rc::downgrade(&this.0);
         let v = this.0.scroller.vadjustment();
         let attach = move |_: &gtk::Adjustment| {
@@ -386,6 +402,7 @@ mod enlaces;
 mod etiquetas;
 mod generado;
 mod plegado;
+mod puntero;
 use bloques::*;
 pub use generado::complete_generated;
 

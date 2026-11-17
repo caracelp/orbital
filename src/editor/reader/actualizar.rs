@@ -25,18 +25,15 @@ impl Reader {
         }
         let rect = i.view.visible_rect();
         let h = rect.height().max(400);
-        let top = i.view.iter_at_location(0, (rect.y() - h).max(0));
-        let bottom = i.view.iter_at_location(0, rect.y() + 2 * h);
+        // Por renglón (`line_at_y`): `iter_at_location` aborta debajo de un renglón con algo
+        // invisible (`editor::posicion`).
+        let (top, _) = i.view.line_at_y((rect.y() - h).max(0));
+        let (mut bottom, _) = i.view.line_at_y(rect.y() + 2 * h);
         // Antes de calcular la disposición, GTK estima alturas y todo parece cerca: la ventana
         // también se acota en caracteres.
-        let from = top.map_or(0, |t| t.offset());
-        let to = bottom
-            .map_or(i32::MAX, |b| {
-                let mut b = b;
-                b.forward_line();
-                b.offset()
-            })
-            .min(from + WINDOW_CHARS);
+        let from = top.offset();
+        bottom.forward_line();
+        let to = bottom.offset().min(from + WINDOW_CHARS);
         let buffer = self.buffer();
         let mut ready = Vec::new();
         i.pending.borrow_mut().retain(|(w, a)| {

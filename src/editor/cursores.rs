@@ -57,15 +57,21 @@ impl Editor {
             let arrastre = ((x1 - x0) as i32).abs() + ((y1 - y0) as i32).abs() > 4;
             let mut extra = inner.extra.borrow_mut();
             if arrastre {
-                let Some(a) = inner.view.iter_at_location(x0 as i32, y0 as i32) else {
+                let Some(a) =
+                    super::posicion::iter_en(inner.view.upcast_ref(), x0 as i32, y0 as i32)
+                else {
                     return;
                 };
-                let Some(b) = inner.view.iter_at_location(x1 as i32, y1 as i32) else {
+                let Some(b) =
+                    super::posicion::iter_en(inner.view.upcast_ref(), x1 as i32, y1 as i32)
+                else {
                     return;
                 };
                 extra.add_selection(&inner.buffer, &a, &b);
             } else {
-                let Some(it) = inner.view.iter_at_location(x0 as i32, y0 as i32) else {
+                let Some(it) =
+                    super::posicion::iter_en(inner.view.upcast_ref(), x0 as i32, y0 as i32)
+                else {
                     return;
                 };
                 if !extra.remove_at(&inner.buffer, &it) {

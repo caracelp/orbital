@@ -655,7 +655,22 @@ pub fn construir_barra_tres_partes(
         contenedor.append(&scroll_red);
     }
 
-    contenedor.upcast()
+    let contenedor: gtk::Widget = contenedor.upcast();
+    mano_en_botones(&contenedor);
+    contenedor
+}
+
+/// La mano sobre cada botón de la barra (todos se accionan con un clic).
+fn mano_en_botones(w: &gtk::Widget) {
+    let mut hijo = w.first_child();
+    while let Some(h) = hijo {
+        if h.is::<gtk::Button>() {
+            h.set_cursor_from_name(Some("pointer"));
+        } else {
+            mano_en_botones(&h);
+        }
+        hijo = h.next_sibling();
+    }
 }
 
 #[cfg(test)]

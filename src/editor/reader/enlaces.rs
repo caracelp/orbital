@@ -57,25 +57,12 @@ impl Reader {
         click.connect_released(move |g, _, x, y| {
             let Some(i) = weak.upgrade() else { return };
             Reader(i.clone()).set_focused_link(None);
-            let (bx, by) =
-                i.view
-                    .window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-            let Some(iter) = i.view.iter_at_location(bx, by) else {
+            // Las flechitas del plegado y los títulos plegables se toman al apretar (`puntero`).
+            let (bx, by) = crate::editor::posicion::al_buffer(&i.view, x, y);
+            let Some(iter) = crate::editor::posicion::iter_en(&i.view, bx, by) else {
                 return;
             };
-            // Una flechita del plegado (028).
             let reader = Reader(i.clone());
-            if iter
-                .buffer()
-                .tag_table()
-                .lookup("flecha")
-                .is_some_and(|t| iter.has_tag(&t))
-                && let Some(linea) = reader.flecha_en(&iter)
-            {
-                g.set_state(gtk::EventSequenceState::Claimed);
-                reader.plegar(linea);
-                return;
-            }
             for tag in iter.tags() {
                 let url = i.links.borrow().get(&tag).cloned();
                 if let Some(u) = &url
@@ -103,6 +90,20 @@ impl Reader {
             let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
             let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
             let is_shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            // Re Pág y Av Pág: GTK busca el cursor nuevo por píxel y aborta si cae debajo de un
+            // renglón con algo invisible (`editor::posicion`). En Lectura el cursor no se ve: se
+            // desplaza la página y el cursor va al primer renglón visible.
+            if !ctrl && !alt {
+                let paginas = match keyval {
+                    gtk::gdk::Key::Page_Down | gtk::gdk::Key::KP_Page_Down => 1.0,
+                    gtk::gdk::Key::Page_Up | gtk::gdk::Key::KP_Page_Up => -1.0,
+                    _ => 0.0,
+                };
+                if paginas != 0.0 {
+                    reader.pasar_pagina(paginas);
+                    return glib::Propagation::Stop;
+                }
+            }
             if alt && !ctrl && !is_shift {
                 if keyval == gtk::gdk::Key::Left && i.enfoque.borrow().is_some() {
                     if let Some(f) = i.on_subir_enfoque.borrow().as_ref() {
@@ -163,6 +164,20 @@ impl Reader {
             }
         });
         self.0.view.add_controller(key);
+    }
+
+    /// Desplaza `paginas` páginas (negativo: hacia arriba) y deja el cursor en el primer renglón
+    /// visible.
+    pub(super) fn pasar_pagina(&self, paginas: f64) {
+        let i = &self.0;
+        let adj = i.scroller.vadjustment();
+        let destino = (adj.value() + paginas * adj.page_increment()).clamp(
+            adj.lower(),
+            (adj.upper() - adj.page_size()).max(adj.lower()),
+        );
+        adj.set_value(destino);
+        let (it, _) = i.view.line_at_y(destino as i32);
+        self.buffer().place_cursor(&it);
     }
 
     pub(super) fn activate_focused_link(&self) -> bool {
