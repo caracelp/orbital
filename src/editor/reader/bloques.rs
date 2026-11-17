@@ -645,8 +645,13 @@ impl Reader {
                     });
                 }
                 Inline::Image { url, alt } => self.image(s, end, url, alt, tags),
-                Inline::SoftBreak => buf.insert(end, " "),
-                Inline::HardBreak => buf.insert(end, "\n"),
+                // Como Obsidian: un salto simple dentro del párrafo es un salto de línea. Va con
+                // las etiquetas del contexto, así la línea siguiente conserva la sangría del
+                // callout, la cita o el ítem.
+                Inline::SoftBreak | Inline::HardBreak => {
+                    let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+                    buf.insert_with_tags(end, "\n", &refs);
+                }
             }
         }
     }

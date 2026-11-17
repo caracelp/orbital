@@ -511,3 +511,38 @@ fn flecha_sugerida_es_la_del_elemento_mas_interno() {
         assert!(visible.contains("•  ítem"), "{visible:?}");
     });
 }
+
+/// Como en Obsidian, un salto simple dentro de un párrafo es un salto de línea en Lectura, y la
+/// línea siguiente conserva las etiquetas del contexto (la sangría del callout).
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn salto_simple_es_salto_de_linea_con_la_sangria_del_contexto() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "> [!abstract] Información general\n> **Asignatura:** Uno\n> **Código:** Dos\n\nA\nB\n";
+        reader.render(Prepared::new(text, &[]), || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), true)
+            .to_string();
+        assert!(visible.contains("Asignatura: Uno\nCódigo: Dos"), "{visible:?}");
+        assert!(visible.contains("A\nB"), "{visible:?}");
+        let en = |t: &str| {
+            let b = visible.find(t).unwrap();
+            buf.iter_at_offset(visible[..b].chars().count() as i32)
+        };
+        let sangria = |it: &gtk::TextIter| {
+            it.tags()
+                .iter()
+                .filter_map(|t| t.name())
+                .filter(|n| n.starts_with("indent-"))
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+        };
+        let primera = sangria(&en("Asignatura"));
+        assert!(!primera.is_empty(), "el cuerpo del callout lleva sangría");
+        assert_eq!(primera, sangria(&en("Código")));
+    });
+}
