@@ -2,12 +2,14 @@
 //! interactiva para las 3 partes obligatorias (`Propiedades YAML`, `Cuerpo en bloques`,
 //! `Conexiones`) y las 2 partes opcionales (`Síntesis`, `Fuentes`).
 //!
-//! Orden canónico en el archivo `.md`:
+//! Orden canónico en el archivo `.md`: Propiedades siempre primero, Conexiones siempre última y el
+//! Cuerpo en el medio; Síntesis y Fuentes nunca quedan antes de las Propiedades ni después de las
+//! Conexiones.
 //! 1. `--- ... ---` (Parte 1 obligatoria: Propiedades YAML con `id` y `type`)
 //! 2. `<!-- summary <ID> --> ... <!---->` (Parte opcional A: Síntesis / Resumen)
 //! 3. `<!-- block <jerarquía> <ID> --> ... <!---->` (Parte 2 obligatoria: Cuerpo en bloques)
-//! 4. `<!-- connections <ID> --> ... <!---->` (Parte 3 obligatoria: Conexiones)
-//! 5. `<!-- sources <ID> --> ... <!---->` (Parte opcional B: Fuentes / Bibliografía)
+//! 4. `<!-- sources <ID> --> ... <!---->` (Parte opcional B: Fuentes / Bibliografía)
+//! 5. `<!-- connections <ID> --> ... <!---->` (Parte 3 obligatoria: Conexiones)
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -339,7 +341,8 @@ fn analizar_frontmatter_nota(texto: &str) -> (bool, Option<String>, Option<Strin
 
 /// Estructura una nota `.md` garantizando sus **3 partes obligatorias** (`Propiedades YAML` con `id` y
 /// `type`, `Cuerpo` en bloques `<!-- block ... -->` y sección `<!-- connections <ID> -->` al pie) y
-/// preservando cualquier contenido o parte opcional (`summary`, `sources`) existente.
+/// preservando cualquier contenido o parte opcional (`summary`, `sources`) existente. Reescribe las
+/// partes en el orden canónico: Propiedades → Síntesis → Cuerpo → Fuentes → Conexiones.
 ///
 /// Devuelve `(nuevo_texto, linea_destino_1_based)`.
 pub fn estructurar_en_tres_partes(texto: &str, id_sugerido: Option<&str>) -> (String, usize) {
@@ -359,7 +362,8 @@ pub fn estructurar_en_tres_partes(texto: &str, id_sugerido: Option<&str>) -> (St
 }
 
 /// Inserta una de las 2 partes opcionales (`ParteOpcional::Sintesis` o `ParteOpcional::Fuentes`) en su
-/// posición canónica dentro de la nota, estructurando las partes si fuera necesario.
+/// posición canónica dentro de la nota (la Síntesis después de las Propiedades; las Fuentes después
+/// del Cuerpo y antes de las Conexiones), estructurando las partes si fuera necesario.
 ///
 /// Devuelve `(nuevo_texto, linea_de_la_parte_1_based)`.
 pub fn insertar_parte_opcional(
@@ -497,7 +501,6 @@ pub fn construir_barra_tres_partes(
             }
         });
     }
-    fila_chips.append(&btn_cuerpo);
 
     // Chip 3: Conexiones (Obligatoria 3)
     let tiene_con = diag.conexiones.is_some();
@@ -530,13 +533,6 @@ pub fn construir_barra_tres_partes(
             }
         });
     }
-    fila_chips.append(&btn_con);
-
-    // Separador visual hacia las 2 partes opcionales
-    let sep = gtk::Separator::new(gtk::Orientation::Vertical);
-    sep.set_margin_start(4);
-    sep.set_margin_end(4);
-    fila_chips.append(&sep);
 
     // Chip Opcional A: Síntesis
     let lin_sintesis = diag.sintesis.as_ref().map(|s| s.linea);
@@ -564,7 +560,6 @@ pub fn construir_barra_tres_partes(
             }
         });
     }
-    fila_chips.append(&btn_sintesis);
 
     // Chip Opcional B: Fuentes
     let lin_fuentes = diag.fuentes.as_ref().map(|f| f.linea);
@@ -577,7 +572,7 @@ pub fn construir_barra_tres_partes(
         .tooltip_text(if lin_fuentes.is_some() {
             "Parte opcional B: Ir a las Fuentes / Bibliografía (<!-- sources ID -->)"
         } else {
-            "Parte opcional B: Insertar sección de Fuentes / Bibliografía al final de la nota"
+            "Parte opcional B: Insertar sección de Fuentes / Bibliografía después del cuerpo, antes de las Conexiones"
         })
         .sensitive(!solo_lectura || lin_fuentes.is_some())
         .css_classes(["flat", "caption"])
@@ -592,7 +587,10 @@ pub fn construir_barra_tres_partes(
             }
         });
     }
-    fila_chips.append(&btn_fuentes);
+    // En el orden de la nota: Propiedades → Síntesis → Cuerpo → Fuentes → Conexiones.
+    for b in [&btn_sintesis, &btn_cuerpo, &btn_fuentes, &btn_con] {
+        fila_chips.append(b);
+    }
 
     // Espaciador y botón «Estructurar en 3 partes» cuando falta alguna de las 3 obligatorias
     let espaciador = gtk::Box::builder().hexpand(true).build();
@@ -721,6 +719,13 @@ $$\\frac{f(b)-f(a)}{b-a},\\qquad a\\ne b.$$\n\
         let (con_cinco, lin_fue) =
             insertar_parte_opcional(&con_sintesis, ParteOpcional::Fuentes, None);
         assert!(lin_fue > lin_sin);
+        assert!(
+            lin_fue
+                < DiagnosticoTresPartes::analizar(&con_cinco, None)
+                    .conexiones
+                    .unwrap()
+                    .linea
+        );
 
         let diag_5 = DiagnosticoTresPartes::analizar(&con_cinco, None);
         assert!(diag_5.es_completa_tres_partes());
@@ -728,14 +733,19 @@ $$\\frac{f(b)-f(a)}{b-a},\\qquad a\\ne b.$$\n\
         assert!(diag_5.fuentes.is_some());
         assert_eq!(diag_5.cantidad_bloques_cuerpo, 3);
 
-        // Verificar orden canónico en el archivo: YAML -> summary -> block -> connections -> sources
+        // Orden canónico en el archivo: YAML -> summary -> block -> sources -> connections
+        let pos_yaml = con_cinco.find("id: AP-001").unwrap();
         let pos_summary = con_cinco.find("<!-- summary AP-001 -->").unwrap();
         let pos_block = con_cinco.find("<!-- block 1 AP-001 -->").unwrap();
         let pos_conn = con_cinco.find("<!-- connections AP-001 -->").unwrap();
         let pos_sources = con_cinco.find("<!-- sources AP-001 -->").unwrap();
+        assert!(pos_yaml < pos_summary);
         assert!(pos_summary < pos_block);
-        assert!(pos_block < pos_conn);
-        assert!(pos_conn < pos_sources);
+        assert!(pos_block < pos_sources);
+        assert!(pos_sources < pos_conn);
+        // Conexiones siempre última: después de su cierre no queda otra parte.
+        assert!(!con_cinco[pos_conn..].contains("<!-- sources"));
+        assert!(con_cinco.trim_end().ends_with("<!---->"));
     }
 
     #[test]
@@ -762,6 +772,20 @@ $$\\frac{f(b)-f(a)}{b-a},\\qquad a\\ne b.$$\n\
             diag.enlaces_en_conexiones,
             vec!["Límites".to_owned(), "Integrales".to_owned()]
         );
+    }
+
+    /// Una nota con las Fuentes después de las Conexiones (el orden viejo) vuelve al orden
+    /// canónico al estructurarla: Conexiones siempre última.
+    #[test]
+    fn fuentes_despues_de_conexiones_se_reordenan() {
+        let vieja = format!(
+            "{DERIVADAS_AP001}\n<!-- connections AP-001 -->\n- [[Límites]]\n<!---->\n\n<!-- sources AP-001 -->\n- Apostol\n<!---->\n"
+        );
+        let (nueva, _) = estructurar_en_tres_partes(&vieja, None);
+        let fuentes = nueva.find("<!-- sources AP-001 -->").unwrap();
+        let conexiones = nueva.find("<!-- connections AP-001 -->").unwrap();
+        assert!(fuentes < conexiones, "{nueva}");
+        assert!(nueva.contains("- Apostol") && nueva.contains("[[Límites]]"));
     }
 
     #[test]
