@@ -123,6 +123,10 @@ struct Inner {
     ancho_flecha: Cell<i32>,
     /// La forma del puntero puesta (`None`: todavía ninguna); se cambia solo si cambia.
     zona: Cell<Option<puntero::Zona>>,
+    /// Etiquetas propias (cuerpo de un callout, respuesta de una tarjeta) que quedan enteras
+    /// dentro de lo plegado o fuera del enfoque: no deciden la visibilidad mientras tanto
+    /// (`plegado::suspender_internas`).
+    suspendidas: RefCell<Vec<gtk::TextTag>>,
 }
 
 #[derive(Clone)]
@@ -199,6 +203,7 @@ impl Reader {
             colgados: RefCell::new(Vec::new()),
             ancho_flecha: Cell::new(14),
             zona: Cell::new(None),
+            suspendidas: RefCell::new(Vec::new()),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -309,6 +314,7 @@ impl Reader {
         }
         i.links.borrow_mut().clear();
         i.pending.borrow_mut().clear();
+        i.suspendidas.borrow_mut().clear();
         i.pending_line.set(None);
         i.pending_resaltar.set(None);
         i.header.set(None);

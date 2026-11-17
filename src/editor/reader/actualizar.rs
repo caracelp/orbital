@@ -35,6 +35,9 @@ impl Reader {
         bottom.forward_line();
         let to = bottom.offset().min(from + WINDOW_CHARS);
         let buffer = self.buffer();
+        // Lo plegado no ocupa alto: todo lo de adentro parece «cerca». Sus widgets esperan a que
+        // se despliegue (anclarlos no muestra nada y cuesta).
+        let oculto = super::plegado::Oculto::de(&buffer);
         let mut ready = Vec::new();
         i.pending.borrow_mut().retain(|(w, a)| {
             if a.is_deleted() {
@@ -43,8 +46,9 @@ impl Reader {
             if ready.len() >= ATTACH_BATCH {
                 return true;
             }
-            let at = buffer.iter_at_child_anchor(a).offset();
-            if (from..=to).contains(&at) {
+            let it = buffer.iter_at_child_anchor(a);
+            let at = it.offset();
+            if (from..=to).contains(&at) && !oculto.en(&it) {
                 ready.push((w.clone(), a.clone()));
                 false
             } else {

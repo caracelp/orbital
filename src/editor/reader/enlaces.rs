@@ -214,11 +214,14 @@ impl Reader {
         if let Some(tag) = table.lookup(nombre) {
             let oculto = !tag.is_invisible();
             tag.set_invisible(oculto);
+            self.mantener_suspendida(&tag);
             if let Some(t) = table.lookup(&format!("{nombre}-mostrar")) {
                 t.set_invisible(!oculto);
+                self.mantener_suspendida(&t);
             }
             if let Some(t) = table.lookup(&format!("{nombre}-ocultar")) {
                 t.set_invisible(oculto);
+                self.mantener_suspendida(&t);
             }
             self.0.view.queue_draw();
         }

@@ -200,6 +200,55 @@ impl Reader {
         Some((n0..n1.max(n0), a, z))
     }
 
+    /// Las capas de `blocks` que tocan el tramo visible `a..=z` (en caracteres), sin las que
+    /// empiezan en algo oculto por el plegado o el enfoque: no ocupan lugar y no se dibujan.
+    fn capas_a_dibujar<'a>(&self, blocks: &'a [BlockInfo], a: i32, z: i32) -> Vec<&'a Capa> {
+        let buf = self.buffer();
+        let oculto = plegado::Oculto::de(&buf);
+        let mut visibles: Vec<&Capa> = Vec::new();
+        for b in blocks {
+            if b.capas.is_empty() || oculto.en(&buf.iter_at_mark(&b.mark)) {
+                continue;
+            }
+            for c in &b.capas {
+                let (inicio, fin) = match c {
+                    Capa::Callout { inicio, fin, .. }
+                    | Capa::Guia { inicio, fin, .. }
+                    | Capa::Seccion { inicio, fin, .. }
+                    | Capa::Incrustacion { inicio, fin, .. }
+                    | Capa::Tarjeta { inicio, fin, .. } => (inicio, fin),
+                };
+                let ini = buf.iter_at_mark(inicio);
+                if buf.iter_at_mark(fin).offset() < a || ini.offset() > z || oculto.en(&ini) {
+                    continue;
+                }
+                visibles.push(c);
+            }
+        }
+        visibles
+    }
+
+    /// Para las pruebas: dónde empieza (en caracteres) cada capa que se dibujaría en el cuadro
+    /// actual.
+    #[cfg(test)]
+    pub(super) fn capas_dibujables(&self) -> Vec<i32> {
+        let Some((rango, a, z)) = self.visibles() else {
+            return Vec::new();
+        };
+        let buf = self.buffer();
+        let blocks = self.0.blocks.borrow();
+        self.capas_a_dibujar(&blocks[rango], a, z)
+            .into_iter()
+            .map(|c| match c {
+                Capa::Callout { inicio, .. }
+                | Capa::Guia { inicio, .. }
+                | Capa::Seccion { inicio, .. }
+                | Capa::Incrustacion { inicio, .. }
+                | Capa::Tarjeta { inicio, .. } => buf.iter_at_mark(inicio).offset(),
+            })
+            .collect()
+    }
+
     /// Fondos de las transclusiones, los callouts y las tarjetas, y guías de las listas. Primero
     /// lo de afuera: una transclusión debajo de lo que incrusta, un callout anidado encima del que
     /// lo contiene.
@@ -213,22 +262,7 @@ impl Reader {
         let side = i.side.get() as f32;
         let ancho = i.width.get() as f32;
         let blocks = i.blocks.borrow();
-        let mut visibles: Vec<&Capa> = Vec::new();
-        for b in &blocks[rango] {
-            for c in &b.capas {
-                let (inicio, fin) = match c {
-                    Capa::Callout { inicio, fin, .. }
-                    | Capa::Guia { inicio, fin, .. }
-                    | Capa::Seccion { inicio, fin, .. }
-                    | Capa::Incrustacion { inicio, fin, .. }
-                    | Capa::Tarjeta { inicio, fin, .. } => (inicio, fin),
-                };
-                if buf.iter_at_mark(fin).offset() < a || buf.iter_at_mark(inicio).offset() > z {
-                    continue;
-                }
-                visibles.push(c);
-            }
-        }
+        let mut visibles = self.capas_a_dibujar(&blocks[rango], a, z);
         // Las transclusiones de afuera hacia adentro, después el resto en el orden del texto y al
         // final los callouts, también de afuera hacia adentro (el orden es estable).
         visibles.sort_by_key(|c| match c {
@@ -626,11 +660,12 @@ impl Reader {
                     .and_then(|l| l.parse::<u32>().ok())
             });
         let blocks = i.blocks.borrow();
+        let oculto = plegado::Oculto::de(&buf);
         for b in &blocks[rango] {
             for p in &b.plegables {
                 let g = buf.iter_at_mark(&p.glifo);
                 let off = g.offset();
-                if off < a || off > z {
+                if off < a || off > z || oculto.en(&g) {
                     continue;
                 }
                 let cerrada = plegado::es_cerrada(&g);

@@ -50,6 +50,29 @@ impl RenderState {
     }
 }
 
+/// Las dos etiquetas compartidas que ocultan partes enteras de la vista: lo plegado y lo que
+/// queda fuera del enfoque.
+pub(super) struct Oculto(Option<gtk::TextTag>, Option<gtk::TextTag>);
+
+impl Oculto {
+    pub(super) fn de(buf: &gtk::TextBuffer) -> Self {
+        let table = buf.tag_table();
+        Self(table.lookup("plegado"), table.lookup("fuera-de-enfoque"))
+    }
+
+    /// El carácter bajo `it` está oculto por el plegado o el enfoque.
+    pub(super) fn en(&self, it: &gtk::TextIter) -> bool {
+        [&self.0, &self.1]
+            .into_iter()
+            .flatten()
+            .any(|t| it.has_tag(t))
+    }
+
+    fn es(&self, tag: &gtk::TextTag) -> bool {
+        self.0.as_ref() == Some(tag) || self.1.as_ref() == Some(tag)
+    }
+}
+
 /// Aplica `tag` exactamente sobre los tramos `deseado`, tocando solo lo que cambia.
 fn aplicar_tag_tramos(buf: &gtk::TextBuffer, tag: &gtk::TextTag, deseado: &[Range<u32>]) {
     let actual = tramos(buf, tag);
@@ -170,6 +193,8 @@ impl Reader {
     pub fn set_plegado(&self, lineas: Rc<Vec<u32>>) {
         *self.0.plegado.borrow_mut() = lineas;
         self.aplicar_plegado();
+        // Lo que se despliega puede tener widgets esperando (no se anclan en lo oculto).
+        self.schedule_attach();
     }
 
     /// Oculta lo plegado y pone cada flechita en su estado, tocando solo lo que cambia. Corre
@@ -230,6 +255,7 @@ impl Reader {
     pub fn set_enfoque(&self, rango: Option<(u32, u32)>) {
         *self.0.enfoque.borrow_mut() = rango;
         self.aplicar_enfoque();
+        self.schedule_attach();
     }
 
     /// Oculta todo lo que queda fuera del elemento enfocado (incluido el encabezado de
@@ -283,6 +309,79 @@ impl Reader {
             }
         };
         aplicar_tag_tramos(&buf, &tag, &deseado);
+        self.suspender_internas();
+    }
+
+    /// Lo plegado (o fuera del enfoque) tiene que quedar sin alto y sin asomarse. Dos cosas lo
+    /// impedían con las etiquetas propias de un callout plegable o de una tarjeta de estudio
+    /// (cuerpo, respuesta y textos del botón) que quedan adentro:
+    ///
+    /// - GTK solo colapsa un renglón oculto si en él no termina ninguna etiqueta que oculte ni
+    ///   empieza una que muestre (`totally_invisible_line` de `gtktextlayout.c`): el renglón
+    ///   donde termina la respuesta de una tarjeta o el cuerpo de un callout cerrado se dispone
+    ///   igual, vacío pero con su alto y sus márgenes, y la capa dibuja la caja vacía encima.
+    /// - Una de esas etiquetas abierta (`invisible = false`, puesta) tiene más prioridad que
+    ///   `plegado`, y su texto se ve dentro de lo plegado.
+    ///
+    /// Mientras quedan enteras dentro de lo oculto, esas etiquetas dejan de decidir la
+    /// visibilidad (`invisible-set = false`, sin tocar su valor): la de afuera oculta todo y GTK
+    /// colapsa cada renglón. Al quedar a la vista se reponen tal cual estaban.
+    fn suspender_internas(&self) {
+        use std::collections::HashSet;
+        let buf = self.buffer();
+        let oculto = Oculto::de(&buf);
+        let mut rangos: Vec<Range<u32>> = [&oculto.0, &oculto.1]
+            .into_iter()
+            .flatten()
+            .flat_map(|t| tramos(&buf, t))
+            .collect();
+        let previas = std::mem::take(&mut *self.0.suspendidas.borrow_mut());
+        if rangos.is_empty() && previas.is_empty() {
+            return;
+        }
+        nucleo::unir(&mut rangos);
+        let previas: HashSet<gtk::TextTag> = previas.into_iter().collect();
+        let mut nuevas: HashSet<gtk::TextTag> = HashSet::new();
+        for r in &rangos {
+            let mut it = buf.iter_at_offset(r.start as i32);
+            loop {
+                for t in it.toggled_tags(true) {
+                    if oculto.es(&t)
+                        || nuevas.contains(&t)
+                        || !(t.is_invisible_set() || previas.contains(&t))
+                    {
+                        continue;
+                    }
+                    let mut fin = it;
+                    if !fin.forward_to_tag_toggle(Some(&t)) {
+                        fin = buf.end_iter();
+                    }
+                    if fin.offset() as u32 <= r.end {
+                        nuevas.insert(t);
+                    }
+                }
+                if !it.forward_to_tag_toggle(None::<&gtk::TextTag>) || it.offset() as u32 >= r.end {
+                    break;
+                }
+            }
+        }
+        for t in previas.difference(&nuevas) {
+            t.set_property("invisible-set", true);
+        }
+        for t in &nuevas {
+            if t.is_invisible_set() {
+                t.set_property("invisible-set", false);
+            }
+        }
+        *self.0.suspendidas.borrow_mut() = nuevas.into_iter().collect();
+    }
+
+    /// Después de abrir o cerrar algo por su etiqueta (`set_invisible` la vuelve a poner): si
+    /// estaba suspendida por quedar dentro de lo oculto, sigue suspendida.
+    pub(super) fn mantener_suspendida(&self, tag: &gtk::TextTag) {
+        if self.0.suspendidas.borrow().contains(tag) {
+            tag.set_property("invisible-set", false);
+        }
     }
 
     /// El carácter `off` está oculto por estar fuera del enfoque.
