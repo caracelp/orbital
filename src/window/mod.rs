@@ -27,6 +27,7 @@ use crate::write_ctx;
 type Tree = HashMap<String, Vec<Arc<Entry>>>;
 
 mod acciones;
+mod bases;
 mod boveda;
 mod busqueda;
 mod centro;
@@ -73,6 +74,9 @@ struct Inner {
     editor: gtk::TextView,
     content_stack: gtk::Stack,
     code_editor: Editor,
+    base_panel: std::cell::OnceCell<crate::bases::BasePanel>,
+    base_document: RefCell<Option<(RelPath, u64)>>,
+    base_generation: Cell<u64>,
     /// Subtítulo de la nota sin el estado del guardado.
     subtitle_base: RefCell<String>,
     /// La ventana ya guardó lo pendiente y puede cerrarse.
@@ -320,6 +324,9 @@ impl Window {
             editor,
             content_stack,
             code_editor,
+            base_panel: std::cell::OnceCell::new(),
+            base_document: RefCell::new(None),
+            base_generation: Cell::new(0),
             subtitle_base: RefCell::new(String::new()),
             closing: Cell::new(false),
             conflict_dialog_open: Cell::new(false),
@@ -390,6 +397,7 @@ impl Window {
             plegado_acciones: RefCell::new(Vec::new()),
         }));
         conexiones::conectar(&this, app);
+        this.setup_bases();
         this
     }
 

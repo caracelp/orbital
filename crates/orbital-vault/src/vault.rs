@@ -68,6 +68,7 @@ pub struct Vault {
     /// Notas de `wiki/` por nombre sin extensión en minúsculas (índices en `entries`). Se arma la
     /// primera vez que se resuelve un wikilink: sin él, resolver era recorrer toda la bóveda por
     /// enlace (el grafo de 5000 notas tardaba 15 s).
+    base_index: std::sync::Arc<std::sync::Mutex<Option<crate::bases::BaseIndex>>>,
     names: std::sync::OnceLock<std::collections::HashMap<String, Vec<usize>>>,
 }
 
@@ -95,11 +96,58 @@ pub fn open(root: &Path) -> Result<Vault, VaultError> {
         entries: scanned.entries,
         config,
         warnings,
+        base_index: Default::default(),
         names: std::sync::OnceLock::new(),
     })
 }
 
 impl Vault {
+    /// Conserva el índice caliente al releer el árbol de la misma bóveda.
+    pub fn inherit_base_index(&mut self, previous: &Vault) {
+        if self.root == previous.root {
+            self.base_index = previous.base_index.clone();
+            let mut cache = self.base_index.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(index) = cache.as_mut() {
+                let before: std::collections::HashMap<_, _> =
+                    previous.entries.iter().map(|e| (&e.path, e)).collect();
+                let after: std::collections::HashSet<_> =
+                    self.entries.iter().map(|e| &e.path).collect();
+                for entry in &self.entries {
+                    if before
+                        .get(&entry.path)
+                        .is_none_or(|old| old.mtime != entry.mtime || old.size != entry.size)
+                    {
+                        index.update(self, &entry.path);
+                    }
+                }
+                for entry in &previous.entries {
+                    if !after.contains(&entry.path) {
+                        index.update(self, &entry.path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Consulta perezosa compartida por tablas e incrustaciones; ejecutar fuera del hilo GTK.
+    pub fn base_snapshot(
+        &self,
+        definition: &crate::bases::BaseDefinition,
+    ) -> crate::bases::BaseSnapshot {
+        let mut cache = self.base_index.lock().unwrap_or_else(|e| e.into_inner());
+        cache
+            .get_or_insert_with(|| crate::bases::BaseIndex::build(self))
+            .query(definition)
+    }
+
+    /// Actualiza únicamente la ruta modificada, sin inicializar un índice que nadie usa.
+    pub fn update_base_index(&self, path: &RelPath) {
+        let mut cache = self.base_index.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(index) = cache.as_mut() {
+            index.update(self, path);
+        }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

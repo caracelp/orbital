@@ -51,6 +51,144 @@ impl Vault {
         }
     }
 
+    fn embed_base(&self, target: &str, anchor: Option<&str>, deps: &mut Vec<RelPath>) -> Embed {
+        use crate::render::Inline;
+        let matches: Vec<_> = self
+            .entries()
+            .iter()
+            .filter(|e| e.kind == crate::EntryKind::Base)
+            .filter(|e| {
+                if target.contains('/') {
+                    e.path.as_str() == target
+                } else {
+                    e.path.file_name() == target
+                }
+            })
+            .map(|e| e.path.clone())
+            .collect();
+        let path = match matches.as_slice() {
+            [] => return Embed::Missing,
+            [path] => path.clone(),
+            _ => return Embed::Ambiguous(matches),
+        };
+        deps.push(path.clone());
+        let message = |text: String| {
+            vec![Block {
+                kind: BlockKind::Paragraph(vec![Inline::Text(text)]),
+                source: 0..0,
+                line: 0,
+                id: None,
+            }]
+        };
+        let document = match crate::bases::read(self, &path) {
+            Ok(document) => document,
+            Err(error) => {
+                return Embed::Note {
+                    path,
+                    hash: 0,
+                    blocks: message(format!("No se pudo consultar la base: {error}")),
+                };
+            }
+        };
+        if anchor.is_some() {
+            return Embed::SectionMissing { path };
+        }
+        let snapshot = self.base_snapshot(&document.definition);
+        let header = document
+            .definition
+            .columns
+            .iter()
+            .map(|c| vec![Inline::Text(c.label.clone())])
+            .collect();
+        let rows: Vec<Vec<Vec<Inline>>> = snapshot
+            .rows
+            .iter()
+            .take(100)
+            .map(|row| {
+                document
+                    .definition
+                    .columns
+                    .iter()
+                    .map(|c| {
+                        if c.property == "title" || c.property == "file.name" {
+                            vec![Inline::Link {
+                                url: crate::bases::path_url(&row.path),
+                                children: vec![Inline::Text(if c.property == "file.name" {
+                                    row.path.file_name().to_owned()
+                                } else {
+                                    row.title.clone()
+                                })],
+                            }]
+                        } else {
+                            vec![Inline::Text(
+                                row.value(&c.property)
+                                    .map(base_value_text)
+                                    .unwrap_or_else(|| "—".to_owned()),
+                            )]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut blocks = if document.definition.view == crate::bases::BaseView::Cards {
+            rows.into_iter()
+                .map(|cells| {
+                    let mut inlines = Vec::new();
+                    for (column, cell) in document.definition.columns.iter().zip(cells) {
+                        if !inlines.is_empty() {
+                            inlines.push(Inline::HardBreak);
+                        }
+                        inlines.push(Inline::Strong(vec![Inline::Text(format!(
+                            "{}: ",
+                            column.label
+                        ))]));
+                        inlines.extend(cell);
+                    }
+                    Block {
+                        kind: BlockKind::Quote(vec![Block {
+                            kind: BlockKind::Paragraph(inlines),
+                            source: 0..0,
+                            line: 0,
+                            id: None,
+                        }]),
+                        source: 0..0,
+                        line: 0,
+                        id: None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![Block {
+                kind: BlockKind::Table {
+                    align: vec![crate::render::Align::None; document.definition.columns.len()],
+                    header,
+                    rows,
+                },
+                source: 0..0,
+                line: 0,
+                id: None,
+            }]
+        };
+        if snapshot.rows.len() > 100 {
+            blocks.extend(message(format!(
+                "Mostrando 100 de {} notas. Abrí la base desde su título para verlas todas.",
+                snapshot.rows.len()
+            )));
+        }
+        if !snapshot.errors.is_empty() {
+            blocks.extend(message(format!(
+                "{} archivos no se pudieron consultar",
+                snapshot.errors.len()
+            )));
+        }
+        let digest = hash(format!("{blocks:?}").as_bytes());
+        Embed::Note {
+            path,
+            hash: document.hash ^ digest,
+            blocks,
+        }
+    }
+
     fn embed(
         &self,
         target: &str,
@@ -59,6 +197,9 @@ impl Vault {
         depth: usize,
         deps: &mut Vec<RelPath>,
     ) -> Embed {
+        if target.to_ascii_lowercase().ends_with(".base") {
+            return self.embed_base(target, anchor, deps);
+        }
         let path = match self.resolve_wikilink(target) {
             Resolution::Found(p) => p,
             Resolution::Missing => return Embed::Missing,
@@ -236,7 +377,12 @@ pub fn card_html(
     };
     let title = |out: &mut String, path: &RelPath, text: &str| {
         out.push_str("<a href=\"");
-        out.push_str(&escape(&href(path)));
+        let url = if path.file_name().to_ascii_lowercase().ends_with(".base") {
+            crate::bases::path_url(path)
+        } else {
+            href(path)
+        };
+        out.push_str(&escape(&url));
         out.push_str("\">");
         out.push_str(&escape(text));
         out.push_str("</a>");
@@ -468,4 +614,27 @@ fn escape(s: &str) -> String {
         }
     }
     out
+}
+
+fn base_value_text(value: &crate::props::PropValue) -> String {
+    use crate::props::PropValue;
+    match value {
+        PropValue::Null => "nulo".to_owned(),
+        PropValue::Text(s)
+        | PropValue::Number(s)
+        | PropValue::Date(s)
+        | PropValue::DateTime(s)
+        | PropValue::Link(s) => s.clone(),
+        PropValue::Bool(b) => b.to_string(),
+        PropValue::List(values) => values
+            .iter()
+            .map(base_value_text)
+            .collect::<Vec<_>>()
+            .join(", "),
+        PropValue::Map(values) => values
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", base_value_text(v)))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
 }

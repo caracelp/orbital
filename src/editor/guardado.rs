@@ -155,9 +155,39 @@ impl Editor {
     /// incrusta con `![[…]]`, la vista formateada se vuelve a dibujar: solo cambia esa tarjeta y
     /// no se pierde la posición de lectura (FR-016).
     pub fn dependency_changed(&self, path: &RelPath) {
-        if !self.0.embed_deps.borrow().contains(path) {
+        let has_base = self
+            .0
+            .embed_deps
+            .borrow()
+            .iter()
+            .any(|p| p.as_str().ends_with(".base"));
+        if !has_base && !self.0.embed_deps.borrow().contains(path) {
             return;
         }
+        let this = self.clone();
+        let vault = self.0.vault.borrow().clone();
+        let generation = self.0.generation.get();
+        let current = self.current_path();
+        let path = path.clone();
+        glib::spawn_future_local(async move {
+            if let Some(vault) = vault {
+                let _ = gio::spawn_blocking(move || vault.update_base_index(&path)).await;
+            }
+            if this.0.generation.get() != generation || this.current_path() != current {
+                return;
+            }
+            if this.0.mode.get() == View::Visual {
+                this.visual_embeds();
+            } else {
+                this.render_now();
+            }
+        });
+    }
+
+    /// Renueva el contexto de archivos sin reemplazar el borrador ni su deshacer.
+    pub fn refresh_vault_context(&self, vault: Arc<Vault>) {
+        *self.0.vault.borrow_mut() = Some(vault.clone());
+        self.refresh_completion_candidates(&vault);
         if self.0.mode.get() == View::Visual {
             self.visual_embeds();
         } else {

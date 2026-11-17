@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aux_files;
+pub mod bases;
 pub mod bloques;
 pub mod config;
 pub mod diff;

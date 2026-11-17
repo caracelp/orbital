@@ -680,10 +680,10 @@ mod esqueleto_tests {
                 .unwrap();
             assert_ne!(window.0.right_split.shows_sidebar(), derecha);
 
-            // Riel: DB desactivado; Canva y el resto, activos con su acción.
+            // Riel: Canva, DB y el resto, activos con su acción.
             for (tooltip, activo) in [
                 ("Crear canva", true),
-                ("Crear base de datos", false),
+                ("Crear base de datos", true),
                 ("Selector rápido", true),
                 ("Conexiones", true),
                 ("Paleta de comandos", true),

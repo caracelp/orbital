@@ -73,6 +73,7 @@ compatible con otros editores. Ninguna función escribe HTML dentro de tus notas
 ### Búsqueda, archivos y privacidad
 
 - **Búsqueda en toda la bóveda** (`Ctrl+Mayús+F`) con operadores `"frase"`, `-excluir`, `OR`, `tag:`, `path:`, `file:`, `line:`, `section:` y `[clave:valor]`.
+- **Bases `.base`**: tablas y tarjetas con filtros combinados, columnas tipadas y edición de las propiedades de las notas originales; se incrustan con `![[archivo.base]]`. Renombrado y fusión de propiedades con vista previa, conflictos y deshacer.
 - **Notas `.md` y `.html` de primera clase**, transclusiones vivas `![[nota]]` / `![[nota#sección]]`, plantillas con variables, nota diaria y papelera recuperable con deshacer.
 - **Historial de versiones** automático al guardar (hasta 20 versiones por nota con diff y restaurar en `.orbital/historial/`).
 - **PDFs e importación offline**: visor de PDF embebido con citas `#page=N&sel=i,f`, exportación a HTML autónomo y PDF, e importación offline de PDF/DOCX/HTML de `raw/` a Markdown.

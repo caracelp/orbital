@@ -132,6 +132,8 @@ impl Window {
                 },
             ));
         self.set_gone(false);
+        i.base_generation.set(i.base_generation.get() + 1);
+        *i.base_document.borrow_mut() = None;
         let arc_vault = Arc::new(vault);
         *i.vault.borrow_mut() = Some(arc_vault.clone());
         i.search_panel
@@ -302,10 +304,50 @@ impl Window {
         else {
             return;
         };
-        let result = gio::spawn_blocking(move || orbital_vault::open(&root).map(prepare)).await;
+        let preserve_editor = self.0.code_editor.has_pending()
+            && self.0.code_editor.current_path().as_ref() == show.as_ref();
+        let previous = self.0.vault.borrow().clone();
+        let context_vault = previous.clone();
+        let generation = self.0.base_generation.get();
+        let result = gio::spawn_blocking(move || {
+            orbital_vault::open(&root).map(|mut vault| {
+                if let Some(previous) = previous {
+                    vault.inherit_base_index(&previous);
+                }
+                prepare(vault)
+            })
+        })
+        .await;
+        if self.0.base_generation.get() != generation
+            || !context_vault.as_ref().is_some_and(|previous| {
+                self.0
+                    .vault
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, previous))
+            })
+        {
+            return;
+        }
         if let Ok(Ok((vault, tree, meta))) = result {
+            // Recargar el árbol por otra nota no reemplaza un borrador ni su historial.
+            let preserve_editor = preserve_editor
+                || (self.0.code_editor.has_pending()
+                    && self.0.code_editor.current_path().as_ref() == show.as_ref());
+            let page = self.0.content_stack.visible_child_name();
+            let title = self.0.content_title.title();
+            let subtitle = self.0.content_title.subtitle();
             self.show_vault(vault, tree, meta);
-            if let Some(p) = show {
+            if preserve_editor {
+                if let Some(vault) = self.0.vault.borrow().clone() {
+                    self.0.code_editor.refresh_vault_context(vault);
+                }
+                if let Some(page) = page {
+                    self.0.content_stack.set_visible_child_name(&page);
+                }
+                self.0.content_title.set_title(&title);
+                self.0.content_title.set_subtitle(&subtitle);
+            } else if let Some(p) = show {
                 self.show_path(p.as_str());
             }
         }
@@ -335,6 +377,12 @@ impl Window {
                 .collect();
             let (mut changes, echoes) = gio::spawn_blocking(move || {
                 let changes = v.on_external_change(&paths);
+                for change in &changes {
+                    let (orbital_vault::ExternalChange::Added(p)
+                    | orbital_vault::ExternalChange::Modified(p)
+                    | orbital_vault::ExternalChange::Removed(p)) = change;
+                    v.update_base_index(p);
+                }
                 // Un cambio cuyo contenido es el que escribió el editor es un eco propio.
                 let echoes: Vec<RelPath> = own
                     .into_iter()
@@ -348,6 +396,15 @@ impl Window {
             })
             .await
             .unwrap_or_default();
+            if !this
+                .0
+                .vault
+                .borrow()
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &vault))
+            {
+                return;
+            }
             if this.0.tag_operation.get() {
                 this.0.tag_disk_changes.borrow_mut().extend(retry_paths);
                 return;
@@ -358,7 +415,8 @@ impl Window {
             // El grafo de enlaces sigue los cambios de otros programas (FR-014).
             for c in &changes {
                 match c {
-                    orbital_vault::ExternalChange::Modified(p) => {
+                    orbital_vault::ExternalChange::Added(p)
+                    | orbital_vault::ExternalChange::Modified(p) => {
                         this.update_graph(p.clone(), false);
                         this.update_search_index(p.clone(), false);
                     }
@@ -366,7 +424,6 @@ impl Window {
                         this.update_graph(p.clone(), true);
                         this.update_search_index(p.clone(), true);
                     }
-                    _ => {}
                 }
             }
             let current = this

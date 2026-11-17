@@ -8,6 +8,13 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        if entry.kind == EntryKind::Base {
+            self.open_base(entry.path.clone());
+            return;
+        }
+        self.0.base_generation.set(self.0.base_generation.get() + 1);
+        *self.0.base_document.borrow_mut() = None;
+        let generation = self.0.base_generation.get();
         self.guardar_estado_pestana();
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -15,6 +22,9 @@ impl Window {
             let editor = this.0.code_editor.clone();
             if editor.current_path().is_some_and(|p| p != entry.path) {
                 editor.flush().await;
+                if this.0.base_generation.get() != generation {
+                    return;
+                }
                 if editor.has_pending() {
                     return;
                 }
@@ -44,6 +54,9 @@ impl Window {
                         None
                     })
             };
+            if this.0.base_generation.get() != generation {
+                return;
+            }
             let i = &this.0;
             *i.current_entry.borrow_mut() = Some(entry.clone());
             i.pestanas

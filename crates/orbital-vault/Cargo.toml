@@ -24,3 +24,7 @@ divan = "0.1.21"
 [[bench]]
 name = "vault"
 harness = false
+
+[[bench]]
+name = "bases"
+harness = false
