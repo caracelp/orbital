@@ -989,6 +989,7 @@ dependencies = [
  "memchr",
  "pdf-extract",
  "pulldown-cmark",
+ "regex-lite",
  "roxmltree",
  "saphyr-parser",
  "similar",

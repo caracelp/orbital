@@ -70,6 +70,9 @@ pub enum BlockKind {
     /// Un párrafo que es solo `![[nota]]` o `![[nota#encabezado]]` (US5 de la 003). Lo expande
     /// [`crate::Vault::expand_transclusions`]; `render_markdown` lo deja en [`Embed::Pending`].
     Transclusion(Transclusion),
+    /// Bloques que la vista dibuja seguidos, como uno solo (el contenido generado de una tabla
+    /// de contenidos con título). Vacío: no se muestra nada.
+    Group(Vec<Block>),
 }
 
 /// Clases de codeblock que la vista completa con contenido generado (005).
@@ -77,7 +80,9 @@ pub enum BlockKind {
 pub enum GeneratedKind {
     /// Lista de notas con una etiqueta (subárbol del árbol de etiquetas).
     Indice,
-    /// Índice de encabezados de la nota, con opciones de nivel.
+    /// Tabla de contenidos automática de la nota (`toc`, `table-of-contents` o
+    /// `tabla-de-contenidos`; opciones en
+    /// [`crate::toc`]).
     Toc,
     /// Tarjeta de enlace externo (013): url, title, description, host, favicon, image.
     CardLink,
@@ -88,7 +93,7 @@ impl GeneratedKind {
     fn from_lang(lang: &str) -> Option<Self> {
         match lang {
             "indice" => Some(Self::Indice),
-            "toc" => Some(Self::Toc),
+            "toc" | "table-of-contents" | "tabla-de-contenidos" => Some(Self::Toc),
             "cardlink" => Some(Self::CardLink),
             _ => None,
         }
@@ -736,6 +741,11 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
 /// Valida y completa los parámetros de un codeblock generado. `None` = no es un bloque
 /// generado (el codeblock queda común): YAML inválido o un `indice` sin tag.
 fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
+    // La tabla de contenidos lee su cuerpo línea por línea ([`crate::toc::parse_options`]), con
+    // comentarios y valores vacíos que no siempre son YAML válido: siempre es generada.
+    if kind == GeneratedKind::Toc {
+        return Some(Vec::new());
+    }
     let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;
     if kind == GeneratedKind::Indice {
         let tag = crate::props::find(&params, "tag")

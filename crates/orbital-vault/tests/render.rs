@@ -297,14 +297,18 @@ fn indice_codeblock_becomes_generated_with_tag() {
 
 #[test]
 fn toc_codeblock_becomes_generated_and_accepts_params() {
-    let text = "```toc\nminLevel: 2\nmaxLevel: 3\n```\n";
-    let doc = render_markdown(text);
-    match &doc.blocks[0].kind {
-        BlockKind::Generated(g) => {
-            assert_eq!(g.kind, orbital_vault::render::GeneratedKind::Toc);
-            assert!(g.params.iter().any(|e| e.key == "minLevel"));
+    // Las opciones se leen del cuerpo crudo (orbital_vault::toc), aunque no sea YAML válido.
+    for lang in ["toc", "table-of-contents", "tabla-de-contenidos"] {
+        let text = format!("```{lang}\ntitle: \nminLevel: 2 # desde\nmaxLevel: 3\n```\n");
+        let doc = render_markdown(&text);
+        match &doc.blocks[0].kind {
+            BlockKind::Generated(g) => {
+                assert_eq!(g.kind, orbital_vault::render::GeneratedKind::Toc);
+                let o = orbital_vault::toc::parse_options(&g.raw).unwrap();
+                assert_eq!((o.min_level, o.max_level), (2, 3));
+            }
+            other => panic!("esperaba Generated, era {other:?}"),
         }
-        other => panic!("esperaba Generated, era {other:?}"),
     }
 }
 

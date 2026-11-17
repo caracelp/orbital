@@ -548,6 +548,7 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
             BlockKind::Transclusion(t) => {
                 out.push_str(&card_html(&t.target, t.anchor.as_deref(), &t.content, href));
             }
+            BlockKind::Group(body) => blocks_html(out, body, href),
         }
     }
 }

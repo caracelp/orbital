@@ -458,6 +458,20 @@ impl Window {
         });
     }
 
+    /// Para las capturas de desarrollo: tamaño de la ventana y desplazamiento a un encabezado de
+    /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`).
+    pub fn preparar_captura(&self) {
+        if let Ok(t) = std::env::var("ORBITAL_CAPTURA_TAMANO")
+            && let Some((a, b)) = t.split_once('x')
+            && let (Ok(a), Ok(b)) = (a.parse(), b.parse())
+        {
+            self.0.window.set_default_size(a, b);
+        }
+        if let Ok(h) = std::env::var("ORBITAL_CAPTURA_ENCABEZADO") {
+            self.0.code_editor.scroll_to_heading(&h);
+        }
+    }
+
     /// Dibuja la ventana en un PNG, sin depender de capturas del compositor.
     pub fn capture(&self, out: &Path) -> Result<(), String> {
         let w = &self.0.window;

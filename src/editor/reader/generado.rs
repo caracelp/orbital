@@ -21,8 +21,12 @@ pub fn complete_generated(
         };
         let items = match g.kind {
             orbital_vault::render::GeneratedKind::Toc => {
-                let (min, max) = niveles(&g.params);
-                toc_items(&encabezados, path, min, max)
+                block.kind = toc_block(&g.raw, &encabezados, path);
+                if let Some(h) = hashes.get_mut(n) {
+                    *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
+                }
+                completado = true;
+                continue;
             }
             orbital_vault::render::GeneratedKind::CardLink => {
                 // La tarjeta se muestra como bloque de texto enlazado (013).
@@ -145,38 +149,104 @@ pub(super) fn headings_flat(blocks: &[Block]) -> Vec<(u8, String)> {
     out
 }
 
-/// `minLevel` y `maxLevel` del codeblock `toc`; fuera de rango o inválido: sin límite. El
-/// escalar YAML de un número llega como `PropValue::Number` (no como texto), así que se
-/// aceptan ambos sin perder el texto original.
-pub(super) fn niveles(params: &[orbital_vault::props::PropEntry]) -> (u8, u8) {
-    let nivel = |key: &str, defecto: u8| -> u8 {
-        params
-            .iter()
-            .find(|e| e.key == key)
-            .and_then(|e| match &e.value {
-                orbital_vault::props::PropValue::Text(v)
-                | orbital_vault::props::PropValue::Number(v)
-                | orbital_vault::props::PropValue::Date(v)
-                | orbital_vault::props::PropValue::DateTime(v)
-                | orbital_vault::props::PropValue::Link(v) => Some(v.as_str()),
-                _ => None,
-            })
-            .and_then(|v| v.trim().parse::<u8>().ok())
-            .unwrap_or(defecto)
-    };
-    (nivel("minLevel", 0), nivel("maxLevel", 6).min(6))
-}
-
-/// Ítems del TOC: enlaces al encabezado de la propia nota, anidados por nivel.
-pub(super) fn toc_items(
+/// La tabla de contenidos de un codeblock `table-of-contents` o `toc` (opciones en
+/// [`orbital_vault::toc`]): el título (Markdown) y la lista anidada, numerada o en una línea.
+/// Sin encabezados, un aviso o nada (`hideWhenEmpty`); con opciones inválidas, el error.
+pub(super) fn toc_block(
+    raw: &str,
     encabezados: &[(u8, String)],
     path: Option<&orbital_vault::RelPath>,
-    min: u8,
-    max: u8,
-) -> Vec<ListItem> {
-    let Some(path) = path else {
-        return Vec::new();
+) -> BlockKind {
+    use orbital_vault::toc::TocStyle;
+    let parrafo = |inlines: Vec<Inline>| Block {
+        line: 0,
+        id: None,
+        source: 0..0,
+        kind: BlockKind::Paragraph(inlines),
     };
+    let o = match orbital_vault::toc::parse_options(raw) {
+        Ok(o) => o,
+        Err(e) => {
+            return BlockKind::Paragraph(vec![Inline::Emph(vec![Inline::Text(format!(
+                "No se pudo mostrar la tabla de contenidos (valor inválido en `{}`)",
+                e.0
+            ))])]);
+        }
+    };
+    let pares: Vec<(u8, &str)> = encabezados.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    let elegidos: Vec<(u8, &str)> = o.select(&pares).into_iter().map(|i| pares[i]).collect();
+    // El título admite Markdown en línea: el primer párrafo de su análisis.
+    let titulo: Vec<Inline> = if o.title.is_empty() {
+        Vec::new()
+    } else {
+        orbital_vault::render::render_markdown(&o.title)
+            .blocks
+            .into_iter()
+            .find_map(|b| match b.kind {
+                BlockKind::Paragraph(p) => Some(p),
+                BlockKind::Heading { inlines, .. } => Some(inlines),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let entrada = |titulo: &str| -> Inline {
+        match path.filter(|_| o.include_links) {
+            Some(path) => Inline::Link {
+                url: format!("/{}#{}", ruta_sin_wiki(path), titulo),
+                children: vec![Inline::Text(titulo.to_owned())],
+            },
+            None => Inline::Text(titulo.to_owned()),
+        }
+    };
+    let mut bloques: Vec<Block> = Vec::new();
+    if elegidos.is_empty() {
+        if o.hide_when_empty {
+            return BlockKind::Group(Vec::new());
+        }
+        if !titulo.is_empty() {
+            bloques.push(parrafo(titulo));
+        }
+        bloques.push(parrafo(vec![Inline::Emph(vec![Inline::Text(
+            "Tabla de contenidos: no hay encabezados".into(),
+        )])]));
+        return BlockKind::Group(bloques);
+    }
+    if o.style == TocStyle::InlineFirstLevel {
+        // El título va en la misma línea, separado por un espacio.
+        let mut linea = titulo;
+        if !linea.is_empty() {
+            linea.push(Inline::Text(" ".into()));
+        }
+        for (k, (_, t)) in elegidos.iter().enumerate() {
+            if k > 0 {
+                linea.push(Inline::Text(" | ".into()));
+            }
+            linea.push(entrada(t));
+        }
+        return BlockKind::Paragraph(linea);
+    }
+    if !titulo.is_empty() {
+        bloques.push(parrafo(titulo));
+    }
+    let ordenada = o.style == TocStyle::NestedOrderedList;
+    bloques.push(Block {
+        line: 0,
+        id: None,
+        source: 0..0,
+        kind: BlockKind::List {
+            start: ordenada.then_some(1),
+            items: toc_items(&elegidos, ordenada, entrada),
+        },
+    });
+    BlockKind::Group(bloques)
+}
+
+/// Ítems del TOC, anidados por nivel; `entrada` arma el texto (o el enlace) de cada uno.
+pub(super) fn toc_items(
+    encabezados: &[(u8, &str)],
+    ordenada: bool,
+    entrada: impl Fn(&str) -> Inline,
+) -> Vec<ListItem> {
     // Una pila de listas abiertas, de la menos a la más profunda. Un encabezado más profundo
     // abre una sublista; uno de nivel igual o menor cierra las más profundas, que quedan
     // anidadas en el último ítem de su lista madre.
@@ -184,14 +254,14 @@ pub(super) fn toc_items(
         nivel: u8,
         items: Vec<ListItem>,
     }
-    fn cerrar(pilas: &mut Vec<Pila>) {
+    fn cerrar(pilas: &mut Vec<Pila>, ordenada: bool) {
         let Some(cerrada) = pilas.pop() else { return };
         let lista = Block {
             line: 0,
             id: None,
             source: 0..0,
             kind: BlockKind::List {
-                start: None,
+                start: ordenada.then_some(1),
                 items: cerrada.items,
             },
         };
@@ -201,19 +271,13 @@ pub(super) fn toc_items(
     }
     let mut pilas: Vec<Pila> = Vec::new();
     for (nivel, titulo) in encabezados {
-        if *nivel < min || *nivel > max || titulo.is_empty() {
-            continue;
-        }
         let item = ListItem {
             task: None,
             blocks: vec![Block {
                 line: 0,
                 id: None,
                 source: 0..0,
-                kind: BlockKind::Paragraph(vec![Inline::Link {
-                    url: format!("/{}#{}", ruta_sin_wiki(path), titulo),
-                    children: vec![Inline::Text(titulo.clone())],
-                }]),
+                kind: BlockKind::Paragraph(vec![entrada(titulo)]),
             }],
         };
         loop {
@@ -231,7 +295,7 @@ pub(super) fn toc_items(
                 // Más profunda que este encabezado: se cierra si la madre llega a su nivel;
                 // si no (saltos de nivel, o la nota empieza con `##`), sube a su nivel.
                 Some(_) if madre.is_some_and(|m| m >= *nivel) => {
-                    cerrar(&mut pilas);
+                    cerrar(&mut pilas, ordenada);
                     continue;
                 }
                 Some(p) => {
@@ -243,7 +307,7 @@ pub(super) fn toc_items(
         }
     }
     while pilas.len() > 1 {
-        cerrar(&mut pilas);
+        cerrar(&mut pilas, ordenada);
     }
     pilas.pop().map(|p| p.items).unwrap_or_default()
 }
@@ -432,12 +496,9 @@ mod tests {
     }
 
     fn toc(encabezados: &[(u8, &str)]) -> String {
-        let e: Vec<(u8, String)> = encabezados
-            .iter()
-            .map(|(n, t)| (*n, (*t).to_owned()))
-            .collect();
-        let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
-        forma(&toc_items(&e, Some(&path), 0, 6))
+        forma(&toc_items(encabezados, false, |t| {
+            Inline::Text(t.to_owned())
+        }))
     }
 
     #[test]
@@ -449,5 +510,52 @@ mod tests {
         // Saltos de nivel y una nota que empieza más profunda.
         assert_eq!(toc(&[(1, "A"), (3, "B"), (2, "C")]), "A(B C)");
         assert_eq!(toc(&[(2, "A"), (3, "B"), (1, "C"), (2, "D")]), "A(B) C(D)");
+    }
+
+    fn enc(v: &[(u8, &str)]) -> Vec<(u8, String)> {
+        v.iter().map(|(n, t)| (*n, (*t).to_owned())).collect()
+    }
+
+    #[test]
+    fn toc_bloque_con_opciones() {
+        let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
+        let h = enc(&[(2, "A"), (3, "B"), (2, "C")]);
+        // Título y lista numerada, con enlaces a la propia nota.
+        let BlockKind::Group(g) = toc_block(
+            "title: **Índice**\nstyle: nestedOrderedList # numerada",
+            &h,
+            Some(&path),
+        ) else {
+            panic!("se esperaba un grupo");
+        };
+        assert!(matches!(&g[0].kind, BlockKind::Paragraph(p) if plain_text(p) == "Índice"));
+        let BlockKind::List { start, items } = &g[1].kind else {
+            panic!("se esperaba la lista");
+        };
+        assert_eq!(*start, Some(1));
+        assert_eq!(forma(items), "A(B) C");
+        let BlockKind::Paragraph(p) = &items[0].blocks[0].kind else {
+            panic!()
+        };
+        assert!(matches!(&p[0], Inline::Link { url, .. } if url == "/x.md#A"));
+        // En una línea y sin enlaces.
+        let BlockKind::Paragraph(p) = toc_block(
+            "style: inlineFirstLevel\nincludeLinks: false",
+            &h,
+            Some(&path),
+        ) else {
+            panic!()
+        };
+        assert_eq!(plain_text(&p), "A | C");
+        assert!(p.iter().all(|i| !matches!(i, Inline::Link { .. })));
+        // Sin encabezados: aviso u oculto; opción inválida: el error.
+        assert!(matches!(toc_block("", &[], Some(&path)), BlockKind::Group(g) if g.len() == 1));
+        assert!(
+            matches!(toc_block("hideWhenEmpty: true", &[], Some(&path)), BlockKind::Group(g) if g.is_empty())
+        );
+        assert!(matches!(
+            toc_block("style: arbol", &h, Some(&path)),
+            BlockKind::Paragraph(_)
+        ));
     }
 }

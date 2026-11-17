@@ -230,6 +230,11 @@ impl Reader {
                 }
             }
             BlockKind::Transclusion(t) => self.transclusion(s, end, t, depth, &base),
+            BlockKind::Group(body) => {
+                for sub in body {
+                    self.block(s, end, sub, depth);
+                }
+            }
         }
     }
 
