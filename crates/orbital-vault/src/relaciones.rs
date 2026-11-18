@@ -341,19 +341,20 @@ pub fn renglones_con_tipo(texto: &str) -> Vec<RenglonConTipo<'_>> {
     while inicio <= texto.len() {
         let fin = memchr::memchr(b'\n', &b[inicio..]).map_or(texto.len(), |p| inicio + p);
         let l = &texto[inicio..fin];
-        if r.paso(l) && !r.en_cerca && sin_marcador(l).len() != l.trim_start().len() {
-            if let Some(sep) = l.find("::")
-                && !l[..sep].contains("[[")
-                && !l[..sep].contains("](")
-                && let Some(tipo) = tipo_de_prefijo(&l[..sep + 2])
-            {
-                out.push(RenglonConTipo {
-                    tipo,
-                    linea,
-                    valor: inicio + sep + 2,
-                    fin,
-                });
-            }
+        if r.paso(l)
+            && !r.en_cerca
+            && sin_marcador(l).len() != l.trim_start().len()
+            && let Some(sep) = l.find("::")
+            && !l[..sep].contains("[[")
+            && !l[..sep].contains("](")
+            && let Some(tipo) = tipo_de_prefijo(&l[..sep + 2])
+        {
+            out.push(RenglonConTipo {
+                tipo,
+                linea,
+                valor: inicio + sep + 2,
+                fin,
+            });
         }
         inicio = fin + 1;
         linea += 1;
