@@ -89,6 +89,79 @@ pub(super) enum Capa {
     },
 }
 
+impl Capa {
+    /// Todas sus marcas, para cambiarlas (al trasplantar el bloque de buffer).
+    pub(super) fn marcas_mut(&mut self) -> Vec<&mut gtk::TextMark> {
+        match self {
+            Capa::Callout {
+                inicio,
+                fin,
+                titulo_fin,
+                ..
+            } => vec![inicio, fin, titulo_fin],
+            Capa::Incrustacion {
+                inicio,
+                fin,
+                cuerpo,
+                ..
+            } => [inicio, fin].into_iter().chain(cuerpo.as_mut()).collect(),
+            Capa::Tarjeta {
+                inicio,
+                fin,
+                mostrar,
+                ocultar,
+                ..
+            } => vec![
+                inicio,
+                fin,
+                &mut mostrar.0,
+                &mut mostrar.1,
+                &mut ocultar.0,
+                &mut ocultar.1,
+            ],
+            Capa::Seccion {
+                inicio, fin, chips, ..
+            } => [inicio, fin]
+                .into_iter()
+                .chain(chips.iter_mut().flat_map(|(a, z)| [a, z]))
+                .collect(),
+            Capa::Guia { inicio, fin, .. } => vec![inicio, fin],
+        }
+    }
+
+    /// Todas sus marcas (se borran con su bloque).
+    pub(super) fn marcas(&self) -> Vec<&gtk::TextMark> {
+        match self {
+            Capa::Callout {
+                inicio,
+                fin,
+                titulo_fin,
+                ..
+            } => vec![inicio, fin, titulo_fin],
+            Capa::Incrustacion {
+                inicio,
+                fin,
+                cuerpo,
+                ..
+            } => [inicio, fin].into_iter().chain(cuerpo).collect(),
+            Capa::Tarjeta {
+                inicio,
+                fin,
+                mostrar,
+                ocultar,
+                ..
+            } => vec![inicio, fin, &mostrar.0, &mostrar.1, &ocultar.0, &ocultar.1],
+            Capa::Seccion {
+                inicio, fin, chips, ..
+            } => [inicio, fin]
+                .into_iter()
+                .chain(chips.iter().flat_map(|(a, z)| [a, z]))
+                .collect(),
+            Capa::Guia { inicio, fin, .. } => vec![inicio, fin],
+        }
+    }
+}
+
 /// Color e ícono de un tipo de callout, con los alias de Obsidian.
 pub(super) fn estilo_callout(kind: &CalloutKind) -> (Rgb, &'static str) {
     use crate::style::*;
@@ -200,21 +273,12 @@ impl Reader {
         Some((n0..n1.max(n0), a, z))
     }
 
-    /// Fondos de las transclusiones, los callouts y las tarjetas, y guías de las listas. Primero
-    /// lo de afuera: una transclusión debajo de lo que incrusta, un callout anidado encima del que
-    /// lo contiene.
-    fn dibujar_debajo(&self, snapshot: &gtk::Snapshot) {
-        let Some((rango, a, z)) = self.visibles() else {
-            return;
-        };
-        let i = &self.0;
-        let view = &i.view;
+    /// Las capas de `blocks` que tocan el tramo visible `a..=z` (en caracteres). Lo plegado no
+    /// está en el buffer: no tiene capas (046).
+    fn capas_a_dibujar<'a>(&self, blocks: &'a [BlockInfo], a: i32, z: i32) -> Vec<&'a Capa> {
         let buf = self.buffer();
-        let side = i.side.get() as f32;
-        let ancho = i.width.get() as f32;
-        let blocks = i.blocks.borrow();
         let mut visibles: Vec<&Capa> = Vec::new();
-        for b in &blocks[rango] {
+        for b in blocks {
             for c in &b.capas {
                 let (inicio, fin) = match c {
                     Capa::Callout { inicio, fin, .. }
@@ -229,6 +293,44 @@ impl Reader {
                 visibles.push(c);
             }
         }
+        visibles
+    }
+
+    /// Para las pruebas: dónde empieza (en caracteres) cada capa que se dibujaría en el cuadro
+    /// actual.
+    #[cfg(test)]
+    pub(super) fn capas_dibujables(&self) -> Vec<i32> {
+        let Some((rango, a, z)) = self.visibles() else {
+            return Vec::new();
+        };
+        let buf = self.buffer();
+        let blocks = self.0.blocks.borrow();
+        self.capas_a_dibujar(&blocks[rango], a, z)
+            .into_iter()
+            .map(|c| match c {
+                Capa::Callout { inicio, .. }
+                | Capa::Guia { inicio, .. }
+                | Capa::Seccion { inicio, .. }
+                | Capa::Incrustacion { inicio, .. }
+                | Capa::Tarjeta { inicio, .. } => buf.iter_at_mark(inicio).offset(),
+            })
+            .collect()
+    }
+
+    /// Fondos de las transclusiones, los callouts y las tarjetas, y guías de las listas. Primero
+    /// lo de afuera: una transclusión debajo de lo que incrusta, un callout anidado encima del que
+    /// lo contiene.
+    fn dibujar_debajo(&self, snapshot: &gtk::Snapshot) {
+        let Some((rango, a, z)) = self.visibles() else {
+            return;
+        };
+        let i = &self.0;
+        let view = &i.view;
+        let buf = self.buffer();
+        let side = i.side.get() as f32;
+        let ancho = i.width.get() as f32;
+        let blocks = i.blocks.borrow();
+        let mut visibles = self.capas_a_dibujar(&blocks[rango], a, z);
         // Las transclusiones de afuera hacia adentro, después el resto en el orden del texto y al
         // final los callouts, también de afuera hacia adentro (el orden es estable).
         visibles.sort_by_key(|c| match c {

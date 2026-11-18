@@ -6,20 +6,29 @@ use super::*;
 pub(super) const URL_CALLOUT: &str = "orbital-callout:";
 
 impl Reader {
+    /// Un bloque de primer nivel. Si su `firma` dice que está oculto (dentro de una sección
+    /// plegada o fuera del enfoque), no se vuelca nada: queda solo su marca (028/046).
     pub(super) fn top_block(
         &self,
         s: &RenderState,
         end: &mut gtk::TextIter,
-        block: &Block,
+        fuente: Rc<Block>,
         hash: u64,
+        firma: super::plegado::Firma,
     ) -> BlockInfo {
+        let block = &*fuente;
         let mark = s.buffer.create_mark(None, end, true);
         let base = Rc::new(Cell::new(block.source.start));
         s.plegables_lector.borrow_mut().clear();
         s.capas.borrow_mut().clear();
         *s.block_base.borrow_mut() = base.clone();
         s.block_start.set(block.source.start);
-        self.block(s, end, block, 0);
+        if !firma.oculto {
+            s.foco.set(firma.foco);
+            s.plegadas.borrow_mut().clone_from(&firma.plegadas);
+            self.block(s, end, block, 0);
+            s.foco.set(None);
+        }
         let (heading, nivel) = match &block.kind {
             BlockKind::Heading { inlines, level } => (
                 Some(orbital_vault::render::plain_text(inlines)),
@@ -38,6 +47,8 @@ impl Reader {
             nivel,
             plegables: std::mem::take(&mut *s.plegables_lector.borrow_mut()),
             capas: std::mem::take(&mut *s.capas.borrow_mut()),
+            fuente,
+            firma,
         }
     }
 
@@ -65,7 +76,8 @@ impl Reader {
                 if depth == 0 && s.es_plegable(b.line) {
                     let mut g = tags.clone();
                     g.extend(table.lookup(&format!("flecha-h{level}")));
-                    self.glifos(s, end, b.line as u32, &g, " ", 0);
+                    let cerrada = s.plegada(b.line);
+                    self.glifos(s, end, b.line as u32, &g, " ", 0, cerrada);
                 }
                 self.inlines(s, end, inlines, &tags);
                 buf.insert(end, "\n");
@@ -76,6 +88,29 @@ impl Reader {
             }
             BlockKind::List { start, items } => {
                 for (n, item) in items.iter().enumerate() {
+                    // Enfocado un ítem de esta lista (028): solo él con lo suyo; de los que lo
+                    // contienen, nada más que la sublista que lleva hasta él.
+                    let foco = s.foco.get();
+                    if let Some(a) = foco {
+                        let linea = item.blocks.first().map(|b| b.line as u32);
+                        let siguiente = items
+                            .get(n + 1)
+                            .and_then(|i| i.blocks.first())
+                            .map(|b| b.line as u32);
+                        match linea {
+                            Some(l) if l == a => {}
+                            Some(l) if l < a && siguiente.is_none_or(|x| x > a) => {
+                                for sub in &item.blocks {
+                                    if matches!(sub.kind, BlockKind::List { .. }) {
+                                        self.block(s, end, sub, depth + 1);
+                                    }
+                                }
+                                continue;
+                            }
+                            _ => continue,
+                        }
+                        s.foco.set(None);
+                    }
                     let tag = self.indent_tag((depth + 1) * 24);
                     let mut tags = base.clone();
                     tags.push(tag.clone());
@@ -87,9 +122,11 @@ impl Reader {
                         .map(|b| b.line)
                         .filter(|l| s.es_plegable(*l));
                     let indice = s.plegables_lector.borrow().len();
+                    // Plegado, lo de debajo de su primer renglón no se vuelca (046).
+                    let cerrado = plegable.is_some_and(|l| s.plegada(l));
                     // Un ítem con subítems: la flechita cuelga a la izquierda de la viñeta (028).
                     if let Some(l) = plegable {
-                        self.glifos(s, end, l as u32, &tags, " ", (depth + 1) * 24);
+                        self.glifos(s, end, l as u32, &tags, " ", (depth + 1) * 24, cerrado);
                     }
                     let mut desde: Option<gtk::TextMark> = None;
                     if let Some(task) = item.task {
@@ -109,6 +146,9 @@ impl Reader {
                         }
                     }
                     for (k, sub) in item.blocks.iter().enumerate() {
+                        if cerrado && k > 0 {
+                            break;
+                        }
                         match &sub.kind {
                             // El primer párrafo va en la misma línea que la viñeta.
                             BlockKind::Paragraph(p) if k == 0 => {
@@ -144,6 +184,7 @@ impl Reader {
                         line_end.forward_to_line_end();
                     }
                     buf.apply_tag(&tag, &first, &line_end);
+                    s.foco.set(foco);
                 }
             }
             BlockKind::Quote(body) => {
@@ -160,7 +201,7 @@ impl Reader {
                 title,
                 folded,
                 body,
-            } => self.callout(s, end, kind, title, *folded, body, depth, &base),
+            } => self.callout(s, end, kind, title, *folded, body, depth, b.source.start),
             BlockKind::Code { text, .. } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));
@@ -236,7 +277,7 @@ impl Reader {
                 }
             }
             BlockKind::Seccion { kind, body } => self.seccion(s, end, *kind, body, depth),
-            BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth),
+            BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth, b.source.start),
         }
     }
 
@@ -587,6 +628,7 @@ impl Reader {
         end: &mut gtk::TextIter,
         f: &orbital_vault::render::Flashcard,
         depth: i32,
+        origen: usize,
     ) {
         use super::capas::{CALLOUT_TITULO, Capa, INCRUSTADO_DER};
         let buf = &s.buffer;
@@ -622,11 +664,13 @@ impl Reader {
         let n = self.0.callouts.get() + 1;
         self.0.callouts.set(n);
         let nombre = format!("tarjeta-{n}");
+        // Abierta antes de volver a volcarse (al desplegar su sección), sigue abierta (046).
+        let abierta = self.alternado(s, &nombre, origen);
         let respuesta = self.new_tag(
             s,
             gtk::TextTag::builder()
                 .name(&nombre)
-                .invisible(true)
+                .invisible(!abierta)
                 .build(),
         );
         let marca = |end: &gtk::TextIter| buf.create_mark(None, end, true);
@@ -637,17 +681,16 @@ impl Reader {
         } else {
             let url = format!("{URL_CALLOUT}{nombre}");
             let enlace = self.link_tag(s, &url);
-            let ver = self.new_tag(
-                s,
-                gtk::TextTag::builder()
-                    .name(format!("{nombre}-mostrar"))
-                    .build(),
-            );
+            let mut ver = gtk::TextTag::builder().name(format!("{nombre}-mostrar"));
+            if abierta {
+                ver = ver.invisible(true);
+            }
+            let ver = self.new_tag(s, ver.build());
             let esconder = self.new_tag(
                 s,
                 gtk::TextTag::builder()
                     .name(format!("{nombre}-ocultar"))
-                    .invisible(true)
+                    .invisible(!abierta)
                     .build(),
             );
             let linea = tags(
@@ -764,7 +807,7 @@ impl Reader {
         folded: Option<bool>,
         body: &[Block],
         depth: i32,
-        _base: &[gtk::TextTag],
+        origen: usize,
     ) {
         use super::capas::{CALLOUT_TITULO, Capa, estilo_callout};
         let buf = &s.buffer;
@@ -781,6 +824,8 @@ impl Reader {
             let n = self.0.callouts.get() + 1;
             self.0.callouts.set(n);
             let nombre = format!("callout-cuerpo-{n}");
+            // Abierto o cerrado a mano antes de volver a volcarse, queda como estaba (046).
+            let f = f != self.alternado(s, &nombre, origen);
             let tag = self.new_tag(
                 s,
                 gtk::TextTag::builder().name(&nombre).invisible(f).build(),
@@ -1085,4 +1130,13 @@ pub(super) struct RenderState {
     pub(super) plegables_lector: RefCell<Vec<super::plegado::PlegableLector>>,
     /// Lo que se dibuja a mano sobre el bloque de primer nivel en curso.
     pub(super) capas: RefCell<Vec<super::capas::Capa>>,
+    /// Línea del ítem enfocado si el bloque en curso lo contiene (028): de su lista se vuelca
+    /// solo ese ítem.
+    pub(super) foco: Cell<Option<u32>>,
+    /// Líneas plegadas del bloque de primer nivel en curso (de su firma).
+    pub(super) plegadas: RefCell<Vec<u32>>,
+    /// Se vuelca en un buffer suelto para trasplantar (`Reader::reemplazar`): los widgets van como
+    /// `U+FFFC` y se anotan en `lugares` con su posición.
+    pub(super) provisorio: Cell<bool>,
+    pub(super) lugares: RefCell<Vec<(gtk::Widget, i32)>>,
 }

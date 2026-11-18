@@ -845,3 +845,365 @@ fn medir_lectura_con_transclusiones() {
         );
     });
 }
+
+/// Bóveda temporal con un cuaderno de `capitulos` capítulos hechos de transclusiones (como los
+/// cuadernos de la usuaria): cada átomo trae Síntesis, callouts (plegables abiertos y cerrados),
+/// índice, lista anidada, tareas, tarjetas de estudio y Conexiones. Devuelve la raíz y el texto
+/// del cuaderno; el capítulo 2 tiene además callouts, una tarjeta y una lista directos.
+fn boveda_cuaderno(capitulos: usize) -> (std::path::PathBuf, String) {
+    let root = std::env::temp_dir().join(format!("orbital-046-{}", glib::uuid_string_random()));
+    std::fs::create_dir_all(root.join("wiki/HMA")).unwrap();
+    for n in 1..=capitulos {
+        let mut t = format!(
+            "---\nid: AT-{n:03}\ntype: atomo\n---\n<!-- summary AT-{n:03} -->\n## Síntesis\n\nIdea central del átomo {n}.\n<!---->\n\n> [!abstract] Ficha de la nota\n> **Tipo:** átomo\n\n```table-of-contents\ntitle: \nstyle: nestedList\n```\n\n## 1. Definiciones\n\n> [!definition] Demostración\n> Una cadena de pasos.\n\n> [!warning]- Plegable cerrado\n> Oculto adentro {n}.\n\n> [!tip]+ Plegable abierto\n> Visible adentro {n}.\n\n- uno\n  - sub uno\n  - sub dos\n- dos\n\n- [ ] tarea pendiente {n}\n- [x] tarea hecha\n\n## 2. Flashcards\n\n"
+        );
+        for k in 1..=6 {
+            t.push_str(&format!(
+                ":::flashcard id=fc-{n}0{k}\n¿Pregunta {k} del {n}?\n---\nRespuesta {k} del {n}.\n:::\n\n"
+            ));
+        }
+        t.push_str(&format!(
+            "<!-- connections AT-{n:03} -->\n## Conexiones\n\n- [[Atomo 1]]\n- [[Atomo 2]]\n<!---->\n"
+        ));
+        std::fs::write(root.join(format!("wiki/HMA/Atomo {n}.md")), t).unwrap();
+    }
+    let mut text = String::from("# Cuaderno\n\n### Módulo 1\n\n#### Tema 1\n\n");
+    for n in 1..=capitulos {
+        text.push_str(&format!("##### Capítulo {n}\n\n![[Atomo {n}]]\n\n"));
+        if n == 2 {
+            text.push_str("> [!note] Callout directo\n> Con texto directo.\n\n> [!faq]- Callout directo plegable\n> Cuerpo directo.\n\n:::flashcard id=fc-901\n¿Directa?\n---\nRespuesta directa.\n:::\n\n- lista\n  - anidada directa\n\nTareas:\n\n- [ ] tarea directa\n- [x] otra tarea directa\n\n");
+        }
+    }
+    text.push_str("##### Final\n\nTexto final.\n");
+    (root, text)
+}
+
+/// Guarda la vista del lector en `<ORBITAL_CAPTURA_DIR>/<nombre>.png` (si está la variable).
+fn capturar_lector(reader: &Reader, nombre: &str) {
+    use gtk::prelude::*;
+    let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {
+        return;
+    };
+    let w = reader.widget();
+    let (ancho, alto) = (w.width(), w.height());
+    let pintable = gtk::WidgetPaintable::new(Some(w));
+    let snap = gtk::Snapshot::new();
+    snap.append_color(
+        &crate::style::VIEW_BG.rgba(1.0),
+        &gtk::graphene::Rect::new(0.0, 0.0, ancho as f32, alto as f32),
+    );
+    pintable.snapshot(&snap, f64::from(ancho), f64::from(alto));
+    let node = snap.to_node().expect("cuadro");
+    let png = std::path::Path::new(&dir).join(format!("{nombre}.png"));
+    w.root()
+        .and_then(|r| r.renderer())
+        .expect("renderizador")
+        .render_texture(&node, None)
+        .save_to_png(&png)
+        .unwrap();
+    println!("Captura: {}", png.display());
+}
+
+/// Prepara el cuaderno de prueba en un lector dentro de una ventana y espera el volcado.
+async fn lector_con_cuaderno(
+    root: &std::path::Path,
+    text: &str,
+    alto: i32,
+) -> (Reader, gtk::Window) {
+    use gtk::prelude::*;
+    let vault = orbital_vault::open(root).unwrap();
+    let from = orbital_vault::RelPath::new("wiki/Cuaderno.md").unwrap();
+    let mut prepared = Prepared::with_vault(text, &vault, &from, &[]);
+    complete_generated(&mut prepared.doc, &mut prepared.hashes, None, Some(&from));
+    prepared.con_plegables(&orbital_vault::plegado::plegables(text));
+    let reader = Reader::new();
+    let window = gtk::Window::builder()
+        .default_width(1000)
+        .default_height(alto)
+        .child(reader.widget())
+        .build();
+    window.present();
+    reader.render(prepared, || None, None);
+    esperar_volcado(&reader).await;
+    (reader, window)
+}
+
+/// Deja pasar unos cuadros (GTK calcula la disposición de a tramos, en *idles*).
+async fn esperar_cuadros() {
+    for _ in 0..15 {
+        glib::timeout_future(Duration::from_millis(60)).await;
+    }
+}
+
+/// 046: una sección plegada queda guardada del todo. Sus transclusiones, callouts, tarjetas
+/// (aun con la respuesta a la vista), listas y partes especiales no ocupan alto ni se dibujan, y
+/// lo abierto adentro (un callout o una respuesta) no se asoma. Al desplegar vuelve todo.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn seccion_plegada_no_deja_cajas_ni_alto() {
+    use gtk::prelude::*;
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let (root, text) = boveda_cuaderno(3);
+    let linea = |t: &str| text.lines().position(|l| l == t).unwrap() as u32;
+    let (cap1, cap2) = (linea("##### Capítulo 1"), linea("##### Capítulo 2"));
+    glib::MainContext::default().block_on(async {
+        let (reader, window) = lector_con_cuaderno(&root, &text, 1100).await;
+        let buf = reader.buffer();
+        let visible = || {
+            buf.text(&buf.start_iter(), &buf.end_iter(), false)
+                .to_string()
+        };
+        // Lo abierto adentro de la sección que se va a plegar: una respuesta y un callout.
+        assert!(reader.mostrar_respuesta("fc-901"));
+        let n = reader
+            .all_link_items()
+            .iter()
+            .position(|l| {
+                l.url.starts_with(bloques::URL_CALLOUT)
+                    && buf.text(&buf.iter_at_mark(&l.start), &buf.iter_at_mark(&l.end), true)
+                        == "Callout directo plegable"
+            })
+            .unwrap();
+        reader.set_focused_link(Some(n));
+        assert!(reader.activate_focused_link());
+        reader.set_focused_link(None);
+        let v = visible();
+        assert!(
+            v.contains("Respuesta directa.") && v.contains("Cuerpo directo."),
+            "{v:?}"
+        );
+        // Posición (en caracteres) de un texto en el buffer de ahora: lo plegado sale de él.
+        let off = |t: &str| {
+            let todo = buf
+                .text(&buf.start_iter(), &buf.end_iter(), true)
+                .to_string();
+            todo[..todo.find(t).unwrap()].chars().count() as i32
+        };
+        // Alto entre el comienzo de un capítulo y el del siguiente, y el de su renglón.
+        let alto_seccion = |a: &str, b: &str| {
+            let view = reader.text_view();
+            let (ya, ha) = view.line_yrange(&buf.iter_at_offset(off(a)));
+            let (yb, _) = view.line_yrange(&buf.iter_at_offset(off(b)));
+            (yb - ya, ha)
+        };
+        esperar_cuadros().await;
+        let (abierto, _) = alto_seccion("Capítulo 2", "Capítulo 3");
+        capturar_lector(&reader, "046-desplegado");
+        // Las casillas de las tareas incrustadas son widgets anclados: vuelven al desplegar.
+        let anclas = || {
+            let mut it = buf.start_iter();
+            let mut n = 0;
+            loop {
+                n += usize::from(it.child_anchor().is_some());
+                if !it.forward_char() {
+                    return n;
+                }
+            }
+        };
+        let casillas = anclas();
+        assert!(casillas >= 2, "{casillas}");
+
+        reader.set_plegado(Rc::new(vec![cap1, cap2]));
+        esperar_cuadros().await;
+        capturar_lector(&reader, "046-plegado");
+        let v = visible();
+        for oculto in [
+            "Idea central del átomo 1",
+            "Respuesta directa.",
+            "Cuerpo directo.",
+            "Ocultar respuesta",
+            "¿Pregunta 1 del 1?",
+            "¿Directa?",
+            "Con texto directo.",
+            "anidada directa",
+            "Visible adentro 2",
+        ] {
+            assert!(!v.contains(oculto), "se asoma «{oculto}»: {v:?}");
+        }
+        for (a, b) in [("Capítulo 1", "Capítulo 2"), ("Capítulo 2", "Capítulo 3")] {
+            let (alto, renglon) = alto_seccion(a, b);
+            assert!(
+                alto <= renglon,
+                "«{a}» plegado ocupa {alto} px (su renglón, {renglon} px; abierto, {abierto})"
+            );
+        }
+        // Ninguna capa de lo plegado se dibuja (las del capítulo 3, a la vista, sí).
+        let plegado = off("Capítulo 1")..off("Capítulo 3");
+        let capas = reader.capas_dibujables();
+        assert!(
+            !capas.iter().any(|c| plegado.contains(c)),
+            "capas dibujadas en lo plegado: {capas:?} ({plegado:?})"
+        );
+        assert!(capas.iter().any(|c| *c > plegado.end));
+        // Lo plegado no está en el buffer, pero se encuentra en el texto oculto.
+        assert!(
+            !buf.text(&buf.start_iter(), &buf.end_iter(), true)
+                .contains("Idea central del átomo 1")
+        );
+        assert!(
+            reader
+                .texto_oculto()
+                .iter()
+                .any(|o| o.texto.contains("Idea central del átomo 1"))
+        );
+
+        // Al desplegar vuelve todo como estaba (lo abierto, abierto).
+        reader.set_plegado(Rc::new(Vec::new()));
+        esperar_cuadros().await;
+        capturar_lector(&reader, "046-redesplegado");
+        let v = visible();
+        assert!(
+            v.contains("Respuesta directa.") && v.contains("Cuerpo directo."),
+            "{v:?}"
+        );
+        assert!(
+            !v.contains("Oculto adentro 1"),
+            "lo cerrado sigue cerrado: {v:?}"
+        );
+        assert!(!v.contains("Respuesta 1 del 1"), "{v:?}");
+        let (alto, _) = alto_seccion("Capítulo 2", "Capítulo 3");
+        assert_eq!(alto, abierto);
+        let plegado = off("Capítulo 1")..off("Capítulo 3");
+        assert!(
+            reader
+                .capas_dibujables()
+                .iter()
+                .any(|c| plegado.contains(c))
+        );
+        assert!(reader.texto_oculto().is_empty());
+        assert_eq!(anclas(), casillas, "las casillas vuelven como anclas");
+        window.close();
+    });
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Medición (no es prueba de comportamiento): desplazarse por un cuaderno de 40 capítulos con
+/// todos plegados, de a 60 px. `cargo test --release --bin orbital
+/// medir_lectura_scroll_plegado -- --ignored --nocapture`. Imprime el tiempo de armar el cuadro
+/// de la vista (disposición de lo visible, texto y capas) en cada paso y cuántas veces cambió el
+/// alto total del documento mientras tanto (cada cambio es un salto de la barra: un tirón).
+#[test]
+#[ignore = "medición; correr a mano con --release"]
+fn medir_lectura_scroll_plegado() {
+    use gtk::prelude::*;
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let capitulos = std::env::var("ORBITAL_MEDIR_CAPITULOS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(40);
+    // `ORBITAL_MEDIR_PLEGAR=impares`: solo uno de cada dos capítulos (lo plegado entre texto).
+    let impares = std::env::var("ORBITAL_MEDIR_PLEGAR").is_ok_and(|v| v == "impares");
+    let (root, text) = boveda_cuaderno(capitulos);
+    let plegados: Vec<u32> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("##### Capítulo"))
+        .map(|(n, _)| n as u32)
+        .enumerate()
+        .filter(|(k, _)| !impares || k % 2 == 0)
+        .map(|(_, n)| n)
+        .collect();
+    glib::MainContext::default().block_on(async {
+        // `ORBITAL_MEDIR_SIN_ESPERA=1`: plegar y desplazarse apenas se vuelca, mientras GTK todavía
+        // calcula la disposición (como al abrir la nota y bajar enseguida).
+        let sin_espera = std::env::var_os("ORBITAL_MEDIR_SIN_ESPERA").is_some();
+        let (reader, window) = lector_con_cuaderno(&root, &text, 500).await;
+        if !sin_espera {
+            esperar_cuadros().await;
+        }
+        reader.set_plegado(Rc::new(plegados));
+        let view = reader.text_view().clone();
+        let adj = reader.widget().vadjustment();
+        adj.set_value(0.0);
+        if !sin_espera {
+            esperar_cuadros().await;
+        }
+        while adj.upper() <= adj.page_size() + 60.0 {
+            glib::timeout_future(Duration::from_millis(2)).await;
+        }
+        let saltos = Rc::new(std::cell::Cell::new(0u32));
+        let s = saltos.clone();
+        adj.connect_upper_notify(move |_| s.set(s.get() + 1));
+        // Cada cuadro, de la disposición al final del dibujo (lo que hace la CPU por cuadro).
+        let reloj = view.frame_clock().expect("reloj de cuadros");
+        let inicio: Rc<std::cell::Cell<Option<std::time::Instant>>> = Rc::default();
+        let cuadros: Rc<RefCell<Vec<f64>>> = Rc::default();
+        let i = inicio.clone();
+        reloj.connect_before_paint(move |_| i.set(Some(std::time::Instant::now())));
+        let (i, c) = (inicio.clone(), cuadros.clone());
+        reloj.connect_after_paint(move |_| {
+            if let Some(t) = i.take() {
+                c.borrow_mut().push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+        });
+        let mut paso = 0.0;
+        let mut pasos = 0;
+        while paso + adj.page_size() < adj.upper() && pasos < 400 {
+            paso += 60.0;
+            pasos += 1;
+            adj.set_value(paso);
+            glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        let resumen = |ms: &mut Vec<f64>| {
+            if ms.is_empty() {
+                return "sin cuadros".to_owned();
+            }
+            ms.sort_by(f64::total_cmp);
+            let at = |q: f64| ms[((ms.len() - 1) as f64 * q).round() as usize];
+            format!(
+                "{} cuadros, mediana {:.2} ms, p95 {:.2} ms, máx {:.2} ms, {} de más de 16,7 ms",
+                ms.len(),
+                at(0.5),
+                at(0.95),
+                ms[ms.len() - 1],
+                ms.iter().filter(|m| **m > 16.7).count()
+            )
+        };
+        let mut ms = std::mem::take(&mut *cuadros.borrow_mut());
+        println!(
+            "Desplazamiento: {pasos} pasos de 60 px, alto {:.0} px, cambios del alto total: {}; {}",
+            adj.upper(),
+            saltos.get(),
+            resumen(&mut ms)
+        );
+        // Quieto en la mitad: los cuadros solo vuelven a dibujar lo mismo.
+        adj.set_value((adj.upper() - adj.page_size()) / 2.0);
+        glib::timeout_future(Duration::from_millis(200)).await;
+        cuadros.borrow_mut().clear();
+        for _ in 0..30 {
+            view.queue_draw();
+            glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        let mut ms = std::mem::take(&mut *cuadros.borrow_mut());
+        println!("Quieto, redibujando: {}", resumen(&mut ms));
+        // Desplegar y volver a plegar un capítulo (los demás quedan como estaban): lo que tarda
+        // `set_plegado` y el cuadro siguiente.
+        let todos = reader.0.plegado.borrow().clone();
+        let mut alternar = Vec::new();
+        let mut cuadro = Vec::new();
+        for k in 0..todos.len().min(10) {
+            for lineas in [
+                todos.iter().copied().filter(|l| *l != todos[k]).collect(),
+                (*todos).clone(),
+            ] {
+                cuadros.borrow_mut().clear();
+                let t = std::time::Instant::now();
+                reader.set_plegado(Rc::new(lineas));
+                alternar.push(t.elapsed().as_secs_f64() * 1000.0);
+                while cuadros.borrow().is_empty() {
+                    view.queue_draw();
+                    glib::timeout_future(Duration::from_millis(5)).await;
+                }
+                cuadro.push(cuadros.borrow()[0]);
+                glib::timeout_future(Duration::from_millis(60)).await;
+            }
+        }
+        println!(
+            "Plegar o desplegar un capítulo: {}; cuadro siguiente: {}",
+            resumen(&mut alternar),
+            resumen(&mut cuadro)
+        );
+        window.close();
+    });
+    let _ = std::fs::remove_dir_all(&root);
+}

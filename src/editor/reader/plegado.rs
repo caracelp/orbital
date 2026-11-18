@@ -1,21 +1,29 @@
-//! Plegado en la vista formateada (028, research R7).
+//! Plegado y enfoque en la vista formateada (028, research R7; rediseño de la 046).
 //!
 //! Sin widgets nuevos: cada elemento plegable lleva un glifo de texto con la etiqueta compartida
-//! `flecha`, `▾` desplegado o `▸` plegado (se reemplaza el carácter: un glifo invisible recortaría
-//! el texto accesible de la vista, porque GTK lo deja afuera pero cuenta su largo). El glifo es
-//! transparente y cuelga en el margen: la flechita que se ve la dibuja `capas`, siempre si está
-//! plegado y, desplegado, solo con el mouse sobre la sección. Lo plegado se oculta
-//! con la etiqueta compartida `plegado`, sobre la unión de los rangos y tocando solo los tramos
-//! que cambian. Las etiquetas son de la tabla (creadas en `create_tags`), nunca de un bloque: lo
-//! de `new_tag` se borra de la tabla con su bloque. El estado lo decide el editor (las marcas de
-//! Código); la vista solo lo muestra y avisa los clics.
+//! `flecha`, `▾` desplegado o `▸` plegado. El glifo es transparente y cuelga en el margen: la
+//! flechita que se ve la dibuja `capas`, siempre si está plegado y, desplegado, solo con el mouse
+//! sobre la sección.
+//!
+//! Lo plegado **no está en el buffer**: un bloque de primer nivel dentro de una sección plegada
+//! (o fuera del enfoque) queda solo con su marca, y un ítem plegado se vuelca sin lo que va
+//! debajo de su primer renglón. Cada bloque guarda su fuente analizada y la [`Firma`] con la que
+//! se volcó; al cambiar el plegado o el enfoque se vuelven a volcar en el sitio solo los bloques
+//! cuya firma cambió. Así lo oculto no cuesta nada al dibujar: con texto invisible, GTK recorre
+//! cada renglón oculto que cae en pantalla en cada cuadro y su caché de renglones (tres pantallas)
+//! no alcanza (046). La búsqueda mira lo oculto en las fuentes ([`Reader::texto_oculto`]).
+//!
+//! El estado lo decide el editor (las marcas de Código); la vista solo lo muestra y avisa los
+//! clics.
 
 use super::*;
-use orbital_vault::plegado as nucleo;
-use std::ops::Range;
+use orbital_vault::render::Embed;
 
 const ABIERTA: &str = "▾";
 const CERRADA: &str = "▸";
+
+/// Bloques que se vuelven a volcar de una vez antes de mirar el reloj.
+const TANDA_REPLEGADO: usize = 8;
 
 /// El glifo bajo `it` es el de un elemento plegado.
 pub(super) fn es_cerrada(it: &gtk::TextIter) -> bool {
@@ -31,15 +39,172 @@ pub(super) struct PlegableLector {
     pub(super) linea: u32,
     /// El glifo (`▾` o `▸`).
     pub(super) glifo: gtk::TextMark,
-    /// Contenido de un ítem en la vista (lo que va después de su primera línea). Una sección no
-    /// tiene: llega hasta el próximo encabezado de nivel menor o igual.
+    /// Contenido de un ítem en la vista (lo que va después de su primera línea; vacío si está
+    /// plegado). Una sección no tiene: llega hasta el próximo encabezado de nivel menor o igual.
     pub(super) contenido: Option<(gtk::TextMark, gtk::TextMark)>,
+}
+
+/// Cómo se volcó un bloque de primer nivel respecto del plegado y el enfoque: si cambia, el
+/// bloque se vuelve a volcar.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Firma {
+    /// Dentro de una sección plegada o fuera del enfoque: no se vuelca.
+    pub(super) oculto: bool,
+    /// Líneas plegadas dentro del bloque (su encabezado o sus ítems).
+    pub(super) plegadas: Vec<u32>,
+    /// El bloque contiene el ítem enfocado (línea): de su lista se vuelca solo ese ítem.
+    pub(super) foco: Option<u32>,
+}
+
+/// La firma de cada bloque de primer nivel. `esquema`: línea fuente y nivel (si es encabezado)
+/// de cada bloque, en orden; `plegables` y `plegadas`, líneas ordenadas; `enfoque`: el rango
+/// `linea..=ultima` del elemento enfocado.
+pub(super) fn firmas(
+    esquema: &[(u32, Option<u8>)],
+    plegables: &[u32],
+    plegadas: &[u32],
+    enfoque: Option<(u32, u32)>,
+) -> Vec<Firma> {
+    let efectivas: Vec<u32> = plegadas
+        .iter()
+        .copied()
+        .filter(|l| plegables.binary_search(l).is_ok())
+        .collect();
+    let mut out = Vec::with_capacity(esquema.len());
+    // Nivel del encabezado plegado cuya sección se está recorriendo.
+    let mut cubre: Option<u8> = None;
+    for (n, &(linea, nivel)) in esquema.iter().enumerate() {
+        let siguiente = esquema.get(n + 1).map(|x| x.0);
+        if let (Some(c), Some(l)) = (cubre, nivel)
+            && l <= c
+        {
+            cubre = None;
+        }
+        let mut oculto = cubre.is_some();
+        let mut foco = None;
+        if let Some((a, z)) = enfoque {
+            if linea > z || (linea < a && siguiente.is_some_and(|x| x <= a)) {
+                oculto = true;
+            } else if linea < a {
+                foco = Some(a);
+            }
+        }
+        if cubre.is_none() && nivel.is_some() && efectivas.binary_search(&linea).is_ok() {
+            cubre = nivel;
+        }
+        let firma = if oculto {
+            Firma {
+                oculto,
+                ..Firma::default()
+            }
+        } else {
+            let hasta = siguiente.unwrap_or(u32::MAX);
+            let i0 = efectivas.partition_point(|l| *l < linea);
+            let i1 = efectivas.partition_point(|l| *l < hasta);
+            Firma {
+                oculto,
+                plegadas: efectivas[i0..i1].to_vec(),
+                foco,
+            }
+        };
+        out.push(firma);
+    }
+    out
+}
+
+/// Un trozo de lo que el plegado o el enfoque dejó fuera de la vista, para buscar en él.
+pub struct Oculto {
+    /// Dónde iría en el buffer (para ordenar las coincidencias).
+    pub offset: i32,
+    /// Su línea fuente: revelarla lo despliega (en una nota incrustada, la de la transclusión).
+    pub linea: u32,
+    /// Su texto, aproximado al que muestra la vista: un párrafo, un encabezado, un título.
+    pub texto: String,
+}
+
+/// Los trozos de texto de un bloque con su línea fuente, aproximados a lo que muestra la vista
+/// (para buscar en lo plegado). `fija`: la línea de la transclusión que lo incrusta.
+fn hojas(b: &Block, fija: Option<u32>, out: &mut Vec<(u32, String)>) {
+    let linea = fija.unwrap_or(b.line as u32);
+    let mut hoja = |texto: String| out.push((linea, texto));
+    match &b.kind {
+        BlockKind::Heading { inlines, .. } | BlockKind::Paragraph(inlines) => {
+            hoja(plain_text(inlines))
+        }
+        BlockKind::Code { text, .. } | BlockKind::Html(text) => hoja(text.clone()),
+        BlockKind::Table { header, rows, .. } => {
+            let mut texto = String::new();
+            for fila in std::iter::once(header).chain(rows) {
+                for celda in fila {
+                    texto.push_str(&plain_text(celda));
+                    texto.push('\t');
+                }
+                texto.push('\n');
+            }
+            hoja(texto);
+        }
+        BlockKind::Callout { title, body, .. } => {
+            hoja(title.clone());
+            body.iter().for_each(|b| hojas(b, fija, out));
+        }
+        BlockKind::List { items, .. } => items
+            .iter()
+            .flat_map(|i| &i.blocks)
+            .for_each(|b| hojas(b, fija, out)),
+        BlockKind::Quote(body) | BlockKind::Seccion { body, .. } | BlockKind::Group(body) => {
+            body.iter().for_each(|b| hojas(b, fija, out))
+        }
+        BlockKind::Transclusion(t) => {
+            hoja(t.target.clone());
+            if let Embed::Note { blocks, .. } = &t.content {
+                blocks.iter().for_each(|b| hojas(b, Some(linea), out));
+            }
+        }
+        BlockKind::Flashcard(f) => f
+            .question
+            .iter()
+            .chain(&f.answer)
+            .for_each(|b| hojas(b, fija, out)),
+        BlockKind::Generated(_) | BlockKind::Rule | BlockKind::FootnoteDefinition { .. } => {}
+    }
+}
+
+/// Lo plegado dentro de los ítems de `items` (y de sus sublistas desplegadas): (línea del ítem,
+/// trozos de lo que no se volcó).
+fn items_plegados(items: &[ListItem], plegadas: &[u32], out: &mut Vec<(u32, Vec<(u32, String)>)>) {
+    for item in items {
+        let Some(primero) = item.blocks.first() else {
+            continue;
+        };
+        let linea = primero.line as u32;
+        if plegadas.binary_search(&linea).is_ok() {
+            let mut trozos = Vec::new();
+            item.blocks[1..]
+                .iter()
+                .for_each(|b| hojas(b, None, &mut trozos));
+            out.push((linea, trozos));
+            continue;
+        }
+        for sub in &item.blocks {
+            if let BlockKind::List { items, .. } = &sub.kind {
+                items_plegados(items, plegadas, out);
+            }
+        }
+    }
 }
 
 impl RenderState {
     /// La línea fuente es la de un elemento plegable y no es contenido incrustado.
     pub(super) fn es_plegable(&self, linea: usize) -> bool {
         self.embedded.get() == 0 && self.plegables.binary_search(&(linea as u32)).is_ok()
+    }
+
+    /// La línea fuente `linea` es la de un elemento plegado del bloque en curso.
+    pub(super) fn plegada(&self, linea: usize) -> bool {
+        self.plegadas
+            .borrow()
+            .binary_search(&(linea as u32))
+            .is_ok()
     }
 
     /// El contenido del ítem plegable `indice` del bloque en curso.
@@ -50,49 +215,10 @@ impl RenderState {
     }
 }
 
-/// Aplica `tag` exactamente sobre los tramos `deseado`, tocando solo lo que cambia.
-fn aplicar_tag_tramos(buf: &gtk::TextBuffer, tag: &gtk::TextTag, deseado: &[Range<u32>]) {
-    let actual = tramos(buf, tag);
-    let (agregar, quitar) = nucleo::diferencia(&actual, deseado);
-    for r in &quitar {
-        buf.remove_tag(
-            tag,
-            &buf.iter_at_offset(r.start as i32),
-            &buf.iter_at_offset(r.end as i32),
-        );
-    }
-    for r in &agregar {
-        buf.apply_tag(
-            tag,
-            &buf.iter_at_offset(r.start as i32),
-            &buf.iter_at_offset(r.end as i32),
-        );
-    }
-}
-
-/// Los tramos (en caracteres) que hoy tienen la etiqueta.
-fn tramos(buf: &gtk::TextBuffer, tag: &gtk::TextTag) -> Vec<Range<u32>> {
-    let mut out = Vec::new();
-    let mut it = buf.start_iter();
-    if !it.starts_tag(Some(tag)) && !it.forward_to_tag_toggle(Some(tag)) {
-        return out;
-    }
-    while it.has_tag(tag) || it.starts_tag(Some(tag)) {
-        let a = it.offset() as u32;
-        if !it.forward_to_tag_toggle(Some(tag)) {
-            it = buf.end_iter();
-        }
-        out.push(a..it.offset() as u32);
-        if it.is_end() || !it.forward_to_tag_toggle(Some(tag)) {
-            break;
-        }
-    }
-    out
-}
-
 impl Reader {
     /// El glifo de un elemento plegable, con `despues` (espacio hasta el texto). `sangria`: la
     /// del renglón (el glifo cuelga a su izquierda).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn glifos(
         &self,
         s: &RenderState,
@@ -101,6 +227,7 @@ impl Reader {
         base: &[gtk::TextTag],
         despues: &str,
         sangria: i32,
+        cerrada: bool,
     ) {
         let buf = &s.buffer;
         let table = buf.tag_table();
@@ -110,7 +237,8 @@ impl Reader {
         // Cuelga a la izquierda del texto (sangría negativa del renglón): el texto queda alineado
         // con el resto y la flechita, en el margen.
         tags.push(self.colgar_tag(sangria));
-        buf.insert_with_tags(end, ABIERTA, &tags.iter().collect::<Vec<_>>());
+        let glifo = if cerrada { CERRADA } else { ABIERTA };
+        buf.insert_with_tags(end, glifo, &tags.iter().collect::<Vec<_>>());
         let fin = buf.create_mark(None, end, false);
         let mut sep: Vec<gtk::TextTag> = base.to_vec();
         sep.extend(table.lookup("flecha-sep"));
@@ -172,126 +300,180 @@ impl Reader {
         self.aplicar_plegado();
     }
 
-    /// Oculta lo plegado y pone cada flechita en su estado, tocando solo lo que cambia. Corre
-    /// también al final de `swap_in` y de `update` (lo que la actualización en el sitio inserta no
-    /// tiene etiqueta).
-    pub(super) fn aplicar_plegado(&self) {
-        let i = &self.0;
-        let buf = self.buffer();
-        let table = buf.tag_table();
-        let Some(tag) = table.lookup("plegado") else {
-            return;
-        };
-        let plegadas = i.plegado.borrow().clone();
-        let blocks = i.blocks.borrow();
-        let off = |m: &gtk::TextMark| buf.iter_at_mark(m).offset() as u32;
-        let mut deseado: Vec<Range<u32>> = Vec::new();
-        for (n, b) in blocks.iter().enumerate() {
-            for p in &b.plegables {
-                let plegado = plegadas.binary_search(&p.linea).is_ok();
-                // El glifo: `▾` desplegado, `▸` plegado (mismo largo: nada se corre).
-                let mut g = buf.iter_at_mark(&p.glifo);
-                let quiere = if plegado { CERRADA } else { ABIERTA };
-                // Solo se cambia un glifo: si la marca quedó en otro carácter, no se toca el texto.
-                let actual = g.char().to_string();
-                if (actual == ABIERTA || actual == CERRADA) && actual != quiere {
-                    let etiquetas = g.tags();
-                    let mut z = g;
-                    z.forward_char();
-                    buf.delete(&mut g, &mut z);
-                    buf.insert_with_tags(&mut g, quiere, &etiquetas.iter().collect::<Vec<_>>());
-                }
-                if !plegado {
-                    continue;
-                }
-                match &p.contenido {
-                    Some((d, h)) => deseado.push(off(d)..off(h)),
-                    None => {
-                        let nivel = b.nivel.unwrap_or(1);
-                        let Some(sig) = blocks.get(n + 1) else {
-                            continue;
-                        };
-                        let hasta = blocks[n + 1..]
-                            .iter()
-                            .find(|x| x.nivel.is_some_and(|m| m <= nivel))
-                            .map_or(buf.end_iter().offset() as u32, |x| off(&x.mark));
-                        deseado.push(off(&sig.mark)..hasta);
-                    }
-                }
-            }
-        }
-        drop(blocks);
-        nucleo::unir(&mut deseado);
-        aplicar_tag_tramos(&buf, &tag, &deseado);
-        self.aplicar_enfoque();
-    }
-
     /// Rango `linea..=ultima` del elemento enfocado (o `None` sin enfoque).
     pub fn set_enfoque(&self, rango: Option<(u32, u32)>) {
         *self.0.enfoque.borrow_mut() = rango;
-        self.aplicar_enfoque();
+        self.aplicar_plegado();
     }
 
-    /// Oculta todo lo que queda fuera del elemento enfocado (incluido el encabezado de
-    /// propiedades).
-    fn aplicar_enfoque(&self) {
+    /// Las firmas que corresponden hoy a `fuentes` (bloques de primer nivel en orden).
+    pub(super) fn firmas_de(&self, fuentes: &[Rc<Block>], plegables: &[u32]) -> Vec<Firma> {
+        let esquema: Vec<(u32, Option<u8>)> = fuentes.iter().map(|b| esquema_de(b)).collect();
+        firmas(
+            &esquema,
+            plegables,
+            &self.0.plegado.borrow(),
+            *self.0.enfoque.borrow(),
+        )
+    }
+
+    /// Vuelve a volcar en el sitio los bloques cuya firma cambió (plegado, enfoque) y oculta el
+    /// encabezado de propiedades fuera del enfoque. Corre también al final de `swap_in` y de
+    /// `update`. Si hay mucho que volcar (desplegar todo en una nota grande), sigue por tramos de
+    /// unos 8 ms; lo que cambia de a una sección se vuelca enseguida.
+    pub(super) fn aplicar_plegado(&self) {
+        let i = &self.0;
+        let generacion = i.replegado.get() + 1;
+        i.replegado.set(generacion);
+        self.ocultar_encabezado();
+        self.replegar(generacion, true);
+    }
+
+    /// Termina ya de volcar lo que el plegado dejó pendiente (antes de mostrar algo que se acaba
+    /// de revelar).
+    pub fn completar_plegado(&self) {
+        self.replegar(self.0.replegado.get(), false);
+    }
+
+    fn replegar(&self, generacion: u64, por_tramos: bool) {
+        let i = &self.0;
+        if i.replegado.get() != generacion {
+            return;
+        }
+        let inicio = Instant::now();
+        loop {
+            // La próxima tanda de bloques contiguos con la firma cambiada.
+            let tanda = {
+                let blocks = i.blocks.borrow();
+                if blocks.is_empty() {
+                    return;
+                }
+                let fuentes: Vec<Rc<Block>> = blocks.iter().map(|b| b.fuente.clone()).collect();
+                let deseadas = self.firmas_de(&fuentes, &i.plegables.borrow());
+                let Some(desde) = (0..blocks.len()).find(|&n| blocks[n].firma != deseadas[n])
+                else {
+                    return;
+                };
+                let mut hasta = desde + 1;
+                while hasta < blocks.len()
+                    && hasta - desde < TANDA_REPLEGADO
+                    && blocks[hasta].firma != deseadas[hasta]
+                {
+                    hasta += 1;
+                }
+                let nuevos: Vec<(Rc<Block>, u64, Firma)> = (desde..hasta)
+                    .map(|n| (fuentes[n].clone(), blocks[n].hash, deseadas[n].clone()))
+                    .collect();
+                (desde..hasta, nuevos)
+            };
+            let (rango, nuevos) = tanda;
+            i.focused_link.set(None);
+            let mut blocks = std::mem::take(&mut *i.blocks.borrow_mut());
+            self.reemplazar(
+                &mut blocks,
+                rango,
+                nuevos,
+                i.base_dir.borrow().clone(),
+                i.plegables.borrow().clone(),
+            );
+            *i.blocks.borrow_mut() = blocks;
+            if por_tramos && inicio.elapsed() >= SLICE {
+                let this = self.clone();
+                glib::idle_add_local_once(move || this.replegar(generacion, true));
+                return;
+            }
+        }
+    }
+
+    /// Fuera del enfoque, el encabezado de propiedades (lo de antes del primer bloque) no se ve:
+    /// es un widget anclado en su renglón, que se oculta con la etiqueta `fuera-de-enfoque`.
+    fn ocultar_encabezado(&self) {
         let buf = self.buffer();
         let Some(tag) = buf.tag_table().lookup("fuera-de-enfoque") else {
             return;
         };
-        let enfoque = *self.0.enfoque.borrow();
-        let deseado: Vec<Range<u32>> = match enfoque {
-            None => Vec::new(),
-            Some((inicio, _)) => {
-                let blocks = self.0.blocks.borrow();
-                let off = |m: &gtk::TextMark| buf.iter_at_mark(m).offset() as u32;
-                let mut visible: Option<Range<u32>> = None;
-                for (n, b) in blocks.iter().enumerate() {
-                    for p in &b.plegables {
-                        if p.linea == inicio {
-                            let start = match &p.contenido {
-                                Some(_) => off(&p.glifo),
-                                None => off(&b.mark),
-                            };
-                            let end = match &p.contenido {
-                                Some((_, h)) => off(h),
-                                None => {
-                                    let nivel = b.nivel.unwrap_or(1);
-                                    blocks[n + 1..]
-                                        .iter()
-                                        .find(|x| x.nivel.is_some_and(|m| m <= nivel))
-                                        .map_or(buf.end_iter().offset() as u32, |x| off(&x.mark))
-                                }
-                            };
-                            visible = Some(start..end);
-                            break;
-                        }
-                    }
-                    if visible.is_some() {
-                        break;
-                    }
-                }
-                match visible {
-                    Some(v) => {
-                        let fin = buf.end_iter().offset() as u32;
-                        let mut r = vec![0..v.start, v.end..fin];
-                        r.retain(|x| !x.is_empty());
-                        r
-                    }
-                    None => Vec::new(),
-                }
-            }
-        };
-        aplicar_tag_tramos(&buf, &tag, &deseado);
+        let primero = self
+            .0
+            .blocks
+            .borrow()
+            .first()
+            .map(|b| buf.iter_at_mark(&b.mark));
+        buf.remove_tag(&tag, &buf.start_iter(), &buf.end_iter());
+        if self.0.enfoque.borrow().is_some()
+            && let Some(z) = primero
+        {
+            buf.apply_tag(&tag, &buf.start_iter(), &z);
+        }
     }
 
-    /// El carácter `off` está oculto por estar fuera del enfoque.
-    pub fn esta_fuera_de_enfoque(&self, off: i32) -> bool {
+    /// Lo que el plegado o el enfoque dejó fuera del buffer, en orden: los bloques ocultos y el
+    /// contenido de los ítems plegados, por trozos. Para buscar en Lectura (FR-011).
+    pub fn texto_oculto(&self) -> Vec<Oculto> {
         let buf = self.buffer();
-        let Some(tag) = buf.tag_table().lookup("fuera-de-enfoque") else {
-            return false;
-        };
-        buf.iter_at_offset(off).has_tag(&tag)
+        let blocks = self.0.blocks.borrow();
+        let mut out = Vec::new();
+        for b in blocks.iter() {
+            let offset = buf.iter_at_mark(&b.mark).offset();
+            if b.firma.oculto {
+                let mut trozos = Vec::new();
+                hojas(&b.fuente, None, &mut trozos);
+                out.extend(trozos.into_iter().map(|(linea, texto)| Oculto {
+                    offset,
+                    linea,
+                    texto,
+                }));
+                continue;
+            }
+            let BlockKind::List { items, .. } = &b.fuente.kind else {
+                continue;
+            };
+            if b.firma.plegadas.is_empty() {
+                continue;
+            }
+            let mut plegados = Vec::new();
+            items_plegados(items, &b.firma.plegadas, &mut plegados);
+            for (item, trozos) in plegados {
+                let offset = b
+                    .plegables
+                    .iter()
+                    .find(|p| p.linea == item)
+                    .and_then(|p| p.contenido.as_ref())
+                    .map_or(offset, |(d, _)| buf.iter_at_mark(d).offset());
+                out.extend(trozos.into_iter().map(|(linea, texto)| Oculto {
+                    offset,
+                    linea,
+                    texto,
+                }));
+            }
+        }
+        out
+    }
+
+    /// Dónde quedó en el buffer un trozo de lo oculto después de revelarlo: el primer renglón de
+    /// su texto, buscado desde el bloque de primer nivel que contiene su línea (o el comienzo de
+    /// ese bloque si no se encuentra).
+    pub fn inicio_revelado(&self, linea: u32, texto: &str) -> Option<i32> {
+        self.completar_plegado();
+        let buf = self.buffer();
+        let blocks = self.0.blocks.borrow();
+        let n = blocks
+            .partition_point(|b| b.line as u32 <= linea)
+            .checked_sub(1)?;
+        let desde = buf.iter_at_mark(&blocks[n].mark);
+        let renglon = texto.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        if renglon.is_empty() {
+            return Some(desde.offset());
+        }
+        let hasta = blocks.get(n + 1).map(|b| buf.iter_at_mark(&b.mark));
+        Some(
+            desde
+                .forward_search(
+                    renglon.trim(),
+                    gtk::TextSearchFlags::empty(),
+                    hasta.as_ref(),
+                )
+                .map_or(desde.offset(), |(a, _)| a.offset()),
+        )
     }
 
     /// Línea fuente para «Enfocar» en Lectura: la flechita con el foco o, si no hay, la del
@@ -328,47 +510,6 @@ impl Reader {
             .or(self.0.hover_plegable.get())
     }
 
-    /// Las líneas fuente de los elementos plegados cuyo contenido incluye el carácter `off` (para
-    /// desplegarlos antes de mostrar una coincidencia de la búsqueda, FR-011).
-    pub fn plegados_en(&self, off: i32) -> Vec<u32> {
-        let buf = self.buffer();
-        let Some(tag) = buf.tag_table().lookup("plegado") else {
-            return Vec::new();
-        };
-        if !buf.iter_at_offset(off).has_tag(&tag) {
-            return Vec::new();
-        }
-        let plegadas = self.0.plegado.borrow().clone();
-        let blocks = self.0.blocks.borrow();
-        let o = |m: &gtk::TextMark| buf.iter_at_mark(m).offset();
-        let mut out = Vec::new();
-        for (n, b) in blocks.iter().enumerate() {
-            for p in &b.plegables {
-                if plegadas.binary_search(&p.linea).is_err() {
-                    continue;
-                }
-                let rango = match &p.contenido {
-                    Some((d, h)) => o(d)..o(h),
-                    None => {
-                        let nivel = b.nivel.unwrap_or(1);
-                        let Some(sig) = blocks.get(n + 1) else {
-                            continue;
-                        };
-                        let hasta = blocks[n + 1..]
-                            .iter()
-                            .find(|x| x.nivel.is_some_and(|m| m <= nivel))
-                            .map_or(buf.end_iter().offset(), |x| o(&x.mark));
-                        o(&sig.mark)..hasta
-                    }
-                };
-                if rango.contains(&off) {
-                    out.push(p.linea);
-                }
-            }
-        }
-        out
-    }
-
     /// Para las pruebas: la flechita bajo el carácter `off` y el clic sobre ella.
     #[cfg(test)]
     pub fn clic_en(&self, off: i32) -> Option<u32> {
@@ -399,5 +540,95 @@ impl Reader {
             .iter()
             .flat_map(|b| b.plegables.iter().map(|p| p.linea))
             .collect()
+    }
+}
+
+/// Línea y nivel de encabezado de un bloque de primer nivel.
+fn esquema_de(b: &Block) -> (u32, Option<u8>) {
+    let nivel = match &b.kind {
+        BlockKind::Heading { level, .. } => Some(*level),
+        _ => None,
+    };
+    (b.line as u32, nivel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(oculto: bool, plegadas: &[u32], foco: Option<u32>) -> Firma {
+        Firma {
+            oculto,
+            plegadas: plegadas.to_vec(),
+            foco,
+        }
+    }
+
+    /// Una sección plegada oculta hasta el próximo encabezado de nivel menor o igual; lo plegado
+    /// adentro de lo oculto no cuenta; un ítem plegado queda en la firma de su bloque.
+    #[test]
+    fn firmas_de_secciones_e_items() {
+        // 0 # A, 2 ## B, 4 lista (ítems 4 y 6), 8 ### C, 10 párrafo, 12 ## D
+        let esquema = [
+            (0, Some(1)),
+            (2, Some(2)),
+            (4, None),
+            (8, Some(3)),
+            (10, None),
+            (12, Some(2)),
+        ];
+        let plegables = [0, 2, 4, 8, 12];
+        assert_eq!(
+            firmas(&esquema, &plegables, &[2, 8], None),
+            vec![
+                f(false, &[], None),
+                f(false, &[2], None),
+                f(true, &[], None),
+                f(true, &[], None),
+                f(true, &[], None),
+                f(false, &[], None),
+            ]
+        );
+        assert_eq!(
+            firmas(&esquema, &plegables, &[4, 8], None),
+            vec![
+                f(false, &[], None),
+                f(false, &[], None),
+                f(false, &[4], None),
+                f(false, &[8], None),
+                f(true, &[], None),
+                f(false, &[], None),
+            ]
+        );
+        // Lo que no es plegable no pliega nada.
+        assert_eq!(
+            firmas(&esquema, &plegables, &[10], None),
+            vec![f(false, &[], None); 6]
+        );
+    }
+
+    /// Enfoque: lo de afuera se oculta; el bloque que contiene el ítem enfocado lo lleva en su
+    /// firma.
+    #[test]
+    fn firmas_con_enfoque() {
+        let esquema = [(0, Some(1)), (2, None), (4, None), (9, Some(2))];
+        assert_eq!(
+            firmas(&esquema, &[0, 5], &[], Some((5, 7))),
+            vec![
+                f(true, &[], None),
+                f(true, &[], None),
+                f(false, &[], Some(5)),
+                f(true, &[], None),
+            ]
+        );
+        assert_eq!(
+            firmas(&esquema, &[0, 9], &[], Some((0, 8))),
+            vec![
+                f(false, &[], None),
+                f(false, &[], None),
+                f(false, &[], None),
+                f(true, &[], None),
+            ]
+        );
     }
 }
