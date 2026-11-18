@@ -17,6 +17,7 @@ pub mod enlaces;
 pub mod entry;
 pub mod error;
 pub mod fold;
+pub mod formulas;
 pub mod historial;
 pub mod html_edit;
 pub mod html_text;

@@ -83,6 +83,11 @@ pub enum BlockKind {
     /// Una tarjeta de estudio `:::flashcard id=…` … `---` … `:::` (024). El rango fuente va del
     /// `:::flashcard` al `:::` de cierre; el `---` interno separa la pregunta de la respuesta.
     Flashcard(Flashcard),
+    /// Una fórmula en bloque (050): un párrafo que es solo `$$…$$` o un codeblock ` ```math `.
+    /// `tex` es el LaTeX sin los delimitadores.
+    Math {
+        tex: String,
+    },
 }
 
 /// Una tarjeta de estudio (024): la pregunta y la respuesta, analizadas como Markdown.
@@ -250,6 +255,11 @@ pub enum Inline {
     },
     SoftBreak,
     HardBreak,
+    /// Una fórmula LaTeX (050): `$…$` en línea o `$$…$$` dentro de un párrafo con más texto.
+    Math {
+        tex: String,
+        display: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,6 +538,7 @@ fn parse_fragment(
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
+    opts.insert(Options::ENABLE_MATH);
     let events: Vec<Ev> = Parser::new_ext(fragment, opts).into_offset_iter().collect();
     let end = base + fragment.len();
     let events = if repl.is_empty() {
@@ -550,6 +561,8 @@ fn parse_fragment(
                 event,
                 Event::Start(Tag::Link { .. } | Tag::Image { .. } | Tag::CodeBlock(_))
                     | Event::Code(_)
+                    | Event::InlineMath(_)
+                    | Event::DisplayMath(_)
             )
             .then_some(base + range.start..base + range.end)
         })
@@ -581,7 +594,51 @@ fn parse_fragment(
     let mut i = 0;
     let mut blocks = parse_blocks(&ctx, &events, &mut i, None);
     extraer_ids(&mut blocks);
+    promover_formulas(&mut blocks);
     blocks
+}
+
+/// Un párrafo que es solo una fórmula `$$…$$` (con saltos o espacios alrededor) pasa a ser un
+/// [`BlockKind::Math`] (050), también dentro de citas, callouts e ítems. Va después de
+/// [`extraer_ids`]: el `^id` de la línea siguiente ya quedó en el bloque.
+fn promover_formulas(blocks: &mut [Block]) {
+    for b in blocks {
+        match &mut b.kind {
+            BlockKind::Paragraph(inlines) => {
+                let mut solo = None;
+                for inl in inlines.iter() {
+                    match inl {
+                        Inline::Math { tex, display: true } if solo.is_none() => solo = Some(tex),
+                        Inline::SoftBreak | Inline::HardBreak => {}
+                        Inline::Text(t) if t.trim().is_empty() => {}
+                        _ => {
+                            solo = None;
+                            break;
+                        }
+                    }
+                }
+                if let Some(tex) = solo {
+                    b.kind = BlockKind::Math { tex: tex.clone() };
+                }
+            }
+            BlockKind::Quote(body) | BlockKind::Callout { body, .. } => promover_formulas(body),
+            BlockKind::List { items, .. } => {
+                for item in items {
+                    promover_formulas(&mut item.blocks);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Un `$` de cierre seguido de un dígito no cierra una fórmula en línea (050): así `$5,$10` sigue
+/// siendo dinero. pulldown-cmark solo exige que la apertura no vaya seguida de un espacio y que el
+/// cierre no vaya precedido de uno.
+pub(crate) fn cierre_con_digito(text: &str, rango: &Range<usize>) -> bool {
+    text.as_bytes()
+        .get(rango.end)
+        .is_some_and(u8::is_ascii_digit)
 }
 
 /// Junta cada `<!-- summary|sources|connections ID -->` de primer nivel con su contenido y su
@@ -765,6 +822,15 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                         _ => {}
                     }
                     *i += 1;
+                }
+                if lang == "math" {
+                    out.push(Block {
+                        kind: BlockKind::Math { tex: text },
+                        source: abs,
+                        line,
+                        id: None,
+                    });
+                    continue;
                 }
                 match GeneratedKind::from_lang(&lang).and_then(|kind| parse_generated(kind, &text))
                 {
@@ -1170,6 +1236,21 @@ fn parse_inline_many(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> Vec<Inline> {
         Event::FootnoteReference(t) => vec![Inline::FootnoteRef(t.to_string())],
         Event::SoftBreak => vec![Inline::SoftBreak],
         Event::HardBreak => vec![Inline::HardBreak],
+        Event::InlineMath(t) => {
+            let abs = ctx.abs(range);
+            if cierre_con_digito(ctx.text, &abs) {
+                vec![Inline::Text(ctx.text[abs].to_owned())]
+            } else {
+                vec![Inline::Math {
+                    tex: t.to_string(),
+                    display: false,
+                }]
+            }
+        }
+        Event::DisplayMath(t) => vec![Inline::Math {
+            tex: t.to_string(),
+            display: true,
+        }],
         Event::Start(Tag::Emphasis) => {
             vec![Inline::Emph(parse_inlines(ctx, evs, i, TagEnd::Emphasis))]
         }
@@ -1219,6 +1300,12 @@ pub fn plain_text(inlines: &[Inline]) -> String {
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::SoftBreak => s.push(' '),
             Inline::HardBreak => s.push('\n'),
+            Inline::Math { tex, display } => {
+                let d = if *display { "$$" } else { "$" };
+                s.push_str(d);
+                s.push_str(tex);
+                s.push_str(d);
+            }
         }
     }
     s
