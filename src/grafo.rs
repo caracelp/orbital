@@ -1139,16 +1139,12 @@ mod imp {
                     .take(MAX_LEYENDA)
                     .cloned()
                     .enumerate()
-                    .chain(
-                        (datos.tipos.len() > MAX_LEYENDA)
-                            .then(|| {
-                                (
-                                    usize::MAX,
-                                    format!("y {} tipos más", datos.tipos.len() - MAX_LEYENDA),
-                                )
-                            })
-                            .into_iter(),
-                    )
+                    .chain((datos.tipos.len() > MAX_LEYENDA).then(|| {
+                        (
+                            usize::MAX,
+                            format!("y {} tipos más", datos.tipos.len() - MAX_LEYENDA),
+                        )
+                    }))
                     .collect();
                 let alto_fila = 18.0;
                 let alto = filas.len() as f64 * alto_fila + 12.0;
