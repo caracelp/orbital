@@ -201,7 +201,7 @@ struct Inner {
     find_bar: find::FindBar,
     search_ctx: sourceview5::SearchContext,
     search_settings: sourceview5::SearchSettings,
-    reader_matches: RefCell<Vec<(usize, usize)>>,
+    reader_matches: RefCell<Vec<buscar_en_nota::Coincidencia>>,
     reader_current_idx: Cell<Option<usize>>,
     visual_matches: Cell<u32>,
     visual_current_idx: Cell<u32>,

@@ -213,10 +213,6 @@ impl Reader {
             .weight(400)
             .build());
         add(gtk::TextTag::builder()
-            .name("plegado")
-            .invisible(true)
-            .build());
-        add(gtk::TextTag::builder()
             .name("fuera-de-enfoque")
             .invisible(true)
             .build());

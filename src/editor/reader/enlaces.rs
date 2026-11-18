@@ -214,14 +214,17 @@ impl Reader {
         if let Some(tag) = table.lookup(nombre) {
             let oculto = !tag.is_invisible();
             tag.set_invisible(oculto);
-            self.mantener_suspendida(&tag);
+            if let Some(clave) = self.0.clave_de.borrow().get(nombre) {
+                let mut alternados = self.0.alternados.borrow_mut();
+                if !alternados.remove(clave) {
+                    alternados.insert(*clave);
+                }
+            }
             if let Some(t) = table.lookup(&format!("{nombre}-mostrar")) {
                 t.set_invisible(!oculto);
-                self.mantener_suspendida(&t);
             }
             if let Some(t) = table.lookup(&format!("{nombre}-ocultar")) {
                 t.set_invisible(oculto);
-                self.mantener_suspendida(&t);
             }
             self.0.view.queue_draw();
         }
@@ -254,6 +257,17 @@ impl Reader {
             self.alternar_callout(&boton.url);
         }
         true
+    }
+
+    /// Si el callout plegable o la tarjeta `nombre` (que empieza en `origen` de la fuente) se
+    /// alternó a mano antes de volver a volcarse; anota su clave.
+    pub(super) fn alternado(&self, s: &RenderState, nombre: &str, origen: usize) -> bool {
+        let clave = (s.block_start.get(), origen);
+        self.0
+            .clave_de
+            .borrow_mut()
+            .insert(nombre.to_owned(), clave);
+        self.0.alternados.borrow().contains(&clave)
     }
 
     /// Etiqueta anónima para un enlace (el clic busca la URL por la etiqueta).

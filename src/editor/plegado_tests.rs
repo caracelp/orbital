@@ -564,16 +564,11 @@ async fn esperar_lectura(e: &Editor) {
     panic!("la vista formateada no se dibujó");
 }
 
-/// El texto `aguja` de la vista formateada está oculto por el plegado.
+/// El texto `aguja` no está en la vista formateada: lo plegado sale del buffer (046).
 fn oculto_en_lector(e: &Editor, aguja: &str) -> bool {
     let b = e.0.reader.buffer();
-    let texto = b.slice(&b.start_iter(), &b.end_iter(), true).to_string();
-    let byte = texto
-        .find(aguja)
-        .unwrap_or_else(|| panic!("no está «{aguja}» en {texto:?}"));
-    let off = texto[..byte].chars().count() as i32;
-    let tag = b.tag_table().lookup("plegado").unwrap();
-    b.iter_at_offset(off).has_tag(&tag)
+    !b.text(&b.start_iter(), &b.end_iter(), false)
+        .contains(aguja)
 }
 
 fn anclados(e: &Editor) -> usize {
@@ -711,13 +706,9 @@ fn incrustado_sin_flechitas() {
     });
 }
 
+/// Lo de afuera del enfoque tampoco está en la vista formateada (046).
 fn oculto_fuera_en_lector(e: &Editor, aguja: &str) -> bool {
-    let b = e.0.reader.buffer();
-    let tag = b.tag_table().lookup(super::TAG_FUERA).unwrap();
-    let texto = b.slice(&b.start_iter(), &b.end_iter(), true).to_string();
-    let off = texto.find(aguja).expect("aguja en lectura");
-    let chars = texto[..off].chars().count() as i32;
-    b.iter_at_offset(chars).has_tag(&tag)
+    oculto_en_lector(e, aguja)
 }
 
 /// Escenario 13 (T034): enfocar un ítem, miga de pan, subir/salir, Lectura, Dividida, búsqueda y

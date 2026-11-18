@@ -72,6 +72,32 @@ struct BlockInfo {
     plegables: Vec<plegado::PlegableLector>,
     /// Lo que se dibuja a mano sobre el bloque (fondos de callouts, guías de listas).
     capas: Vec<capas::Capa>,
+    /// El bloque analizado: se vuelve a volcar al plegar o desplegar algo de él (028/046).
+    fuente: Rc<Block>,
+    /// Cómo quedó volcado respecto del plegado y el enfoque.
+    firma: plegado::Firma,
+}
+
+impl BlockInfo {
+    /// Todas las marcas del bloque (para trasplantarlo de buffer).
+    fn marcas_mut(&mut self) -> Vec<&mut gtk::TextMark> {
+        let mut out = vec![&mut self.mark];
+        for l in &mut self.links {
+            out.push(&mut l.start);
+            out.push(&mut l.end);
+        }
+        for p in &mut self.plegables {
+            out.push(&mut p.glifo);
+            if let Some((d, h)) = &mut p.contenido {
+                out.push(d);
+                out.push(h);
+            }
+        }
+        for c in &mut self.capas {
+            out.extend(c.marcas_mut());
+        }
+        out
+    }
 }
 
 struct Inner {
@@ -123,10 +149,18 @@ struct Inner {
     ancho_flecha: Cell<i32>,
     /// La forma del puntero puesta (`None`: todavía ninguna); se cambia solo si cambia.
     zona: Cell<Option<puntero::Zona>>,
-    /// Etiquetas propias (cuerpo de un callout, respuesta de una tarjeta) que quedan enteras
-    /// dentro de lo plegado o fuera del enfoque: no deciden la visibilidad mientras tanto
-    /// (`plegado::suspender_internas`).
-    suspendidas: RefCell<Vec<gtk::TextTag>>,
+    /// Líneas fuente de los elementos plegables del documento volcado (028).
+    plegables: RefCell<Rc<Vec<u32>>>,
+    /// Carpeta para resolver las imágenes del documento volcado (al volver a volcar un bloque).
+    base_dir: RefCell<Option<PathBuf>>,
+    /// Vuelve a volcar lo que cambió de plegado por tramos (desplegar todo de una nota grande).
+    replegado: Cell<u64>,
+    /// Callouts plegables y tarjetas que se abrieron o cerraron a mano, por (inicio en la fuente
+    /// del bloque de primer nivel, inicio del propio bloque): al volver a volcarse (desplegar su
+    /// sección) quedan como estaban.
+    alternados: RefCell<std::collections::HashSet<(usize, usize)>>,
+    /// La clave de `alternados` de cada etiqueta de cuerpo o respuesta, por su nombre.
+    clave_de: RefCell<HashMap<String, (usize, usize)>>,
 }
 
 #[derive(Clone)]
@@ -203,7 +237,11 @@ impl Reader {
             colgados: RefCell::new(Vec::new()),
             ancho_flecha: Cell::new(14),
             zona: Cell::new(None),
-            suspendidas: RefCell::new(Vec::new()),
+            plegables: RefCell::new(Rc::new(Vec::new())),
+            base_dir: RefCell::new(None),
+            replegado: Cell::new(0),
+            alternados: RefCell::default(),
+            clave_de: RefCell::default(),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -306,6 +344,9 @@ impl Reader {
     pub fn reset(&self) {
         let i = &self.0;
         i.generation.set(i.generation.get() + 1);
+        i.replegado.set(i.replegado.get() + 1);
+        i.alternados.borrow_mut().clear();
+        i.clave_de.borrow_mut().clear();
         let table = self.buffer().tag_table();
         for b in i.blocks.borrow_mut().drain(..) {
             for t in b.tags {
@@ -314,7 +355,6 @@ impl Reader {
         }
         i.links.borrow_mut().clear();
         i.pending.borrow_mut().clear();
-        i.suspendidas.borrow_mut().clear();
         i.pending_line.set(None);
         i.pending_resaltar.set(None);
         i.header.set(None);
@@ -345,6 +385,8 @@ impl Reader {
     }
 
     pub fn scroll_to_line(&self, line: usize) {
+        // Lo recién desplegado tiene que estar volcado antes de ir (046).
+        self.completar_plegado();
         let blocks = self.0.blocks.borrow();
         let idx = blocks.partition_point(|b| b.line <= line).saturating_sub(1);
         if let Some(b) = blocks.get(idx) {
@@ -355,6 +397,7 @@ impl Reader {
     /// Resalta un momento el bloque que contiene la línea `line` del texto fuente; si la nota se
     /// está volcando, cuando termine (026).
     pub fn resaltar_linea(&self, line: usize) {
+        self.completar_plegado();
         let blocks = self.0.blocks.borrow();
         if blocks.is_empty() {
             self.0.pending_resaltar.set(Some(line));
@@ -373,6 +416,7 @@ impl Reader {
     /// Desplaza la vista hasta el encabezado con el texto indicado. Devuelve si lo encontró.
     pub fn scroll_to_heading(&self, heading: &str) -> bool {
         let wanted = heading.trim().to_lowercase();
+        self.completar_plegado();
         let blocks = self.0.blocks.borrow();
         for b in blocks.iter() {
             if let Some(h) = &b.heading
@@ -392,6 +436,11 @@ impl Reader {
     }
 
     fn anchor(&self, s: &RenderState, end: &mut gtk::TextIter, w: gtk::Widget) {
+        if s.provisorio.get() {
+            s.lugares.borrow_mut().push((w, end.offset()));
+            s.buffer.insert(end, "\u{fffc}");
+            return;
+        }
         let anchor = s.buffer.create_child_anchor(end);
         if s.attach_now {
             self.0.view.add_child_at_anchor(&w, &anchor);

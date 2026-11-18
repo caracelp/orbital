@@ -89,6 +89,79 @@ pub(super) enum Capa {
     },
 }
 
+impl Capa {
+    /// Todas sus marcas, para cambiarlas (al trasplantar el bloque de buffer).
+    pub(super) fn marcas_mut(&mut self) -> Vec<&mut gtk::TextMark> {
+        match self {
+            Capa::Callout {
+                inicio,
+                fin,
+                titulo_fin,
+                ..
+            } => vec![inicio, fin, titulo_fin],
+            Capa::Incrustacion {
+                inicio,
+                fin,
+                cuerpo,
+                ..
+            } => [inicio, fin].into_iter().chain(cuerpo.as_mut()).collect(),
+            Capa::Tarjeta {
+                inicio,
+                fin,
+                mostrar,
+                ocultar,
+                ..
+            } => vec![
+                inicio,
+                fin,
+                &mut mostrar.0,
+                &mut mostrar.1,
+                &mut ocultar.0,
+                &mut ocultar.1,
+            ],
+            Capa::Seccion {
+                inicio, fin, chips, ..
+            } => [inicio, fin]
+                .into_iter()
+                .chain(chips.iter_mut().flat_map(|(a, z)| [a, z]))
+                .collect(),
+            Capa::Guia { inicio, fin, .. } => vec![inicio, fin],
+        }
+    }
+
+    /// Todas sus marcas (se borran con su bloque).
+    pub(super) fn marcas(&self) -> Vec<&gtk::TextMark> {
+        match self {
+            Capa::Callout {
+                inicio,
+                fin,
+                titulo_fin,
+                ..
+            } => vec![inicio, fin, titulo_fin],
+            Capa::Incrustacion {
+                inicio,
+                fin,
+                cuerpo,
+                ..
+            } => [inicio, fin].into_iter().chain(cuerpo).collect(),
+            Capa::Tarjeta {
+                inicio,
+                fin,
+                mostrar,
+                ocultar,
+                ..
+            } => vec![inicio, fin, &mostrar.0, &mostrar.1, &ocultar.0, &ocultar.1],
+            Capa::Seccion {
+                inicio, fin, chips, ..
+            } => [inicio, fin]
+                .into_iter()
+                .chain(chips.iter().flat_map(|(a, z)| [a, z]))
+                .collect(),
+            Capa::Guia { inicio, fin, .. } => vec![inicio, fin],
+        }
+    }
+}
+
 /// Color e ícono de un tipo de callout, con los alias de Obsidian.
 pub(super) fn estilo_callout(kind: &CalloutKind) -> (Rgb, &'static str) {
     use crate::style::*;
@@ -200,16 +273,12 @@ impl Reader {
         Some((n0..n1.max(n0), a, z))
     }
 
-    /// Las capas de `blocks` que tocan el tramo visible `a..=z` (en caracteres), sin las que
-    /// empiezan en algo oculto por el plegado o el enfoque: no ocupan lugar y no se dibujan.
+    /// Las capas de `blocks` que tocan el tramo visible `a..=z` (en caracteres). Lo plegado no
+    /// está en el buffer: no tiene capas (046).
     fn capas_a_dibujar<'a>(&self, blocks: &'a [BlockInfo], a: i32, z: i32) -> Vec<&'a Capa> {
         let buf = self.buffer();
-        let oculto = plegado::Oculto::de(&buf);
         let mut visibles: Vec<&Capa> = Vec::new();
         for b in blocks {
-            if b.capas.is_empty() || oculto.en(&buf.iter_at_mark(&b.mark)) {
-                continue;
-            }
             for c in &b.capas {
                 let (inicio, fin) = match c {
                     Capa::Callout { inicio, fin, .. }
@@ -218,8 +287,7 @@ impl Reader {
                     | Capa::Incrustacion { inicio, fin, .. }
                     | Capa::Tarjeta { inicio, fin, .. } => (inicio, fin),
                 };
-                let ini = buf.iter_at_mark(inicio);
-                if buf.iter_at_mark(fin).offset() < a || ini.offset() > z || oculto.en(&ini) {
+                if buf.iter_at_mark(fin).offset() < a || buf.iter_at_mark(inicio).offset() > z {
                     continue;
                 }
                 visibles.push(c);
@@ -660,12 +728,11 @@ impl Reader {
                     .and_then(|l| l.parse::<u32>().ok())
             });
         let blocks = i.blocks.borrow();
-        let oculto = plegado::Oculto::de(&buf);
         for b in &blocks[rango] {
             for p in &b.plegables {
                 let g = buf.iter_at_mark(&p.glifo);
                 let off = g.offset();
-                if off < a || off > z || oculto.en(&g) {
+                if off < a || off > z {
                     continue;
                 }
                 let cerrada = plegado::es_cerrada(&g);

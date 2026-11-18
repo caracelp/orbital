@@ -871,7 +871,7 @@ fn boveda_cuaderno(capitulos: usize) -> (std::path::PathBuf, String) {
     for n in 1..=capitulos {
         text.push_str(&format!("##### Capítulo {n}\n\n![[Atomo {n}]]\n\n"));
         if n == 2 {
-            text.push_str("> [!note] Callout directo\n> Con texto directo.\n\n> [!faq]- Callout directo plegable\n> Cuerpo directo.\n\n:::flashcard id=fc-901\n¿Directa?\n---\nRespuesta directa.\n:::\n\n- lista\n  - anidada directa\n\n");
+            text.push_str("> [!note] Callout directo\n> Con texto directo.\n\n> [!faq]- Callout directo plegable\n> Cuerpo directo.\n\n:::flashcard id=fc-901\n¿Directa?\n---\nRespuesta directa.\n:::\n\n- lista\n  - anidada directa\n\nTareas:\n\n- [ ] tarea directa\n- [x] otra tarea directa\n\n");
         }
     }
     text.push_str("##### Final\n\nTexto final.\n");
@@ -972,10 +972,13 @@ fn seccion_plegada_no_deja_cajas_ni_alto() {
             v.contains("Respuesta directa.") && v.contains("Cuerpo directo."),
             "{v:?}"
         );
-        let todo = buf
-            .text(&buf.start_iter(), &buf.end_iter(), true)
-            .to_string();
-        let off = |t: &str| todo[..todo.find(t).unwrap()].chars().count() as i32;
+        // Posición (en caracteres) de un texto en el buffer de ahora: lo plegado sale de él.
+        let off = |t: &str| {
+            let todo = buf
+                .text(&buf.start_iter(), &buf.end_iter(), true)
+                .to_string();
+            todo[..todo.find(t).unwrap()].chars().count() as i32
+        };
         // Alto entre el comienzo de un capítulo y el del siguiente, y el de su renglón.
         let alto_seccion = |a: &str, b: &str| {
             let view = reader.text_view();
@@ -986,6 +989,19 @@ fn seccion_plegada_no_deja_cajas_ni_alto() {
         esperar_cuadros().await;
         let (abierto, _) = alto_seccion("Capítulo 2", "Capítulo 3");
         capturar_lector(&reader, "046-desplegado");
+        // Las casillas de las tareas incrustadas son widgets anclados: vuelven al desplegar.
+        let anclas = || {
+            let mut it = buf.start_iter();
+            let mut n = 0;
+            loop {
+                n += usize::from(it.child_anchor().is_some());
+                if !it.forward_char() {
+                    return n;
+                }
+            }
+        };
+        let casillas = anclas();
+        assert!(casillas >= 2, "{casillas}");
 
         reader.set_plegado(Rc::new(vec![cap1, cap2]));
         esperar_cuadros().await;
@@ -1019,6 +1035,17 @@ fn seccion_plegada_no_deja_cajas_ni_alto() {
             "capas dibujadas en lo plegado: {capas:?} ({plegado:?})"
         );
         assert!(capas.iter().any(|c| *c > plegado.end));
+        // Lo plegado no está en el buffer, pero se encuentra en el texto oculto.
+        assert!(
+            !buf.text(&buf.start_iter(), &buf.end_iter(), true)
+                .contains("Idea central del átomo 1")
+        );
+        assert!(
+            reader
+                .texto_oculto()
+                .iter()
+                .any(|o| o.texto.contains("Idea central del átomo 1"))
+        );
 
         // Al desplegar vuelve todo como estaba (lo abierto, abierto).
         reader.set_plegado(Rc::new(Vec::new()));
@@ -1036,12 +1063,15 @@ fn seccion_plegada_no_deja_cajas_ni_alto() {
         assert!(!v.contains("Respuesta 1 del 1"), "{v:?}");
         let (alto, _) = alto_seccion("Capítulo 2", "Capítulo 3");
         assert_eq!(alto, abierto);
+        let plegado = off("Capítulo 1")..off("Capítulo 3");
         assert!(
             reader
                 .capas_dibujables()
                 .iter()
                 .any(|c| plegado.contains(c))
         );
+        assert!(reader.texto_oculto().is_empty());
+        assert_eq!(anclas(), casillas, "las casillas vuelven como anclas");
         window.close();
     });
     let _ = std::fs::remove_dir_all(&root);
@@ -1146,6 +1176,33 @@ fn medir_lectura_scroll_plegado() {
         }
         let mut ms = std::mem::take(&mut *cuadros.borrow_mut());
         println!("Quieto, redibujando: {}", resumen(&mut ms));
+        // Desplegar y volver a plegar un capítulo (los demás quedan como estaban): lo que tarda
+        // `set_plegado` y el cuadro siguiente.
+        let todos = reader.0.plegado.borrow().clone();
+        let mut alternar = Vec::new();
+        let mut cuadro = Vec::new();
+        for k in 0..todos.len().min(10) {
+            for lineas in [
+                todos.iter().copied().filter(|l| *l != todos[k]).collect(),
+                (*todos).clone(),
+            ] {
+                cuadros.borrow_mut().clear();
+                let t = std::time::Instant::now();
+                reader.set_plegado(Rc::new(lineas));
+                alternar.push(t.elapsed().as_secs_f64() * 1000.0);
+                while cuadros.borrow().is_empty() {
+                    view.queue_draw();
+                    glib::timeout_future(Duration::from_millis(5)).await;
+                }
+                cuadro.push(cuadros.borrow()[0]);
+                glib::timeout_future(Duration::from_millis(60)).await;
+            }
+        }
+        println!(
+            "Plegar o desplegar un capítulo: {}; cuadro siguiente: {}",
+            resumen(&mut alternar),
+            resumen(&mut cuadro)
+        );
         window.close();
     });
     let _ = std::fs::remove_dir_all(&root);

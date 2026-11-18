@@ -124,60 +124,13 @@ impl Editor {
                 }
             }
             View::Lectura => {
-                i.reader.clear_find_highlights();
-                i.reader_matches.borrow_mut().clear();
+                let matches = self.buscar_en_lector(query);
                 i.reader_current_idx.set(None);
-                if query.is_empty() {
-                    i.find_bar.set_counter(None, 0);
-                    return;
-                }
-                let b = i.reader.buffer();
-                // `slice` cuenta los widgets anclados como un carácter y lo invisible (lo plegado,
-                // 028) también: las posiciones coinciden con las del buffer.
-                let text = b.slice(&b.start_iter(), &b.end_iter(), true);
-                let folded_text = orbital_vault::fold(&text);
-                let folded_query = orbital_vault::fold(query);
-                if folded_query.is_empty() {
-                    i.find_bar.set_counter(None, 0);
-                    return;
-                }
-
-                let query_chars = folded_query.chars().count();
-                let mut matches = Vec::new();
-                let mut char_offset = 0;
-                let mut remainder = &folded_text[..];
-                while let Some(idx) = remainder.find(&folded_query) {
-                    let chars_before = remainder[..idx].chars().count();
-                    let m_start = char_offset + chars_before;
-                    let m_end = m_start + query_chars;
-                    matches.push((m_start, m_end));
-                    let advance_bytes = idx + folded_query.len().max(1);
-                    char_offset += chars_before + remainder[idx..advance_bytes].chars().count();
-                    remainder = &remainder[advance_bytes..];
-                }
-
-                for &(start, end) in &matches {
-                    let iter_start = b.iter_at_offset(start as i32);
-                    let iter_end = b.iter_at_offset(end as i32);
-                    b.apply_tag_by_name("find-highlight", &iter_start, &iter_end);
-                }
-
                 if matches.is_empty() {
                     i.find_bar.set_counter(None, 0);
                 } else {
-                    i.reader_current_idx.set(Some(0));
-                    let (start, end) = matches[0];
-                    self.revelar_en_lector(start);
-                    let iter_start = b.iter_at_offset(start as i32);
-                    let iter_end = b.iter_at_offset(end as i32);
-                    b.apply_tag_by_name("find-current", &iter_start, &iter_end);
-                    let mut scroll_iter = iter_start;
-                    i.reader
-                        .text_view()
-                        .scroll_to_iter(&mut scroll_iter, 0.1, false, 0.0, 0.5);
-                    i.find_bar.set_counter(Some(1), matches.len());
+                    self.mostrar_en_lector(0);
                 }
-                *i.reader_matches.borrow_mut() = matches;
             }
             View::Visual => {
                 if let Some(fc) = i.visual.find_controller() {
@@ -217,31 +170,10 @@ impl Editor {
                 }
             }
             View::Lectura => {
-                let matches = i.reader_matches.borrow();
-                if !matches.is_empty() {
-                    let b = i.reader.buffer();
+                let n = i.reader_matches.borrow().len();
+                if n > 0 {
                     let old_idx = i.reader_current_idx.get().unwrap_or(0);
-                    let (old_s, old_e) = matches[old_idx];
-                    b.remove_tag_by_name(
-                        "find-current",
-                        &b.iter_at_offset(old_s as i32),
-                        &b.iter_at_offset(old_e as i32),
-                    );
-
-                    let new_idx = (old_idx + 1) % matches.len();
-                    i.reader_current_idx.set(Some(new_idx));
-                    let (s, e) = matches[new_idx];
-                    self.revelar_en_lector(s);
-                    b.apply_tag_by_name(
-                        "find-current",
-                        &b.iter_at_offset(s as i32),
-                        &b.iter_at_offset(e as i32),
-                    );
-                    let mut iter_start = b.iter_at_offset(s as i32);
-                    i.reader
-                        .text_view()
-                        .scroll_to_iter(&mut iter_start, 0.1, false, 0.0, 0.5);
-                    i.find_bar.set_counter(Some(new_idx + 1), matches.len());
+                    self.mostrar_en_lector((old_idx + 1) % n);
                 }
             }
             View::Visual => {
@@ -274,35 +206,10 @@ impl Editor {
                 }
             }
             View::Lectura => {
-                let matches = i.reader_matches.borrow();
-                if !matches.is_empty() {
-                    let b = i.reader.buffer();
+                let n = i.reader_matches.borrow().len();
+                if n > 0 {
                     let old_idx = i.reader_current_idx.get().unwrap_or(0);
-                    let (old_s, old_e) = matches[old_idx];
-                    b.remove_tag_by_name(
-                        "find-current",
-                        &b.iter_at_offset(old_s as i32),
-                        &b.iter_at_offset(old_e as i32),
-                    );
-
-                    let new_idx = if old_idx == 0 {
-                        matches.len() - 1
-                    } else {
-                        old_idx - 1
-                    };
-                    i.reader_current_idx.set(Some(new_idx));
-                    let (s, e) = matches[new_idx];
-                    self.revelar_en_lector(s);
-                    b.apply_tag_by_name(
-                        "find-current",
-                        &b.iter_at_offset(s as i32),
-                        &b.iter_at_offset(e as i32),
-                    );
-                    let mut iter_start = b.iter_at_offset(s as i32);
-                    i.reader
-                        .text_view()
-                        .scroll_to_iter(&mut iter_start, 0.1, false, 0.0, 0.5);
-                    i.find_bar.set_counter(Some(new_idx + 1), matches.len());
+                    self.mostrar_en_lector(if old_idx == 0 { n - 1 } else { old_idx - 1 });
                 }
             }
             View::Visual => {
@@ -390,15 +297,130 @@ impl Editor {
         i.find_bar.set_counter(None, 0);
     }
 
-    /// Una coincidencia de Lectura dentro de algo plegado o fuera del enfoque: se revela antes de
-    /// mostrarla (FR-011, FR-014, 028).
-    fn revelar_en_lector(&self, offset: usize) {
-        if self.0.reader.esta_fuera_de_enfoque(offset as i32) {
-            self.salir_enfoque();
+    /// Busca `query` en la Lectura: en el buffer (resaltado) y en lo que el plegado o el enfoque
+    /// dejó fuera de él (046). Guarda las coincidencias en orden y las devuelve.
+    fn buscar_en_lector(&self, query: &str) -> Vec<Coincidencia> {
+        let i = &self.0;
+        i.reader.clear_find_highlights();
+        i.reader_matches.borrow_mut().clear();
+        let folded_query = orbital_vault::fold(query);
+        if folded_query.is_empty() {
+            return Vec::new();
         }
-        let lineas = self.0.reader.plegados_en(offset as i32);
-        if !lineas.is_empty() {
-            self.desplegar_lineas(&lineas);
+        let b = i.reader.buffer();
+        // `slice` cuenta los widgets anclados como un carácter: las posiciones coinciden con
+        // las del buffer.
+        let text = b.slice(&b.start_iter(), &b.end_iter(), true);
+        let mut matches: Vec<Coincidencia> = posiciones(&orbital_vault::fold(&text), &folded_query)
+            .into_iter()
+            .map(|(s, e)| Coincidencia::Vista(s, e))
+            .collect();
+        for m in &matches {
+            if let Coincidencia::Vista(s, e) = *m {
+                b.apply_tag_by_name(
+                    "find-highlight",
+                    &b.iter_at_offset(s as i32),
+                    &b.iter_at_offset(e as i32),
+                );
+            }
         }
+        // Lo plegado no está en el buffer: se busca en su texto (FR-011).
+        for o in i.reader.texto_oculto() {
+            let n = posiciones(&orbital_vault::fold(&o.texto), &folded_query).len();
+            if n == 0 {
+                continue;
+            }
+            let texto: Rc<str> = o.texto.into();
+            matches.extend((0..n).map(|k| Coincidencia::Oculta {
+                orden: o.offset,
+                linea: o.linea,
+                texto: texto.clone(),
+                k,
+            }));
+        }
+        // Lo oculto va donde iría: antes de lo que hoy empieza en esa posición.
+        matches.sort_by_key(|m| match m {
+            Coincidencia::Vista(s, _) => (*s as i64, 1),
+            Coincidencia::Oculta { orden, .. } => (*orden as i64, 0),
+        });
+        *i.reader_matches.borrow_mut() = matches.clone();
+        matches
     }
+
+    /// Muestra la coincidencia `idx` de la Lectura. Si está en algo plegado (o fuera del
+    /// enfoque), primero lo revela y vuelve a buscar (FR-011, FR-014).
+    fn mostrar_en_lector(&self, idx: usize) {
+        let i = &self.0;
+        let b = i.reader.buffer();
+        b.remove_tag_by_name("find-current", &b.start_iter(), &b.end_iter());
+        let Some(m) = i.reader_matches.borrow().get(idx).cloned() else {
+            return;
+        };
+        let (idx, s, e) = match m {
+            Coincidencia::Vista(s, e) => (idx, s, e),
+            Coincidencia::Oculta {
+                linea, texto, k, ..
+            } => {
+                self.revelar_linea(linea);
+                let desde = i.reader.inicio_revelado(linea, &texto).unwrap_or(0) as usize;
+                let matches = self.buscar_en_lector(&i.find_bar.search_text());
+                let hallada = matches
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(n, m)| match *m {
+                        Coincidencia::Vista(s, e) if s >= desde => Some((n, s, e)),
+                        _ => None,
+                    })
+                    .nth(k);
+                let Some(h) = hallada else {
+                    i.reader_current_idx.set(None);
+                    i.find_bar.set_counter(None, matches.len());
+                    return;
+                };
+                h
+            }
+        };
+        i.reader_current_idx.set(Some(idx));
+        let b = i.reader.buffer();
+        let iter_start = b.iter_at_offset(s as i32);
+        b.apply_tag_by_name("find-current", &iter_start, &b.iter_at_offset(e as i32));
+        let mut scroll_iter = iter_start;
+        i.reader
+            .text_view()
+            .scroll_to_iter(&mut scroll_iter, 0.1, false, 0.0, 0.5);
+        i.find_bar
+            .set_counter(Some(idx + 1), i.reader_matches.borrow().len());
+    }
+}
+
+/// Una coincidencia de la búsqueda en Lectura.
+#[derive(Clone, Debug)]
+pub(super) enum Coincidencia {
+    /// En el buffer: caracteres `inicio..fin`.
+    Vista(usize, usize),
+    /// En algo plegado o fuera del enfoque: la `k`-ésima dentro de `texto`, el trozo que se
+    /// revela con `linea`; `orden`, dónde iría en el buffer.
+    Oculta {
+        orden: i32,
+        linea: u32,
+        texto: Rc<str>,
+        k: usize,
+    },
+}
+
+/// Las coincidencias de `aguja` en `texto` (los dos ya normalizados), en caracteres.
+fn posiciones(texto: &str, aguja: &str) -> Vec<(usize, usize)> {
+    let largo = aguja.chars().count();
+    let mut out = Vec::new();
+    let mut char_offset = 0;
+    let mut resto = texto;
+    while let Some(idx) = resto.find(aguja) {
+        let antes = resto[..idx].chars().count();
+        let inicio = char_offset + antes;
+        out.push((inicio, inicio + largo));
+        let avance = idx + aguja.len().max(1);
+        char_offset += antes + resto[idx..avance].chars().count();
+        resto = &resto[avance..];
+    }
+    out
 }
