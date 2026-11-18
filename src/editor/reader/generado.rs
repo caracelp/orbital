@@ -1,16 +1,18 @@
-//! Contenido generado de la vista formateada (005): índice por etiqueta, tabla de contenidos y
-//! la preparación del documento (`Prepared`) con marcadores y transclusiones resueltos.
+//! Contenido generado de la vista formateada (005): índice por etiqueta, tabla de contenidos,
+//! consultas vivas (048) y la preparación del documento (`Prepared`) con marcadores y transclusiones resueltos.
 
 use super::*;
 
 /// Completa los codeblocks generados del doc (005, T015 y T019): `toc` con los encabezados del
-/// propio doc y `indice` con las notas de cada tag desde el índice. Reemplaza cada bloque
+/// propio doc, `indice` con las notas de cada tag desde el índice y `consulta` (048) con su
+/// resultado (`raiz`, la carpeta de la bóveda, la usa la vista de coincidencias). Reemplaza cada bloque
 /// manteniendo su rango fuente (el codeblock completo) y actualiza su hash, así la actualización
 /// en el sitio ve el contenido nuevo aunque el fuente no cambie. Devuelve true si completó algo.
 pub fn complete_generated(
     doc: &mut RenderDoc,
     hashes: &mut [u64],
     index: Option<&orbital_vault::SearchIndex>,
+    raiz: Option<&Path>,
     path: Option<&orbital_vault::RelPath>,
 ) -> bool {
     let encabezados = headings_flat(&doc.blocks);
@@ -21,7 +23,7 @@ pub fn complete_generated(
         // de lo incrustado.
         if !matches!(block.kind, BlockKind::Generated(_)) {
             let mut huella = String::new();
-            if completar_incrustados(std::slice::from_mut(block), index, &mut huella) {
+            if completar_incrustados(std::slice::from_mut(block), index, raiz, &mut huella) {
                 completado = true;
                 // Un índice incrustado depende del índice de la bóveda: entra en el hash.
                 if let Some(h) = hashes.get_mut(n) {
@@ -38,6 +40,14 @@ pub fn complete_generated(
         let items = match g.kind {
             orbital_vault::render::GeneratedKind::Toc => {
                 block.kind = toc_block(&g.raw, &encabezados, path);
+                if let Some(h) = hashes.get_mut(n) {
+                    *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
+                }
+                completado = true;
+                continue;
+            }
+            orbital_vault::render::GeneratedKind::Consulta => {
+                block.kind = super::consulta::consulta_block(&g.raw, index, raiz);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -153,6 +163,7 @@ pub fn complete_generated(
 fn completar_incrustados(
     blocks: &mut [Block],
     index: Option<&orbital_vault::SearchIndex>,
+    raiz: Option<&Path>,
     huella: &mut String,
 ) -> bool {
     use orbital_vault::render::Embed;
@@ -165,7 +176,7 @@ fn completar_incrustados(
                         blocks: std::mem::take(blocks),
                     };
                     let mut hashes = vec![0; sub.blocks.len()];
-                    if complete_generated(&mut sub, &mut hashes, index, Some(path)) {
+                    if complete_generated(&mut sub, &mut hashes, index, raiz, Some(path)) {
                         completado = true;
                         for h in hashes.iter().filter(|h| **h != 0) {
                             huella.push_str(&format!("{h:x}"));
@@ -177,14 +188,16 @@ fn completar_incrustados(
             BlockKind::Quote(body)
             | BlockKind::Callout { body, .. }
             | BlockKind::Seccion { body, .. }
-            | BlockKind::Group(body) => completado |= completar_incrustados(body, index, huella),
+            | BlockKind::Group(body) => {
+                completado |= completar_incrustados(body, index, raiz, huella)
+            }
             BlockKind::Flashcard(f) => {
-                completado |= completar_incrustados(&mut f.question, index, huella);
-                completado |= completar_incrustados(&mut f.answer, index, huella);
+                completado |= completar_incrustados(&mut f.question, index, raiz, huella);
+                completado |= completar_incrustados(&mut f.answer, index, raiz, huella);
             }
             BlockKind::List { items, .. } => {
                 for it in items {
-                    completado |= completar_incrustados(&mut it.blocks, index, huella);
+                    completado |= completar_incrustados(&mut it.blocks, index, raiz, huella);
                 }
             }
             _ => {}

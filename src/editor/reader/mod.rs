@@ -453,6 +453,7 @@ impl Reader {
 mod actualizar;
 mod bloques;
 mod capas;
+mod consulta;
 mod enlaces;
 mod etiquetas;
 mod generado;

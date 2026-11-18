@@ -255,6 +255,7 @@ fn us5_indice_reader_lists_and_activates() {
             &mut prepared.doc,
             &mut prepared.hashes,
             Some(&index),
+            None,
             Some(&path),
         ));
 
@@ -326,6 +327,7 @@ fn us5_toc_reader_lists_headings() {
             &mut prepared.doc,
             &mut prepared.hashes,
             None,
+            None,
             Some(&path),
         ));
         let reader = Reader::new();
@@ -385,6 +387,7 @@ fn us5_toc_reader_lists_headings() {
         assert!(complete_generated(
             &mut filtro.doc,
             &mut filtro.hashes,
+            None,
             None,
             Some(&path)
         ));
@@ -664,7 +667,13 @@ fn transclusiones_en_lectura() {
     let from = orbital_vault::RelPath::new("wiki/Nota.md").unwrap();
     let text = "# Nota\n\n![[Origen]]\n\n![[Origen#Segunda parte]]\n\n![[Origen#^def]]\n";
     let mut prepared = Prepared::with_vault(text, &vault, &from, &[]);
-    complete_generated(&mut prepared.doc, &mut prepared.hashes, None, Some(&from));
+    complete_generated(
+        &mut prepared.doc,
+        &mut prepared.hashes,
+        None,
+        None,
+        Some(&from),
+    );
     glib::MainContext::default().block_on(async {
         let reader = Reader::new();
         reader.render(prepared, || None, None);
@@ -803,7 +812,7 @@ fn medir_lectura_con_transclusiones() {
         for _ in 0..9 {
             let t0 = std::time::Instant::now();
             let mut p = Prepared::with_vault(&text, &vault, &from, &[]);
-            complete_generated(&mut p.doc, &mut p.hashes, None, Some(&from));
+            complete_generated(&mut p.doc, &mut p.hashes, None, None, Some(&from));
             preparar.push(t0.elapsed().as_secs_f64() * 1000.0);
             let reader = Reader::new();
             let window = gtk::Window::builder()
@@ -914,7 +923,13 @@ async fn lector_con_cuaderno(
     let vault = orbital_vault::open(root).unwrap();
     let from = orbital_vault::RelPath::new("wiki/Cuaderno.md").unwrap();
     let mut prepared = Prepared::with_vault(text, &vault, &from, &[]);
-    complete_generated(&mut prepared.doc, &mut prepared.hashes, None, Some(&from));
+    complete_generated(
+        &mut prepared.doc,
+        &mut prepared.hashes,
+        None,
+        None,
+        Some(&from),
+    );
     prepared.con_plegables(&orbital_vault::plegado::plegables(text));
     let reader = Reader::new();
     let window = gtk::Window::builder()
@@ -1206,4 +1221,100 @@ fn medir_lectura_scroll_plegado() {
         window.close();
     });
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 048: una consulta en tabla se dibuja con la nota como enlace activable y los valores tipados;
+/// al cambiar una nota y volver a generar (lo que hace la ventana tras cada cambio del índice) la
+/// tabla se actualiza; las coincidencias y el conteo se ven como texto.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn consulta_tabla_coincidencias_y_conteo() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        use std::fs;
+        let root =
+            std::env::temp_dir().join(format!("orbital-048-{}", glib::uuid_string_random()));
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::write(
+            root.join("wiki/a.md"),
+            "---\nestado: activo\nprioridad: 10\n---\n#proyecto\nEl motor arranca.\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("wiki/b.md"),
+            "---\nprioridad: 9\n---\n#proyecto\nestado:: pausado\n",
+        )
+        .unwrap();
+        let fuente = "# Tablero\n\n```consulta\ntag:#proyecto\nvista: tabla\ncolumnas: estado, prioridad\norden: prioridad\n```\n\n```consulta\nmotor\nvista: coincidencias\n```\n\n```consulta\ntag:#proyecto\nvista: conteo\n```\n";
+        fs::write(root.join("wiki/tablero.md"), fuente).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/tablero.md").unwrap();
+        let vault = orbital_vault::open(&root).unwrap();
+        let mut index = orbital_vault::SearchIndex::build(&vault);
+        let preparar = |index: &orbital_vault::SearchIndex| {
+            let mut p = Prepared::new(fuente, &[]);
+            assert!(complete_generated(
+                &mut p.doc,
+                &mut p.hashes,
+                Some(index),
+                Some(vault.root()),
+                Some(&path),
+            ));
+            p
+        };
+        let texto = |reader: &Reader| {
+            let b = reader.buffer();
+            b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+        };
+        let reader = Reader::new();
+        let elegida = Rc::new(RefCell::new(String::new()));
+        let got = elegida.clone();
+        reader.set_on_link(move |url| *got.borrow_mut() = url.into());
+        reader.render(preparar(&index), || None, None);
+        for _ in 0..200 {
+            if texto(&reader).contains("2 notas") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = texto(&reader);
+        assert!(!visible.contains("```"), "{visible:?}");
+        // Tabla ordenada por prioridad (9 antes que 10), con el campo inline de b.
+        assert!(
+            visible.contains("\tNota\testado\tprioridad\n\tb.md\tpausado\t9\n\ta.md\tactivo\t10\n"),
+            "{visible:?}"
+        );
+        assert!(visible.contains("6: El motor arranca."), "{visible:?}");
+        assert!(visible.contains("2 notas"), "{visible:?}");
+        let urls: Vec<String> = reader.all_link_items().into_iter().map(|i| i.url).collect();
+        // El propio bloque contiene «motor»: la nota del tablero también coincide (excluir la
+        // nota actual quedó fuera de alcance).
+        assert_eq!(urls, ["/b.md", "/a.md", "/a.md", "/tablero.md"]);
+        reader.set_focused_link(Some(0));
+        assert!(reader.activate_focused_link());
+        assert_eq!(*elegida.borrow(), "/b.md");
+
+        // Un cambio en otra nota: la consulta se vuelve a generar con el índice nuevo.
+        let b = orbital_vault::RelPath::new("wiki/b.md").unwrap();
+        let nuevo = "---\nprioridad: 11\nestado: listo\n---\n#proyecto\n";
+        fs::write(b.to_path(vault.root()), nuevo).unwrap();
+        index.update_file(&vault, &b, nuevo);
+        reader.render(preparar(&index), || None, None);
+        for _ in 0..200 {
+            if texto(&reader).contains("listo") {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let visible = texto(&reader);
+        assert!(
+            visible.contains("\ta.md\tactivo\t10\n\tb.md\tlisto\t11\n"),
+            "{visible:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("wiki/tablero.md")).unwrap(),
+            fuente
+        );
+        fs::remove_dir_all(root).unwrap();
+    });
 }
