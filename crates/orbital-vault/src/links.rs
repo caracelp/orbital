@@ -49,6 +49,8 @@ pub struct BacklinkRef {
     pub line: usize,
     /// Fragmento contextual
     pub snippet: String,
+    /// Tipo y motivo, si el enlace es una relación con tipo de la parte Conexiones (049).
+    pub relacion: Option<std::sync::Arc<crate::relaciones::RelacionInfo>>,
 }
 
 /// Resultado de resolver un enlace.

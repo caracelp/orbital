@@ -83,6 +83,9 @@ pub struct Doc {
     /// Fechas del archivo al indexarlo (048: orden de las consultas).
     pub modified: Option<SystemTime>,
     pub created: Option<SystemTime>,
+    /// Relaciones con tipo de la parte Conexiones (049): clave del tipo y nombre del destino,
+    /// los dos sin mayúsculas ni tildes.
+    pub relaciones: Vec<(String, String)>,
 }
 
 /// Índice de búsqueda en memoria para toda la bóveda.
@@ -140,6 +143,10 @@ impl SearchIndex {
             total += doc.values.capacity() * std::mem::size_of::<(String, PropValue)>();
             for (k, v) in &doc.values {
                 total += k.capacity() + prop_value_bytes(v);
+            }
+            total += doc.relaciones.capacity() * std::mem::size_of::<(String, String)>();
+            for (t, d) in &doc.relaciones {
+                total += t.capacity() + d.capacity();
             }
         }
 
@@ -628,7 +635,17 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         }
     }
 
+    let relaciones = if is_html {
+        Vec::new()
+    } else {
+        crate::relaciones::relaciones(text)
+            .into_iter()
+            .map(|r| (r.info.clave(), clave_destino(&r.destino.path)))
+            .collect()
+    };
+
     Doc {
+        relaciones,
         zone,
         folded,
         line_starts,
@@ -642,6 +659,23 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         modified: None,
         created: None,
     }
+}
+
+/// Nombre de una nota para comparar destinos de `rel:` (049): el último componente de la ruta,
+/// sin `[[ ]]`, sin extensión de nota y sin mayúsculas ni tildes.
+fn clave_destino(destino: &str) -> String {
+    let d = destino.trim();
+    let d = d
+        .strip_prefix("[[")
+        .and_then(|x| x.strip_suffix("]]"))
+        .unwrap_or(d);
+    let d = d.split(['|', '#']).next().unwrap_or(d).trim();
+    let d = d.rsplit('/').next().unwrap_or(d);
+    let d = d
+        .strip_suffix(".md")
+        .or_else(|| d.strip_suffix(".html"))
+        .unwrap_or(d);
+    fold(&crate::links::percent_decode(d))
 }
 
 fn prop_value_bytes(v: &PropValue) -> usize {
@@ -816,6 +850,13 @@ fn matches_atom(doc: &Doc, path: &RelPath, atom: &Atom) -> bool {
                 }
             }
             false
+        }
+        Atom::Rel { tipo, destino } => {
+            let t = crate::relaciones::clave(tipo);
+            let d = destino.as_deref().map(clave_destino);
+            doc.relaciones
+                .iter()
+                .any(|(rt, rd)| rt.starts_with(&t) && d.as_ref().is_none_or(|d| rd == d))
         }
         Atom::Group(inner) => matches_query(doc, path, inner),
     }

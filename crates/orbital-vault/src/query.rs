@@ -9,7 +9,16 @@ pub enum Atom {
     File(String),
     Line(Box<Query>),
     Section(Box<Query>),
-    Prop { key: String, value: Option<String> },
+    Prop {
+        key: String,
+        value: Option<String>,
+    },
+    /// `rel:tipo` o `rel:tipo:nota` (049): notas que declaran en su parte Conexiones una
+    /// relación cuyo tipo empieza con `tipo` (vacío: cualquier tipo), hacia `nota` si se da.
+    Rel {
+        tipo: String,
+        destino: Option<String>,
+    },
     Group(Box<Query>),
 }
 
@@ -316,21 +325,41 @@ impl<'a> Parser<'a> {
             return Ok(Atom::Tag(tag.to_string()));
         }
 
-        // 7. path:
+        // 7. rel:tipo[:nota] (049); cada parte puede ir entre comillas.
+        if self.starts_with("rel:") {
+            self.pos += 4;
+            let tipo = self.read_rel_part(start)?;
+            let destino = if self.starts_with(":") {
+                self.pos += 1;
+                let d = self.read_rel_part(start)?;
+                (!d.is_empty()).then_some(d)
+            } else {
+                None
+            };
+            if tipo.is_empty() && destino.is_none() {
+                return Err(QueryError {
+                    at: start,
+                    message: "Falta el tipo de relación después de «rel:»".into(),
+                });
+            }
+            return Ok(Atom::Rel { tipo, destino });
+        }
+
+        // 8. path:
         if self.starts_with("path:") {
             self.pos += 5;
             let token = self.read_token();
             return Ok(Atom::Path(token.to_string()));
         }
 
-        // 8. file:
+        // 9. file:
         if self.starts_with("file:") {
             self.pos += 5;
             let token = self.read_token();
             return Ok(Atom::File(token.to_string()));
         }
 
-        // 9. Comprobar si parece un operador desconocido con ':'
+        // 10. Comprobar si parece un operador desconocido con ':'
         let token = self.read_token();
         if let Some((op, _)) = token.split_once(':') {
             // Si es URL (http:// o https:// o contiene ://), no es operador
@@ -347,6 +376,30 @@ impl<'a> Parser<'a> {
         }
 
         Ok(Atom::Word(token.to_string()))
+    }
+
+    /// Una parte de `rel:`: entre comillas (con espacios) o hasta un espacio, `:` o `)`.
+    fn read_rel_part(&mut self, start: usize) -> Result<String, QueryError> {
+        if self.starts_with("\"") {
+            self.pos += 1;
+            let Some(fin) = self.remaining().find('"') else {
+                return Err(QueryError {
+                    at: start,
+                    message: "Comillas sin cerrar en rel:".into(),
+                });
+            };
+            let v = self.remaining()[..fin].trim().to_owned();
+            self.pos += fin + 1;
+            return Ok(v);
+        }
+        let ini = self.pos;
+        while let Some(ch) = self.remaining().chars().next() {
+            if ch.is_whitespace() || ch == ')' || ch == ':' {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        Ok(self.input[ini..self.pos].to_owned())
     }
 
     fn read_token(&mut self) -> &'a str {

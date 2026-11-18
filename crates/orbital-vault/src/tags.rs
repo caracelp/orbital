@@ -720,12 +720,21 @@ fn extract_html_body_tags(text: &str) -> Vec<TagOccurrence> {
     out
 }
 
-/// Extrae campos en línea `clave:: valor` de un documento Markdown.
+/// Extrae campos en línea `clave:: valor` de un documento Markdown. Los renglones de la parte
+/// Conexiones (`<!-- connections ID -->`, 041) no son campos: ahí `tipo:: [[nota]]` declara una
+/// relación con tipo (049), que se busca con `rel:`.
 pub fn inline_fields(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    let mut conexiones =
+        crate::relaciones::tiene_conexiones(text).then(crate::relaciones::Rastreador::default);
 
     for line in text.lines() {
+        if let Some(r) = conexiones.as_mut()
+            && r.paso(line)
+        {
+            continue;
+        }
         let trimmed = line.trim();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
