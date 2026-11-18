@@ -28,7 +28,6 @@ impl Window {
         }
         let Some(entry) = i.current_entry.borrow().clone() else {
             i.panel.set_nota(None);
-            i.panel.set_entrantes(&[]);
             i.panel
                 .set_grafo(None, "Abrí una nota para ver sus conexiones.");
             return;
@@ -78,21 +77,9 @@ impl Window {
         i.panel.set_nota(Some(meta));
         let graph = i.graph.borrow().clone();
         let Some(graph) = graph else {
-            i.panel.set_entrantes(&[]);
             i.panel.set_grafo(None, "Armando las conexiones…");
             return;
         };
-        let mut entrantes: Vec<RelPath> = match graph.lock() {
-            Ok(g) => g
-                .backlinks_for(&entry.path)
-                .iter()
-                .map(|b| b.from.clone())
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        entrantes.sort();
-        entrantes.dedup();
-        i.panel.set_entrantes(&entrantes);
         if i.panel.modo() != "grafo" {
             return;
         }
