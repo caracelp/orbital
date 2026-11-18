@@ -369,10 +369,64 @@ impl Reader {
         });
     }
 
-    /// Las Conexiones: cada enlace es una píldora (texto enlazado; el fondo lo dibuja `capas`) y
-    /// las píldoras corren seguidas, con el texto de cada ítem («Prerrequisito:») como rótulo
-    /// tenue antes de las suyas. Lo que no tiene enlaces se muestra como siempre.
+    /// Las Conexiones. Primero las relaciones con tipo (049), agrupadas por tipo en el orden en
+    /// que aparece cada uno: el tipo como rótulo rosa y, debajo, un renglón por ítem con sus
+    /// píldoras y el motivo en texto tenue. Después, lo demás como antes de la 049.
     fn conexiones(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        body: &[Block],
+        depth: i32,
+        chips: &mut Vec<(gtk::TextMark, gtk::TextMark)>,
+    ) {
+        let (grupos, resto) = agrupar_tipadas(body);
+        if grupos.is_empty() {
+            return self.conexiones_sin_tipo(s, end, body, depth, chips);
+        }
+        let buf = &s.buffer;
+        let table = buf.tag_table();
+        let tags = |extra: &[&str], indent: i32| -> Vec<gtk::TextTag> {
+            let mut v = vec![self.indent_tag(indent)];
+            v.extend(table.lookup("seccion-chips"));
+            v.extend(extra.iter().filter_map(|n| table.lookup(n)));
+            v
+        };
+        let titulo = tags(&["seccion-cab-acento"], depth * 24);
+        let fila = tags(&[], (depth + 1) * 24);
+        let motivo = tags(&["seccion-rotulo"], (depth + 1) * 24);
+        let pildora = tags(&["chip"], (depth + 1) * 24);
+        fn r(t: &[gtk::TextTag]) -> Vec<&gtk::TextTag> {
+            t.iter().collect()
+        }
+        for g in &grupos {
+            buf.insert_with_tags(end, &g.nombre, &r(&titulo));
+            buf.insert_with_tags(end, "\n", &r(&titulo));
+            for (enlaces, mot) in &g.items {
+                for (n, i) in enlaces.iter().enumerate() {
+                    if n > 0 {
+                        buf.insert_with_tags(end, "\u{2002}\u{2002}", &r(&fila));
+                    }
+                    let a = buf.create_mark(None, end, true);
+                    self.inlines(s, end, std::slice::from_ref(*i), &pildora);
+                    chips.push((a, buf.create_mark(None, end, true)));
+                }
+                if let Some(m) = mot {
+                    buf.insert_with_tags(end, "\u{2002}\u{2002}— ", &r(&motivo));
+                    buf.insert_with_tags(end, m, &r(&motivo));
+                }
+                buf.insert_with_tags(end, "\n", &r(&fila));
+            }
+        }
+        if !resto.is_empty() {
+            self.conexiones_sin_tipo(s, end, &resto, depth, chips);
+        }
+    }
+
+    /// Las Conexiones sin tipo: cada enlace es una píldora (texto enlazado; el fondo lo dibuja
+    /// `capas`) y las píldoras corren seguidas, con el texto de cada ítem («Prerrequisito:») como
+    /// rótulo tenue antes de las suyas. Lo que no tiene enlaces se muestra como siempre.
+    fn conexiones_sin_tipo(
         &self,
         s: &RenderState,
         end: &mut gtk::TextIter,
@@ -1111,6 +1165,82 @@ fn celda(inlines: &[Inline]) -> Vec<Inline> {
             otro => otro.clone(),
         })
         .collect()
+}
+
+/// Un grupo de relaciones con el mismo tipo (049): el nombre que se muestra y, por ítem, sus
+/// enlaces y su motivo.
+pub(super) struct GrupoTipado<'b> {
+    pub(super) nombre: String,
+    clave: String,
+    pub(super) items: Vec<(Vec<&'b Inline>, Option<String>)>,
+}
+
+/// El tipo, los enlaces y el motivo de un párrafo `tipo:: [[A]] — motivo`, con el mismo
+/// criterio que el índice (`orbital_vault::relaciones`).
+pub(super) fn relacion_de_parrafo(p: &[Inline]) -> Option<(String, Vec<&Inline>, Option<String>)> {
+    use orbital_vault::relaciones as rel;
+    let es_enlace = |i: &Inline| matches!(i, Inline::Link { .. });
+    let primero = p.iter().position(es_enlace)?;
+    let ultimo = p.iter().rposition(es_enlace)?;
+    let antes = plain_text(&p[..primero]);
+    let tipo = rel::tipo_de_prefijo(&antes)?;
+    let despues = plain_text(&p[ultimo + 1..]);
+    let motivo = rel::motivo_de_sufijo(&despues).map(str::to_owned);
+    let enlaces = p[primero..=ultimo]
+        .iter()
+        .filter(|i| es_enlace(i))
+        .collect();
+    Some((rel::nombre_canonico(tipo), enlaces, motivo))
+}
+
+/// Separa de las Conexiones los ítems de lista con tipo (de las listas de primer nivel, ítems de
+/// un solo párrafo) y los junta por tipo; devuelve también lo demás, sin esos ítems.
+pub(super) fn agrupar_tipadas(body: &[Block]) -> (Vec<GrupoTipado<'_>>, Vec<Block>) {
+    let mut grupos: Vec<GrupoTipado> = Vec::new();
+    let mut resto = Vec::new();
+    for b in body {
+        let BlockKind::List { start, items } = &b.kind else {
+            resto.push(b.clone());
+            continue;
+        };
+        let mut quedan = Vec::new();
+        for it in items {
+            let tipada = match it.blocks.as_slice() {
+                [
+                    Block {
+                        kind: BlockKind::Paragraph(p),
+                        ..
+                    },
+                ] if it.task.is_none() => relacion_de_parrafo(p),
+                _ => None,
+            };
+            let Some((nombre, enlaces, motivo)) = tipada else {
+                quedan.push(it.clone());
+                continue;
+            };
+            let clave = orbital_vault::relaciones::clave(&nombre);
+            match grupos.iter_mut().find(|g| g.clave == clave) {
+                Some(g) => g.items.push((enlaces, motivo)),
+                None => grupos.push(GrupoTipado {
+                    nombre,
+                    clave,
+                    items: vec![(enlaces, motivo)],
+                }),
+            }
+        }
+        if !quedan.is_empty() {
+            resto.push(Block {
+                kind: BlockKind::List {
+                    start: *start,
+                    items: quedan,
+                },
+                source: b.source.clone(),
+                line: b.line,
+                id: b.id.clone(),
+            });
+        }
+    }
+    (grupos, resto)
 }
 
 /// Si el texto de un encabezado es el nombre de la parte (o un sinónimo): «Síntesis», «Resumen»,
