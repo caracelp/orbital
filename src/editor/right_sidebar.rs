@@ -283,17 +283,21 @@ impl RightSidebar {
                     .build(),
             );
         }
-        column.append(
-            &gtk::Label::builder()
-                .label(&snippet)
-                .xalign(0.0)
-                .wrap(true)
-                .wrap_mode(gtk::pango::WrapMode::WordChar)
-                .lines(3)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .css_classes(["dim-label"])
-                .build(),
-        );
+        // Con tipo, el renglón fuente (`- amplía:: [[…]] — …`) repetiría lo que ya dicen el grupo
+        // y el motivo: solo los enlaces sin tipo llevan su fragmento de contexto.
+        if b.relacion.is_none() {
+            column.append(
+                &gtk::Label::builder()
+                    .label(&snippet)
+                    .xalign(0.0)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .lines(3)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .css_classes(["dim-label"])
+                    .build(),
+            );
+        }
         let button = gtk::Button::builder()
             .child(&column)
             .css_classes(["flat"])
@@ -412,6 +416,46 @@ mod tests {
                 })
             }),
         }
+    }
+
+    /// Los textos de las etiquetas que hay debajo de `w`, en orden.
+    fn textos(w: &gtk::Widget) -> Vec<String> {
+        use gtk::prelude::*;
+        let mut out = Vec::new();
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            out.push(l.label().to_string());
+        }
+        let mut hijo = w.first_child();
+        while let Some(h) = hijo {
+            out.extend(textos(&h));
+            hijo = h.next_sibling();
+        }
+        out
+    }
+
+    /// 049: un retroenlace con tipo muestra la nota, la línea y el motivo, sin repetir el
+    /// renglón fuente; uno sin tipo conserva su fragmento de contexto.
+    #[test]
+    #[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+    fn retroenlace_con_tipo_sin_renglon_fuente() {
+        use gtk::prelude::*;
+        gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+        let mut con_tipo = r("wiki/Regla.md", Some("amplía"));
+        con_tipo.snippet = "- amplía:: [[Derivadas]] — agrega la regla".into();
+        con_tipo.relacion = Some(Arc::new(RelacionInfo {
+            tipo: "amplía".into(),
+            motivo: Some("agrega la regla".into()),
+        }));
+        let mut sin_tipo = r("wiki/Otra.md", None);
+        sin_tipo.snippet = "Texto que cita a [[Derivadas]].".into();
+        let panel = super::RightSidebar::new();
+        panel.set_backlinks(super::Backlinks::Ready(&[con_tipo, sin_tipo]));
+        let todo = textos(panel.widget().upcast_ref()).join("\n");
+        assert!(todo.contains("Ampliada por"), "{todo}");
+        assert!(todo.contains("Motivo: agrega la regla"), "{todo}");
+        assert!(!todo.contains("amplía::"), "sin el renglón fuente: {todo}");
+        assert!(todo.contains("Texto que cita a [[Derivadas]]."), "{todo}");
+        assert!(todo.contains("Enlaces sin tipo"), "{todo}");
     }
 
     #[test]
