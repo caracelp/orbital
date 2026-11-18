@@ -97,15 +97,19 @@ impl FiltroTipo {
 /// Trazos de las aristas con tipo: cada tipo tiene un trazo propio (no solo un color, 049),
 /// que se repite cada `TRAZOS.len()` tipos. Nombre para la descripción accesible y el
 /// patrón de guiones en píxeles.
-pub const TRAZOS: [(&str, &[f32]); 4] = [
+pub const TRAZOS: [(&str, &[f32]); 6] = [
     ("a rayas", &[7.0, 4.0]),
     ("de puntos", &[1.5, 3.5]),
     ("de raya y punto", &[8.0, 3.0, 1.5, 3.0]),
     ("de rayas largas", &[14.0, 5.0]),
+    ("de raya y dos puntos", &[10.0, 3.0, 1.5, 3.0, 1.5, 3.0]),
+    ("de rayas espaciadas", &[4.0, 9.0]),
 ];
 
 /// Tonos de rosa de las aristas con tipo, uno por trazo (todos con contraste AA sobre el fondo).
-const TONOS: [&str; 4] = ["#ff8cc6", "#ffc2e0", "#e86fae", "#f5a3cf"];
+const TONOS: [&str; 6] = [
+    "#ff8cc6", "#ffc2e0", "#e86fae", "#f5a3cf", "#ffd6eb", "#f07ab8",
+];
 
 /// Índices de aristas sin dirección, deduplicados; con tipo (049): si un par tiene aristas con y
 /// sin tipo, gana la que tiene (la primera en orden de tipo).
@@ -1995,7 +1999,29 @@ mod tests {
                 })
             })
             .collect();
-        let datos = Rc::new(GrafoDatos::desde(notas, enlaces));
+        // Con `ORBITAL_MEDIR_TIPOS=1` (049), dos de cada tres aristas tienen uno de diez tipos.
+        let datos = Rc::new(if std::env::var_os("ORBITAL_MEDIR_TIPOS").is_some() {
+            let tipos = [
+                "amplía",
+                "contradice a",
+                "refuta",
+                "es parte de",
+                "depende de",
+                "precede a",
+                "inspira a",
+                "complementa",
+                "se opone a",
+                "ejemplifica",
+            ];
+            let con_tipo = enlaces
+                .into_iter()
+                .enumerate()
+                .map(|(k, (a, b))| (a, b, (k % 3 != 0).then(|| tipos[k % 10].to_owned())))
+                .collect();
+            GrafoDatos::desde_con_tipos(notas, con_tipo)
+        } else {
+            GrafoDatos::desde(notas, enlaces)
+        });
         let aristas = datos.aristas.len();
 
         // Medición del paso Barnes-Hut con 5000 nodos y ~15 000 aristas.

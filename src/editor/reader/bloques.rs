@@ -405,7 +405,7 @@ impl Reader {
             for (enlaces, mot) in &g.items {
                 for (n, i) in enlaces.iter().enumerate() {
                     if n > 0 {
-                        buf.insert_with_tags(end, "\u{2002}\u{2002}", &r(&fila));
+                        buf.insert_with_tags(end, "\u{2003}\u{2002}", &r(&fila));
                     }
                     let a = buf.create_mark(None, end, true);
                     self.inlines(s, end, std::slice::from_ref(*i), &pildora);

@@ -700,6 +700,7 @@ mod captura_049 {
             window.cerrar_grafo();
             espera(400).await;
             window.ver_brujula();
+            window.actualizar_brujula(Some(RelPath::new("wiki/Regla de la cadena.md").unwrap()));
             espera(1200).await;
             guardar(&window, &dir, "049-brujula");
             window.0.window.destroy();
