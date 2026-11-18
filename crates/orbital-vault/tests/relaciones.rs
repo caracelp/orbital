@@ -177,3 +177,53 @@ fn operador_rel_en_busqueda_y_consultas() {
     filas.sort();
     assert_eq!(filas, ["wiki/otra.md", "wiki/regla.md"]);
 }
+
+/// Mide el indexado de una bóveda (`ORBITAL_MEDIR_BOVEDA`): el grafo de enlaces, el índice de
+/// búsqueda y los derivados de la 049 (aristas con tipo y tipos usados). En release:
+/// `ORBITAL_MEDIR_BOVEDA=<carpeta> cargo test --release -p orbital-vault --test relaciones
+/// medir_indexado -- --ignored --nocapture`.
+#[test]
+#[ignore = "medición"]
+fn medir_indexado() {
+    let Some(dir) = std::env::var_os("ORBITAL_MEDIR_BOVEDA") else {
+        eprintln!("falta ORBITAL_MEDIR_BOVEDA");
+        return;
+    };
+    let vault = orbital_vault::open(std::path::Path::new(&dir)).unwrap();
+    let medir = |f: &dyn Fn()| {
+        f();
+        let mut v: Vec<f64> = (0..7)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                f();
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let grafo = medir(&|| {
+        std::hint::black_box(LinkGraph::build(&vault).unwrap());
+    });
+    let busqueda = medir(&|| {
+        std::hint::black_box(SearchIndex::build(&vault));
+    });
+    let g = LinkGraph::build(&vault).unwrap();
+    let con_tipo = medir(&|| {
+        std::hint::black_box(g.enlaces_resueltos_con_tipo());
+    });
+    let tipos = medir(&|| {
+        std::hint::black_box(g.tipos_usados());
+    });
+    let tipadas = g
+        .enlaces_resueltos_con_tipo()
+        .iter()
+        .filter(|e| e.2.is_some())
+        .count();
+    println!(
+        "INDEXADO {} entradas: grafo {grafo:.1} ms, búsqueda {busqueda:.1} ms; aristas con tipo \
+         {tipadas} ({con_tipo:.1} ms), tipos usados {} ({tipos:.2} ms)",
+        vault.entries().len(),
+        g.tipos_usados().len()
+    );
+}

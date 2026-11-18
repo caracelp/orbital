@@ -1730,6 +1730,41 @@ mod tests {
         assert_eq!(datos.posicion(70), (0.0, PASO * 0.8));
     }
 
+    /// 049: una arista por par; si el par tiene enlaces con y sin tipo, gana el tipo. El grafo
+    /// local recibe los tipos después, y el filtro deja pasar lo que corresponde.
+    #[test]
+    fn aristas_con_tipo_y_filtro() {
+        let r = |n: &str| format!("wiki/{n}.md");
+        let notas = vec![r("a"), r("b"), r("c")];
+        let enlaces = vec![
+            (r("a"), r("b"), None),
+            (r("b"), r("a"), Some("amplía".to_owned())),
+            (r("a"), r("c"), Some("refuta".to_owned())),
+            (r("b"), r("c"), None),
+        ];
+        let d = GrafoDatos::desde_con_tipos(notas, enlaces);
+        assert_eq!(d.aristas, [(0, 1), (0, 2), (1, 2)]);
+        assert_eq!(d.tipos, ["amplía", "refuta"]);
+        assert_eq!(d.tipos_arista, [1, 2, 0]);
+        assert!(d.leyenda_accesible().contains("«refuta», trazo de puntos"));
+        assert!(FiltroTipo::Todas.deja(0));
+        assert!(!FiltroTipo::ConTipo.deja(0) && FiltroTipo::ConTipo.deja(2));
+        assert!(FiltroTipo::Tipo(2).deja(2) && !FiltroTipo::Tipo(2).deja(1));
+        // Sin tipos, nada extra (el grafo de siempre).
+        let d = GrafoDatos::desde(vec![r("a"), r("b")], vec![(r("a"), r("b"))]);
+        assert!(d.tipos.is_empty() && d.tipos_arista.is_empty());
+        assert_eq!(d.tipo_de(0), 0);
+        // Grafo local: los tipos se agregan sobre las aristas ya armadas.
+        let pares = vec![(r("a"), r("b")), (r("b"), r("c"))];
+        let l = GrafoDatos::local_saltos(r("a"), 2, &pares).con_tipos(&[(
+            r("c"),
+            r("b"),
+            "es parte de".to_owned(),
+        )]);
+        assert_eq!(l.aristas, [(0, 1), (1, 2)]);
+        assert_eq!(l.tipos_arista, [0, 1]);
+    }
+
     /// T002: sin corte cuando la bóveda es chica.
     #[test]
     fn us8_datos_sin_corte() {
