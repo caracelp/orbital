@@ -3,7 +3,7 @@
 //! Tema claro (papel blanco) para imprimir y compartir; sin recursos externos. Sin red: todo es
 //! render local.
 
-use pulldown_cmark::{Options, Parser, html::push_html};
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd, html::push_html};
 
 /// CSS de la página exportada: papel blanco, tipografía limpia, ancho de lectura.
 const ESTILOS: &str = "body{font-family:sans-serif;line-height:1.5;color:#1a1a1c;background:#ffffff;\
@@ -13,7 +13,9 @@ font-family:monospace}pre{background:#f2f2f4;border-radius:6px;padding:0.75em 1e
 pre code{background:none;padding:0}blockquote{border-left:4px solid #ff8cc6;margin:0.75em 0;\
 padding:0.25em 1em;color:#55555c;background:#fff7fb}table{border-collapse:collapse}\
 th,td{border:1px solid #d0d0d4;padding:0.35em 0.6em;text-align:left}\
-img{max-width:100%}input[type=checkbox]{margin-right:0.4em}";
+img{max-width:100%}input[type=checkbox]{margin-right:0.4em}\
+.formula-bloque{display:block;text-align:center;margin:0.6em 0;overflow-x:auto}\
+.formula-error{text-decoration:underline wavy #c2185b}";
 
 /// Título de la página: el título de la nota (frontmatter) o el nombre del archivo.
 fn titulo(texto: &str, defecto: &str) -> String {
@@ -37,9 +39,82 @@ pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_MATH);
     let mut body = String::with_capacity(cuerpo.len() * 2);
-    push_html(&mut body, Parser::new_ext(cuerpo, opts));
+    push_html(
+        &mut body,
+        con_formulas(cuerpo, Parser::new_ext(cuerpo, opts)),
+    );
     pagina(&body, &titulo(texto, nombre_archivo))
+}
+
+/// Las fórmulas (050) como SVG del mismo motor que la Lectura: `$…$`, `$$…$$` y ` ```math `. Un
+/// `$` de cierre seguido de un dígito no cierra (dinero), igual que en Lectura.
+fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item = Event<'a>> + 'a {
+    let mut en_math: Option<String> = None;
+    parser.into_offset_iter().filter_map(move |(ev, rango)| {
+        if let Some(tex) = &mut en_math {
+            return match ev {
+                Event::Text(t) => {
+                    tex.push_str(&t);
+                    None
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let tex = en_math.take().unwrap_or_default();
+                    Some(Event::Html(formula_html(&tex, true, true).into()))
+                }
+                _ => None,
+            };
+        }
+        match ev {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(ref lang)))
+                if lang.split_whitespace().next() == Some("math") =>
+            {
+                en_math = Some(String::new());
+                None
+            }
+            Event::InlineMath(t) => {
+                if cuerpo
+                    .as_bytes()
+                    .get(rango.end)
+                    .is_some_and(u8::is_ascii_digit)
+                {
+                    Some(Event::Text(CowStr::from(cuerpo[rango].to_owned())))
+                } else {
+                    Some(Event::InlineHtml(formula_html(&t, false, false).into()))
+                }
+            }
+            Event::DisplayMath(t) => Some(Event::InlineHtml(formula_html(&t, true, false).into())),
+            ev => Some(ev),
+        }
+    })
+}
+
+/// Una fórmula como SVG accesible; con error, su fuente subrayada y el motivo como título.
+fn formula_html(tex: &str, bloque: bool, sola: bool) -> String {
+    let modo = if bloque {
+        orbital_formulas::Modo::Bloque
+    } else {
+        orbital_formulas::Modo::EnLinea
+    };
+    let (etiqueta, clase) = if sola {
+        ("div", "formula formula-bloque")
+    } else if bloque {
+        ("span", "formula formula-bloque")
+    } else {
+        ("span", "formula")
+    };
+    match orbital_formulas::svg(tex, modo) {
+        Ok(svg) => format!("<{etiqueta} class=\"{clase}\">{}</{etiqueta}>", svg.marcado),
+        Err(e) => {
+            let d = if bloque { "$$" } else { "$" };
+            format!(
+                "<code class=\"formula-error\" title=\"{}\">{}</code>",
+                orbital_formulas::html::escapar_atributo(&e.mensaje),
+                orbital_formulas::html::escapar_atributo(&format!("{d}{tex}{d}"))
+            )
+        }
+    }
 }
 
 /// Formato de exportación.
@@ -70,9 +145,12 @@ pub fn pagina(body: &str, titulo: &str) -> String {
     )
 }
 
-/// HTML de una nota `.html`: el contenido tal cual (FR-3).
+/// HTML de una nota `.html`: el contenido tal cual (FR-3), con las fórmulas (050) dibujadas como
+/// SVG en el texto visible. Sin fórmulas, una copia exacta.
 pub fn html_passthrough(texto: &str) -> String {
-    texto.to_owned()
+    orbital_formulas::html::reemplazar(texto, |tex, modo| {
+        formula_html(tex, modo == orbital_formulas::Modo::Bloque, false)
+    })
 }
 
 #[cfg(test)]
@@ -102,6 +180,26 @@ mod tests {
         assert!(!out.contains('^'), "{out}");
         assert!(out.contains("<p>Un párrafo</p>"), "{out}");
         assert!(!out.contains("tab001"), "{out}");
+    }
+
+    #[test]
+    fn exporta_formulas_como_svg() {
+        let nota = "Sea $x^2$ y cuesta $5 o $10.\n\n$$\n\\frac{a}{b}\n$$\n\n```math\n\\sqrt{2}\n```\n\nMal: $\\frac{a$ y `$code$`\n";
+        let out = html_md(nota, "n.md");
+        assert_eq!(out.matches("<svg").count(), 3, "{out}");
+        assert!(out.contains("aria-label=\"Fórmula: x^2\""), "{out}");
+        assert!(out.contains("cuesta $5 o $10"), "{out}");
+        assert!(
+            out.contains("<div class=\"formula formula-bloque\">"),
+            "{out}"
+        );
+        assert!(out.contains("class=\"formula-error\""), "{out}");
+        assert!(out.contains("<code>$code$</code>"), "{out}");
+        assert!(!out.contains("http://"), "{out}");
+        let html = "<html><body><p>Sea $x$ y <code>$y$</code></p></body></html>";
+        let out = html_passthrough(html);
+        assert_eq!(out.matches("<svg").count(), 1, "{out}");
+        assert!(out.contains("<code>$y$</code>"), "{out}");
     }
 
     #[test]
