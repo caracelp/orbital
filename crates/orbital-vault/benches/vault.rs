@@ -580,3 +580,43 @@ fn plegado_500(bencher: divan::Bencher) {
         plegado::serialize(&leido).len()
     });
 }
+
+/// Consultas vivas (048, SC-001: consulta + orden < 100 ms con el índice caliente). `tag:#prueba`
+/// la cumplen las 5000 notas: el peor caso para ordenar y armar filas.
+fn consulta_5000(bencher: divan::Bencher, cuerpo: &str, con_raiz: bool) {
+    let vault = orbital_vault::open(vault_5000()).unwrap();
+    let index = orbital_vault::SearchIndex::build(&vault);
+    let c = orbital_vault::consulta::parse(cuerpo).unwrap();
+    let raiz = con_raiz.then(|| vault.root());
+    bencher.bench(|| orbital_vault::consulta::ejecutar(&index, raiz, divan::black_box(&c)).total);
+}
+
+#[divan::bench(sample_count = 20)]
+fn consulta_lista_nombre_5000(bencher: divan::Bencher) {
+    consulta_5000(bencher, "tag:#prueba", false);
+}
+
+#[divan::bench(sample_count = 20)]
+fn consulta_lista_modificado_5000(bencher: divan::Bencher) {
+    consulta_5000(bencher, "tag:#prueba\norden: modificado desc", false);
+}
+
+#[divan::bench(sample_count = 20)]
+fn consulta_tabla_propiedad_5000(bencher: divan::Bencher) {
+    consulta_5000(
+        bencher,
+        "tag:#prueba\nvista: tabla\ncolumnas: title, type, created\norden: title desc",
+        false,
+    );
+}
+
+#[divan::bench(sample_count = 20)]
+fn consulta_conteo_5000(bencher: divan::Bencher) {
+    consulta_5000(bencher, "tag:#prueba\nvista: conteo", false);
+}
+
+/// Lee las líneas de cada nota que coincide (≈ 1/8 de la bóveda).
+#[divan::bench(sample_count = 20)]
+fn consulta_coincidencias_5000(bencher: divan::Bencher) {
+    consulta_5000(bencher, "musica\nvista: coincidencias", true);
+}
