@@ -150,6 +150,8 @@ impl Reader {
             plegadas: RefCell::new(Vec::new()),
             provisorio: Cell::new(false),
             lugares: RefCell::new(Vec::new()),
+            pintables: RefCell::new(Vec::new()),
+            estilo_formulas: Cell::new(self.estilo_formulas()),
         }
     }
 
@@ -430,6 +432,19 @@ impl Reader {
                 buffer.apply_tag(t, &b, &a);
             }
             i.pending.borrow_mut().push((w, anchor));
+        }
+        for (p, off) in state.pintables.borrow_mut().drain(..) {
+            let mut a = en(off);
+            let mut z = a;
+            z.forward_char();
+            let etiquetas = a.tags();
+            buffer.delete(&mut a, &mut z);
+            buffer.insert_paintable(&mut a, &p);
+            let mut b = a;
+            b.backward_char();
+            for t in &etiquetas {
+                buffer.apply_tag(t, &b, &a);
+            }
         }
 
         // 5. Las marcas, en el buffer de la vista (una marca compartida sigue compartida).

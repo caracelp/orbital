@@ -278,6 +278,7 @@ impl Reader {
             }
             BlockKind::Seccion { kind, body } => self.seccion(s, end, *kind, body, depth),
             BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth, b.source.start),
+            BlockKind::Math { tex } => self.formula_bloque(s, end, tex, &base),
         }
     }
 
@@ -1103,6 +1104,14 @@ impl Reader {
                     });
                 }
                 Inline::Image { url, alt } => self.image(s, end, url, alt, tags),
+                Inline::Math { tex, display } => {
+                    let modo = if *display {
+                        crate::formulas::Modo::Bloque
+                    } else {
+                        crate::formulas::Modo::EnLinea
+                    };
+                    self.formula(s, end, tex, modo, tags);
+                }
                 // Como Obsidian: un salto simple dentro del párrafo es un salto de línea. Va con
                 // las etiquetas del contexto, así la línea siguiente conserva la sangría del
                 // callout, la cita o el ítem.
@@ -1307,4 +1316,9 @@ pub(super) struct RenderState {
     /// `U+FFFC` y se anotan en `lugares` con su posición.
     pub(super) provisorio: Cell<bool>,
     pub(super) lugares: RefCell<Vec<(gtk::Widget, i32)>>,
+    /// Lo mismo para los pintables de las fórmulas (050): un `U+FFFC` copiado como texto pierde
+    /// el pintable.
+    pub(super) pintables: RefCell<Vec<(gtk::gdk::Paintable, i32)>>,
+    /// Letra, color y escala de las fórmulas de la vista (050).
+    pub(super) estilo_formulas: Cell<crate::formulas::Estilo>,
 }

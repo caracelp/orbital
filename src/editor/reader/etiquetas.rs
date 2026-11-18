@@ -212,6 +212,26 @@ impl Reader {
             .name("flecha-sep")
             .weight(400)
             .build());
+        // Fórmulas (050): la de bloque centrada en su renglón; el LaTeX que acompaña a cada una,
+        // diminuto y casi transparente (con alfa 0 Pango lo dibuja opaco); el fuente de una
+        // fórmula con error, en monoespaciada con subrayado de error.
+        add(gtk::TextTag::builder()
+            .name("formula-bloque")
+            .justification(gtk::Justification::Center)
+            .pixels_above_lines(6)
+            .pixels_below_lines(10)
+            .build());
+        add(gtk::TextTag::builder()
+            .name("formula-fuente")
+            .scale(super::formulas::ESCALA_FUENTE)
+            .foreground_rgba(&gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.001))
+            .build());
+        add(gtk::TextTag::builder()
+            .name("formula-error")
+            .family("monospace")
+            .underline(pango::Underline::Error)
+            .underline_rgba(&crate::style::ACCENT_TEXT.rgba(1.0))
+            .build());
         add(gtk::TextTag::builder()
             .name("fuera-de-enfoque")
             .invisible(true)

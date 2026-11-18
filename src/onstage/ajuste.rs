@@ -65,6 +65,13 @@ impl OnStage {
         i.proveedor_css.load_from_string(&format!(
             ".onstage-escala textview {{ font-size: {px}px; }}"
         ));
+        // Las fórmulas son imágenes del tamaño de la letra (050): con otra letra se vuelve a
+        // volcar la diapositiva.
+        i.reader.fijar_tamano_formulas(Some(px as f32));
+        if i.reader.tiene_formulas() {
+            i.reader.reset();
+            self.render_actual();
+        }
     }
 
     pub(super) fn conectar_ajuste(&self) {

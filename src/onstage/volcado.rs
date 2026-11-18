@@ -208,11 +208,17 @@ impl OnStage {
         let generation = i.generation.get() + 1;
         i.generation.set(generation);
         let texto = slide.texto;
+        let estilo = i.reader.estilo_formulas();
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let Ok(prepared) = gio::spawn_blocking(move || match &vault {
-                Some(v) => Prepared::with_vault(&texto, v, &ruta, &yaml),
-                None => Prepared::new(&texto, &yaml),
+            let Ok(prepared) = gio::spawn_blocking(move || {
+                let prepared = match &vault {
+                    Some(v) => Prepared::with_vault(&texto, v, &ruta, &yaml),
+                    None => Prepared::new(&texto, &yaml),
+                };
+                // Las fórmulas, fuera del hilo de GTK (050).
+                crate::formulas::precalentar(Reader::claves_formulas(&prepared.doc, &estilo));
+                prepared
             })
             .await
             else {
