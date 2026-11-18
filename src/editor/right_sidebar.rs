@@ -200,7 +200,20 @@ impl RightSidebar {
                 let mut notes: Vec<&RelPath> = refs.iter().map(|b| &b.from).collect();
                 notes.sort();
                 notes.dedup();
-                for b in refs {
+                // Primero las relaciones con tipo (049), agrupadas por su nombre inverso; los
+                // enlaces sin tipo, después y como siempre.
+                let (grupos, sin_tipo) = agrupar_por_relacion(refs);
+                for (nombre, refs_grupo) in &grupos {
+                    i.list.append(&encabezado(nombre, refs_grupo.len()));
+                    for b in refs_grupo {
+                        i.list.append(&self.row(b));
+                    }
+                }
+                if !grupos.is_empty() && !sin_tipo.is_empty() {
+                    i.list
+                        .append(&encabezado("Enlaces sin tipo", sin_tipo.len()));
+                }
+                for b in sin_tipo {
                     i.list.append(&self.row(b));
                 }
                 let n = notes.len();
@@ -259,6 +272,17 @@ impl RightSidebar {
                     .build(),
             );
         }
+        let motivo = b.relacion.as_ref().and_then(|r| r.motivo.as_deref());
+        if let Some(m) = motivo {
+            column.append(
+                &gtk::Label::builder()
+                    .label(format!("Motivo: {m}"))
+                    .xalign(0.0)
+                    .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
+                    .build(),
+            );
+        }
         column.append(
             &gtk::Label::builder()
                 .label(&snippet)
@@ -274,10 +298,23 @@ impl RightSidebar {
             .child(&column)
             .css_classes(["flat"])
             .build();
-        button.update_property(&[gtk::accessible::Property::Label(&format!(
-            "Abrir {name}, línea {}: {snippet}",
-            b.line
-        ))]);
+        let rotulo = match &b.relacion {
+            Some(r) => {
+                use orbital_vault::relaciones as rel;
+                // Un tipo base se lee con su inverso («ampliada por Derivadas»); uno libre, en
+                // el sentido en que se escribió («Derivadas refuta esta nota»).
+                let relacion = match rel::tipo_base(&r.tipo) {
+                    Some(_) => format!("{} {name}", rel::nombre_inverso(&r.tipo)),
+                    None => format!("{name} {} esta nota", rel::nombre_canonico(&r.tipo)),
+                };
+                match motivo {
+                    Some(m) => format!("Abrir {name}: {relacion}; motivo: {m}; línea {}", b.line),
+                    None => format!("Abrir {name}: {relacion}; línea {}", b.line),
+                }
+            }
+            None => format!("Abrir {name}, línea {}: {snippet}", b.line),
+        };
+        button.update_property(&[gtk::accessible::Property::Label(&rotulo)]);
         let (weak, from, line) = (Rc::downgrade(&self.0), b.from.clone(), b.line);
         button.connect_clicked(move |_| {
             if let Some(i) = weak.upgrade()
@@ -290,6 +327,60 @@ impl RightSidebar {
     }
 }
 
+/// Separa los retroenlaces con tipo, agrupados por el nombre inverso del tipo en el orden en
+/// que aparece cada uno (sin distinguir mayúsculas ni tildes), de los que no tienen tipo.
+pub(crate) fn agrupar_por_relacion(
+    refs: &[BacklinkRef],
+) -> (Vec<(String, Vec<&BacklinkRef>)>, Vec<&BacklinkRef>) {
+    use orbital_vault::relaciones::{clave, nombre_inverso};
+    let mut grupos: Vec<(String, String, Vec<&BacklinkRef>)> = Vec::new();
+    let mut sin_tipo = Vec::new();
+    for b in refs {
+        let Some(r) = &b.relacion else {
+            sin_tipo.push(b);
+            continue;
+        };
+        let k = clave(&r.tipo);
+        match grupos.iter_mut().find(|g| g.0 == k) {
+            Some(g) => g.2.push(b),
+            None => grupos.push((k, nombre_inverso(&r.tipo), vec![b])),
+        }
+    }
+    let grupos = grupos.into_iter().map(|(_, n, v)| (n, v)).collect();
+    (grupos, sin_tipo)
+}
+
+/// Fila de encabezado de un grupo: no se elige ni se activa; el lector de pantalla la lee.
+fn encabezado(nombre: &str, n: usize) -> gtk::ListBoxRow {
+    let mut titulo = String::with_capacity(nombre.len());
+    let mut chars = nombre.chars();
+    if let Some(c) = chars.next() {
+        titulo.extend(c.to_uppercase());
+        titulo.push_str(chars.as_str());
+    }
+    let label = gtk::Label::builder()
+        .label(&titulo)
+        .xalign(0.0)
+        .margin_top(8)
+        .margin_bottom(4)
+        .margin_start(8)
+        .css_classes(["caption-heading", "accent"])
+        .build();
+    let row = gtk::ListBoxRow::builder()
+        .child(&label)
+        .activatable(false)
+        .selectable(false)
+        .focusable(false)
+        .build();
+    let notas = if n == 1 { "nota" } else { "notas" };
+    let accesible = match titulo.strip_prefix("← ") {
+        Some(tipo) => format!("Relación entrante «{tipo}»: {n} {notas}"),
+        None => format!("{titulo}: {n} {notas}"),
+    };
+    row.update_property(&[gtk::accessible::Property::Label(&accesible)]);
+    row
+}
+
 /// Corta `s` a `max` caracteres con «…».
 fn shorten(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
@@ -300,7 +391,47 @@ fn shorten(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::shorten;
+    use super::{agrupar_por_relacion, shorten};
+    use orbital_vault::{BacklinkRef, LinkTarget, RelPath, RelacionInfo};
+    use std::sync::Arc;
+
+    fn r(from: &str, tipo: Option<&str>) -> BacklinkRef {
+        BacklinkRef {
+            from: RelPath::new(from).unwrap(),
+            target: LinkTarget {
+                path: "x".into(),
+                anchor: None,
+                alias: None,
+            },
+            line: 1,
+            snippet: String::new(),
+            relacion: tipo.map(|t| {
+                Arc::new(RelacionInfo {
+                    tipo: t.into(),
+                    motivo: None,
+                })
+            }),
+        }
+    }
+
+    #[test]
+    fn agrupa_por_nombre_inverso() {
+        let refs = [
+            r("wiki/a.md", Some("amplía")),
+            r("wiki/b.md", None),
+            r("wiki/c.md", Some("se opone a")),
+            r("wiki/d.md", Some("AMPLIA")),
+            r("wiki/e.md", Some("refuta")),
+        ];
+        let (grupos, sin_tipo) = agrupar_por_relacion(&refs);
+        let nombres: Vec<(&str, usize)> =
+            grupos.iter().map(|(n, v)| (n.as_str(), v.len())).collect();
+        assert_eq!(
+            nombres,
+            [("ampliada por", 2), ("se opone a", 1), ("← refuta", 1)]
+        );
+        assert_eq!(sin_tipo.len(), 1);
+    }
 
     #[test]
     fn shorten_keeps_char_boundaries() {
