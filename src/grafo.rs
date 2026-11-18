@@ -66,11 +66,95 @@ pub struct GrafoDatos {
     pub fijas: Vec<(f64, f64)>,
     /// Nivel de salto en el grafo local (`0` = centro, `1..=3` = anillo); vacío = grafo global.
     pub saltos: Vec<u8>,
+    /// Tipos de relación (049) que aparecen en las aristas, en nombre canónico y orden alfabético.
+    pub tipos: Vec<String>,
+    /// Por arista (mismo orden que `aristas`): `0` sin tipo, `k` = `tipos[k - 1]`. Vacío: ninguna
+    /// arista tiene tipo.
+    pub tipos_arista: Vec<u16>,
+}
+
+/// Qué aristas dibuja el grafo (049).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FiltroTipo {
+    #[default]
+    Todas,
+    /// Solo las que tienen tipo.
+    ConTipo,
+    /// Solo las del tipo `k` (índice en `GrafoDatos::tipos` + 1).
+    Tipo(u16),
+}
+
+impl FiltroTipo {
+    fn deja(self, tipo: u16) -> bool {
+        match self {
+            Self::Todas => true,
+            Self::ConTipo => tipo != 0,
+            Self::Tipo(k) => tipo == k,
+        }
+    }
+}
+
+/// Trazos de las aristas con tipo: cada tipo tiene un trazo propio (no solo un color, 049),
+/// que se repite cada `TRAZOS.len()` tipos. Nombre para la descripción accesible y el
+/// patrón de guiones en píxeles.
+pub const TRAZOS: [(&str, &[f32]); 4] = [
+    ("a rayas", &[7.0, 4.0]),
+    ("de puntos", &[1.5, 3.5]),
+    ("de raya y punto", &[8.0, 3.0, 1.5, 3.0]),
+    ("de rayas largas", &[14.0, 5.0]),
+];
+
+/// Tonos de rosa de las aristas con tipo, uno por trazo (todos con contraste AA sobre el fondo).
+const TONOS: [&str; 4] = ["#ff8cc6", "#ffc2e0", "#e86fae", "#f5a3cf"];
+
+/// Índices de aristas sin dirección, deduplicados; con tipo (049): si un par tiene aristas con y
+/// sin tipo, gana la que tiene (la primera en orden de tipo).
+fn aristas_tipadas(
+    indice: &HashMap<&str, usize>,
+    enlaces: impl Iterator<Item = (String, String, Option<String>)>,
+) -> (Vec<(usize, usize)>, Vec<String>, Vec<u16>) {
+    let mut crudas: Vec<(usize, usize, Option<String>)> = enlaces
+        .filter_map(|(a, b, t)| {
+            let ia = indice.get(a.as_str()).copied()?;
+            let ib = indice.get(b.as_str()).copied()?;
+            (ia != ib).then_some((ia.min(ib), ia.max(ib), t))
+        })
+        .collect();
+    crudas.sort_by(|x, y| (x.0, x.1, x.2.is_none(), &x.2).cmp(&(y.0, y.1, y.2.is_none(), &y.2)));
+    crudas.dedup_by(|b, a| a.0 == b.0 && a.1 == b.1);
+    let mut tipos: Vec<String> = crudas.iter().filter_map(|c| c.2.clone()).collect();
+    tipos.sort();
+    tipos.dedup();
+    let tipos_arista = if tipos.is_empty() {
+        Vec::new()
+    } else {
+        crudas
+            .iter()
+            .map(|c| {
+                c.2.as_ref()
+                    .and_then(|t| tipos.binary_search(t).ok())
+                    .map_or(0, |k| (k + 1).min(u16::MAX as usize) as u16)
+            })
+            .collect()
+    };
+    let aristas = crudas.into_iter().map(|(a, b, _)| (a, b)).collect();
+    (aristas, tipos, tipos_arista)
 }
 
 impl GrafoDatos {
     /// Arma los datos desde `LinkGraph` (ya resuelto) con corte en `MAX_NODOS`.
     pub fn desde(notas: Vec<String>, enlaces: Vec<(String, String)>) -> Self {
+        Self::desde_con_tipos(
+            notas,
+            enlaces.into_iter().map(|(a, b)| (a, b, None)).collect(),
+        )
+    }
+
+    /// Como [`Self::desde`], con el tipo de relación (049) de cada enlace.
+    pub fn desde_con_tipos(
+        notas: Vec<String>,
+        enlaces: Vec<(String, String, Option<String>)>,
+    ) -> Self {
         // Ordenar primero y recortar después: el corte es determinista (alfabético).
         let cortado = notas.len() > MAX_NODOS;
         let mut rutas: Vec<String> = notas;
@@ -81,22 +165,15 @@ impl GrafoDatos {
             .enumerate()
             .map(|(n, r)| (r.as_str(), n))
             .collect();
-        let mut aristas: Vec<(usize, usize)> = enlaces
-            .into_iter()
-            .filter_map(|(a, b)| {
-                let ia = indice.get(a.as_str()).copied()?;
-                let ib = indice.get(b.as_str()).copied()?;
-                (ia != ib).then_some((ia.min(ib), ia.max(ib)))
-            })
-            .collect();
-        aristas.sort();
-        aristas.dedup();
+        let (aristas, tipos, tipos_arista) = aristas_tipadas(&indice, enlaces.into_iter());
         Self {
             rutas,
             aristas,
             cortado,
             fijas: Vec::new(),
             saltos: Vec::new(),
+            tipos,
+            tipos_arista,
         }
     }
 
@@ -141,6 +218,7 @@ impl GrafoDatos {
             cortado: false,
             fijas,
             saltos,
+            ..Default::default()
         }
     }
 
@@ -237,7 +315,55 @@ impl GrafoDatos {
             cortado: false,
             fijas,
             saltos,
+            ..Default::default()
         }
+    }
+
+    /// Le pone a las aristas el tipo de relación (049) que tienen en `tipos` (pares dirigidos
+    /// `(origen, destino)` con su tipo). Para el grafo local, que se arma sin tipos.
+    pub fn con_tipos(mut self, tipos: &[(String, String, String)]) -> Self {
+        let indice: HashMap<&str, usize> = self
+            .rutas
+            .iter()
+            .enumerate()
+            .map(|(n, r)| (r.as_str(), n))
+            .collect();
+        let enlaces = self
+            .aristas
+            .iter()
+            .map(|&(a, b)| (self.rutas[a].clone(), self.rutas[b].clone(), None))
+            .chain(
+                tipos
+                    .iter()
+                    .map(|(a, b, t)| (a.clone(), b.clone(), Some(t.clone()))),
+            );
+        let (aristas, nombres, por_arista) = aristas_tipadas(&indice, enlaces);
+        self.aristas = aristas;
+        self.tipos = nombres;
+        self.tipos_arista = por_arista;
+        self
+    }
+
+    /// Tipo de la arista `n` (`0`: sin tipo).
+    pub fn tipo_de(&self, n: usize) -> u16 {
+        self.tipos_arista.get(n).copied().unwrap_or(0)
+    }
+
+    /// Descripción accesible de los trazos: qué trazo tiene cada tipo.
+    pub fn leyenda_accesible(&self) -> String {
+        if self.tipos.is_empty() {
+            return String::new();
+        }
+        let partes: Vec<String> = self
+            .tipos
+            .iter()
+            .enumerate()
+            .map(|(k, t)| format!("«{t}», trazo {}", TRAZOS[k % TRAZOS.len()].0))
+            .collect();
+        format!(
+            "Las aristas sin tipo van con trazo continuo. Con tipo: {}.",
+            partes.join("; ")
+        )
     }
 
     /// Posición inicial en la cuadrícula (columnas de ~70 nodos por fila).
@@ -702,6 +828,10 @@ mod imp {
         pub tick_activo: Cell<bool>,
         /// Última generación copiada del hilo secundario.
         pub ultima_gen: Cell<u64>,
+        /// Qué aristas se dibujan según su tipo de relación (049).
+        pub filtro: Cell<FiltroTipo>,
+        /// Selector del filtro, si se armó (lo pone al día `set_datos`).
+        pub selector: RefCell<Option<(gtk::DropDown, gtk::StringList)>>,
     }
 
     impl Drop for VistaGrafo {
@@ -770,6 +900,11 @@ mod imp {
             let a_pantalla = |wx: f64, wy: f64| (wx * v.zoom - v.pan_x, wy * v.zoom - v.pan_y);
             let trazo = gsk::Stroke::new(1.5);
             let es_local_con_saltos = !datos.saltos.is_empty();
+            let filtro = self.filtro.get();
+            // Aristas con tipo (049): un camino por trazo, encima de las demás.
+            let tipadas: [gsk::PathBuilder; TRAZOS.len()] =
+                std::array::from_fn(|_| gsk::PathBuilder::new());
+            let mut hay_tipadas = [false; TRAZOS.len()];
 
             if es_local_con_saltos && hovered.is_none() {
                 // Grafo local por saltos: opacidad de arista según el salto más lejano que une.
@@ -780,7 +915,11 @@ mod imp {
                     gsk::PathBuilder::new(),
                 ];
                 let mut hay = [false; 3];
-                for &(a, b) in &datos.aristas {
+                for (idx, &(a, b)) in datos.aristas.iter().enumerate() {
+                    let tipo = datos.tipo_de(idx);
+                    if !filtro.deja(tipo) {
+                        continue;
+                    }
                     let (x0, y0) = {
                         let (x, y) = pos(a);
                         a_pantalla(x, y)
@@ -794,6 +933,13 @@ mod imp {
                         || (x0 > width && x1 > width)
                         || (y0 > height && y1 > height)
                     {
+                        continue;
+                    }
+                    if tipo != 0 {
+                        let k = (tipo as usize - 1) % TRAZOS.len();
+                        tipadas[k].move_to(x0 as f32, y0 as f32);
+                        tipadas[k].line_to(x1 as f32, y1 as f32);
+                        hay_tipadas[k] = true;
                         continue;
                     }
                     let salto_max = datos
@@ -824,7 +970,11 @@ mod imp {
                 let aristas = gsk::PathBuilder::new();
                 let aristas_rosa = gsk::PathBuilder::new();
                 let (mut hay, mut hay_rosa) = (false, false);
-                for (a, b) in &datos.aristas {
+                for (idx, (a, b)) in datos.aristas.iter().enumerate() {
+                    let tipo = datos.tipo_de(idx);
+                    if !filtro.deja(tipo) {
+                        continue;
+                    }
                     let resaltar = hovered.is_some_and(|h| *a == h || *b == h);
                     if hovered.is_some() && !resaltar {
                         continue; // con hover, el resto se atenúa (no se dibuja)
@@ -845,6 +995,13 @@ mod imp {
                     {
                         continue;
                     }
+                    if tipo != 0 {
+                        let k = (tipo as usize - 1) % TRAZOS.len();
+                        tipadas[k].move_to(x0 as f32, y0 as f32);
+                        tipadas[k].line_to(x1 as f32, y1 as f32);
+                        hay_tipadas[k] = true;
+                        continue;
+                    }
                     let destino = if resaltar { &aristas_rosa } else { &aristas };
                     destino.move_to(x0 as f32, y0 as f32);
                     destino.line_to(x1 as f32, y1 as f32);
@@ -859,6 +1016,15 @@ mod imp {
                 }
                 if hay_rosa {
                     snapshot.append_stroke(&aristas_rosa.to_path(), &trazo, &rosa);
+                }
+            }
+
+            for (k, b) in tipadas.into_iter().enumerate() {
+                if hay_tipadas[k] {
+                    let t = gsk::Stroke::new(2.0);
+                    t.set_dash(TRAZOS[k].1);
+                    let col = gtk::gdk::RGBA::parse(TONOS[k]).expect("tono de paleta");
+                    snapshot.append_stroke(&b.to_path(), &t, &col);
                 }
             }
 
@@ -962,6 +1128,59 @@ mod imp {
                 snapshot.append_layout(&layout, &col_texto);
                 snapshot.restore();
             }
+
+            // Leyenda de trazos del grafo global (049): abajo a la izquierda.
+            if datos.fijas.is_empty() && !datos.tipos.is_empty() {
+                const MAX_LEYENDA: usize = 10;
+                let fondo = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.72);
+                let filas: Vec<(usize, String)> = datos
+                    .tipos
+                    .iter()
+                    .take(MAX_LEYENDA)
+                    .cloned()
+                    .enumerate()
+                    .chain(
+                        (datos.tipos.len() > MAX_LEYENDA)
+                            .then(|| {
+                                (
+                                    usize::MAX,
+                                    format!("y {} tipos más", datos.tipos.len() - MAX_LEYENDA),
+                                )
+                            })
+                            .into_iter(),
+                    )
+                    .collect();
+                let alto_fila = 18.0;
+                let alto = filas.len() as f64 * alto_fila + 12.0;
+                let y0 = height - alto - 12.0;
+                let ancho = filas
+                    .iter()
+                    .map(|(_, t)| pango_label(widget.upcast_ref::<gtk::Widget>(), t).0)
+                    .fold(0.0, f64::max)
+                    + 56.0;
+                snapshot.append_color(
+                    &fondo,
+                    &gtk::graphene::Rect::new(12.0, y0 as f32, ancho as f32, alto as f32),
+                );
+                for (n, (k, t)) in filas.iter().enumerate() {
+                    let y = y0 + 6.0 + n as f64 * alto_fila + alto_fila / 2.0;
+                    if *k != usize::MAX {
+                        let slot = k % TRAZOS.len();
+                        let b = gsk::PathBuilder::new();
+                        b.move_to(20.0, y as f32);
+                        b.line_to(48.0, y as f32);
+                        let st = gsk::Stroke::new(2.0);
+                        st.set_dash(TRAZOS[slot].1);
+                        let col = gtk::gdk::RGBA::parse(TONOS[slot]).expect("tono de paleta");
+                        snapshot.append_stroke(&b.to_path(), &st, &col);
+                    }
+                    let (_, h, layout) = pango_label(widget.upcast_ref::<gtk::Widget>(), t);
+                    snapshot.save();
+                    snapshot.translate(&gtk::graphene::Point::new(56.0, (y - h / 2.0) as f32));
+                    snapshot.append_layout(&layout, &texto);
+                    snapshot.restore();
+                }
+            }
         }
     }
 }
@@ -1008,6 +1227,15 @@ impl VistaGrafo {
         self.imp().centrar.set(!es_global);
         self.imp().posiciones.borrow_mut().clear();
         self.imp().ultima_gen.set(0);
+        // Un filtro de tipo que ya no existe en los datos nuevos vuelve a «todas».
+        if let FiltroTipo::Tipo(k) = self.imp().filtro.get()
+            && k as usize > datos.tipos.len()
+        {
+            self.imp().filtro.set(FiltroTipo::Todas);
+        }
+        self.actualizar_selector(&datos.tipos);
+        let leyenda = datos.leyenda_accesible();
+        self.update_property(&[gtk::accessible::Property::Description(&leyenda)]);
         *self.imp().datos.borrow_mut() = Some(datos.clone());
         if es_global && datos.rutas.len() > 1 {
             let sincro = SincroFisica::nuevo(&datos);
@@ -1016,6 +1244,79 @@ impl VistaGrafo {
             self.asegurar_tick_fisica();
         }
         self.queue_draw();
+    }
+
+    /// Selector «Relaciones» (049): todas, solo con tipo o un tipo. Se oculta mientras no haya
+    /// aristas con tipo.
+    pub fn selector_tipos(&self) -> gtk::DropDown {
+        let lista = gtk::StringList::new(&["Todas las relaciones", "Solo con tipo"]);
+        let dd = gtk::DropDown::builder()
+            .model(&lista)
+            .tooltip_text("Filtrar las aristas por tipo de relación")
+            .visible(false)
+            .build();
+        dd.update_property(&[gtk::accessible::Property::Label(
+            "Filtrar las aristas por tipo de relación",
+        )]);
+        let weak = self.downgrade();
+        dd.connect_selected_notify(move |dd| {
+            let Some(v) = weak.upgrade() else { return };
+            let f = match dd.selected() {
+                0 | gtk::INVALID_LIST_POSITION => FiltroTipo::Todas,
+                1 => FiltroTipo::ConTipo,
+                n => FiltroTipo::Tipo((n - 1).min(u16::MAX as u32) as u16),
+            };
+            if v.filtro() != f {
+                v.set_filtro(f);
+            }
+        });
+        *self.imp().selector.borrow_mut() = Some((dd.clone(), lista));
+        if let Some(d) = self.imp().datos.borrow().as_ref() {
+            self.actualizar_selector(&d.tipos);
+        }
+        dd
+    }
+
+    fn actualizar_selector(&self, tipos: &[String]) {
+        let Some((dd, lista)) = self.imp().selector.borrow().clone() else {
+            return;
+        };
+        let actuales: Vec<String> = (2..lista.n_items())
+            .filter_map(|n| lista.string(n).map(|s| s.to_string()))
+            .collect();
+        if actuales != tipos {
+            let nuevos: Vec<&str> = tipos.iter().map(String::as_str).collect();
+            lista.splice(2, lista.n_items() - 2, &nuevos);
+        }
+        let sel = match self.imp().filtro.get() {
+            FiltroTipo::Todas => 0,
+            FiltroTipo::ConTipo => 1,
+            FiltroTipo::Tipo(k) => k as u32 + 1,
+        };
+        if dd.selected() != sel {
+            dd.set_selected(sel);
+        }
+        dd.set_visible(!tipos.is_empty());
+    }
+
+    /// Elige qué aristas dibujar según su tipo de relación (049).
+    pub fn set_filtro(&self, filtro: FiltroTipo) {
+        self.imp().filtro.set(filtro);
+        self.queue_draw();
+    }
+
+    pub fn filtro(&self) -> FiltroTipo {
+        self.imp().filtro.get()
+    }
+
+    /// Los tipos de relación de los datos actuales.
+    pub fn tipos(&self) -> Vec<String> {
+        self.imp()
+            .datos
+            .borrow()
+            .as_ref()
+            .map(|d| d.tipos.clone())
+            .unwrap_or_default()
     }
 
     pub fn limpiar(&self) {

@@ -228,6 +228,7 @@ pub(super) fn construir_centro() -> Centro {
     grafo_barra.pack_end(&grafo_cerrar);
     grafo_barra.pack_end(&grafo_recalcular);
     grafo_barra.pack_end(&grafo_pausar);
+    grafo_barra.pack_start(&grafo_vista.selector_tipos());
     grafo_barra.pack_start(&grafo_aviso);
     let grafo_page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)

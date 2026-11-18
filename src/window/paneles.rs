@@ -108,16 +108,12 @@ impl Window {
             let c = centro.clone();
             let datos = gio::spawn_blocking(move || {
                 let g = graph.lock().ok()?;
-                let enlaces: Vec<(String, String)> = g
-                    .enlaces_resueltos()
-                    .into_iter()
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
-                    .collect();
-                Some(crate::grafo::GrafoDatos::local_saltos(
-                    c.to_string(),
-                    saltos,
-                    &enlaces,
-                ))
+                let (enlaces, tipos) = enlaces_y_tipos(&g);
+                drop(g);
+                Some(
+                    crate::grafo::GrafoDatos::local_saltos(c.to_string(), saltos, &enlaces)
+                        .con_tipos(&tipos),
+                )
             })
             .await
             .ok()
@@ -180,14 +176,13 @@ impl Window {
         glib::spawn_future_local(async move {
             let vecindario = gio::spawn_blocking(move || {
                 let g = graph.lock().ok()?;
-                let enlaces: Vec<(String, String)> = g
-                    .enlaces_resueltos()
-                    .into_iter()
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
-                    .collect();
-                Some(crate::grafo::brujula::VecindarioBrujula::calcular(
-                    &c_str, &enlaces,
-                ))
+                let (enlaces, tipos) = enlaces_y_tipos(&g);
+                drop(g);
+                Some(
+                    crate::grafo::brujula::VecindarioBrujula::calcular_con_tipos(
+                        &c_str, &enlaces, &tipos,
+                    ),
+                )
             })
             .await
             .ok()
@@ -603,4 +598,21 @@ impl Window {
             });
         });
     }
+}
+
+/// Los enlaces resueltos del grafo como pares de rutas y, aparte, los que tienen tipo de
+/// relación (049) con su tipo.
+type Pares = Vec<(String, String)>;
+type ParesConTipo = Vec<(String, String, String)>;
+fn enlaces_y_tipos(g: &orbital_vault::LinkGraph) -> (Pares, ParesConTipo) {
+    let mut enlaces = Vec::new();
+    let mut tipos = Vec::new();
+    for (a, b, t) in g.enlaces_resueltos_con_tipo() {
+        let (a, b) = (a.to_string(), b.to_string());
+        if let Some(t) = t {
+            tipos.push((a.clone(), b.clone(), t));
+        }
+        enlaces.push((a, b));
+    }
+    (enlaces, tipos)
 }
