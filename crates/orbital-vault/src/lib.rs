@@ -10,6 +10,7 @@ pub mod aux_files;
 pub mod bases;
 pub mod bloques;
 pub mod config;
+pub mod consulta;
 pub mod diff;
 pub mod edit_plan;
 pub mod enlaces;

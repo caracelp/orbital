@@ -4,6 +4,7 @@ mod index;
 mod properties;
 use crate::{RelPath, Vault, VaultError, WriteCtx, WriteReceipt, props::PropValue};
 pub use format::{emit, parse, parse_value, validate_value};
+pub(crate) use index::compare;
 pub use index::{BaseIndex, BaseRow, BaseSnapshot};
 pub use properties::{PropertyRenamePlan, edit_cell, plan_property_rename};
 
