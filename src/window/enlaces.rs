@@ -15,14 +15,22 @@ impl Window {
         self.refresh_backlinks();
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let built = gio::spawn_blocking(move || orbital_vault::LinkGraph::build(&vault))
-                .await
-                .ok()
-                .and_then(Result::ok);
+            let built = gio::spawn_blocking(move || {
+                orbital_vault::LinkGraph::build(&vault).map(|g| {
+                    let tipos = g.tipos_usados();
+                    (g, tipos)
+                })
+            })
+            .await
+            .ok()
+            .and_then(Result::ok);
             if this.0.graph_gen.get() != generation {
                 return;
             }
-            let nuevo = built.map(|g| Arc::new(std::sync::Mutex::new(g)));
+            let nuevo = built.map(|(g, tipos)| {
+                this.0.code_editor.set_relation_types(&tipos);
+                Arc::new(std::sync::Mutex::new(g))
+            });
             *this.0.graph.borrow_mut() = nuevo.clone();
             this.refresh_backlinks();
             this.reconstruir_grafo_visual(nuevo.as_ref());
@@ -47,19 +55,25 @@ impl Window {
         }
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let _ = gio::spawn_blocking(move || {
+            let tipos = gio::spawn_blocking(move || {
                 let text = if removed {
                     None
                 } else {
                     std::fs::read_to_string(path.to_path(vault.root())).ok()
                 };
-                let Ok(mut g) = graph.lock() else { return };
+                let mut g = graph.lock().ok()?;
                 match text {
                     Some(t) => g.update_file(&vault, &path, &t, format == Format::Html),
                     None => g.remove_file(&path),
                 }
+                Some(g.tipos_usados())
             })
-            .await;
+            .await
+            .ok()
+            .flatten();
+            if let Some(tipos) = tipos {
+                this.0.code_editor.set_relation_types(&tipos);
+            }
             this.refresh_backlinks();
         });
     }
@@ -95,18 +109,18 @@ impl Window {
         glib::spawn_future_local(async move {
             let built = gio::spawn_blocking(move || {
                 let guard = graph.lock().ok();
-                guard.map(|g| (g.notas(), g.enlaces_resueltos()))
+                guard.map(|g| (g.notas(), g.enlaces_resueltos_con_tipo()))
             })
             .await
             .ok();
             let Some(Some((notas, enlaces))) = built else {
                 return;
             };
-            let datos = std::rc::Rc::new(crate::grafo::GrafoDatos::desde(
+            let datos = std::rc::Rc::new(crate::grafo::GrafoDatos::desde_con_tipos(
                 notas.iter().map(|p| p.as_str().to_owned()).collect(),
                 enlaces
-                    .iter()
-                    .map(|(a, b)| (a.as_str().to_owned(), b.as_str().to_owned()))
+                    .into_iter()
+                    .map(|(a, b, t)| (a.as_str().to_owned(), b.as_str().to_owned(), t))
                     .collect(),
             ));
             *this.0.grafo_datos.borrow_mut() = Some(datos.clone());

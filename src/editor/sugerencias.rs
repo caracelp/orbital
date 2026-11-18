@@ -28,9 +28,14 @@ impl Editor {
             .then(|| code::marker_query_at_cursor(&i.buffer, i.format.get() == Format::Html))
             .flatten();
         let is_marker = marker_query.is_some();
-        let query_info = link_query.or(tag_query).or(marker_query);
+        let relation_query = (marker_query.is_none() && i.format.get() == Format::Md)
+            .then(|| code::relation_query_at_cursor(&i.buffer))
+            .flatten();
+        let is_relation = relation_query.is_some();
+        let query_info = link_query.or(tag_query).or(marker_query).or(relation_query);
         i.completion_is_tag.set(is_tag);
         i.completion_is_marker.set(is_marker);
+        i.completion_is_relation.set(is_relation);
         match query_info {
             Some((query, start_offset)) => {
                 if i.completion_dismissed_at.get() == Some(start_offset) {
@@ -50,6 +55,8 @@ impl Editor {
                         i.format.get() == Format::Html,
                     ));
                     i.completion.filter_marker_query(&query)
+                } else if is_relation {
+                    i.completion.filter_relation_query(&query)
                 } else {
                     i.completion.filter(&query)
                 };
@@ -81,6 +88,7 @@ impl Editor {
         i.completion_active_start.set(Some(start));
         i.completion_is_tag.set(false);
         i.completion_is_marker.set(false);
+        i.completion_is_relation.set(false);
         let cache = i.completion_bloques.borrow().clone();
         let bloques = match cache {
             Some((n, Some(b))) if n == nota => b,
@@ -141,6 +149,11 @@ impl Editor {
         } else {
             i.completion.popdown();
         }
+    }
+
+    /// Los tipos de relación usados en la bóveda (049), para el autocompletado de Conexiones.
+    pub fn set_relation_types(&self, usados: &[String]) {
+        self.0.completion.set_relation_types(usados);
     }
 
     pub fn set_tag_candidates(&self, tags: Vec<completion::TagCandidate>) {

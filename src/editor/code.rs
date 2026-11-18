@@ -372,6 +372,76 @@ pub fn insert_marker_completion(buffer: &sourceview5::Buffer, start: i32, key: &
     buffer.end_user_action();
 }
 
+/// El tipo de relación que se escribe al principio de un ítem de la parte Conexiones (049):
+/// `Some((consulta, inicio))` con la posición de carácter donde empieza el tipo. Solo en notas
+/// Markdown y si el delimitador anterior más cercano es `<!-- connections ID -->`.
+pub fn relation_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32)> {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_start = cursor;
+    line_start.set_line_offset(0);
+    let hasta_cursor = buffer.text(&line_start, &cursor, true);
+    let (tipo, inicio) = orbital_vault::relaciones::tipo_en_escritura(&hasta_cursor)?;
+    // Una parte Conexiones es una lista corta: no hace falta mirar más de 400 renglones atrás
+    // (así escribir una lista común en una nota larga no recorre la nota en cada tecla).
+    let actual = line_start.line();
+    let mut n = actual;
+    loop {
+        if n == 0 || actual - n >= 400 {
+            return None;
+        }
+        n -= 1;
+        let ini = buffer.iter_at_line(n)?;
+        let mut fin = ini;
+        if !fin.ends_line() {
+            fin.forward_to_line_end();
+        }
+        let linea = buffer.text(&ini, &fin, true);
+        let t = linea.trim();
+        if !t.starts_with("<!--") {
+            continue;
+        }
+        // Una apertura de Conexiones deja dentro lo que sigue; cualquier otro delimitador,
+        // afuera. Un comentario cualquiera no decide: se sigue buscando.
+        let mut r = orbital_vault::relaciones::Rastreador::default();
+        r.paso(t);
+        if r.paso("x") {
+            break;
+        }
+        if t == "<!---->" || orbital_vault::note_ids::delimiter_id(t).is_some() {
+            return None;
+        }
+    }
+    let inicio_chars = hasta_cursor[..inicio].chars().count() as i32;
+    Some((tipo.to_owned(), line_start.offset() + inicio_chars))
+}
+
+/// Reemplaza el tipo que se está escribiendo por `tipo:: ` (049). Si el renglón ya tenía un
+/// `::` más adelante (se corrige un tipo), reemplaza hasta ahí. Una sola acción de deshacer.
+pub fn insert_relation_completion(buffer: &sourceview5::Buffer, start: i32, tipo: &str) {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_end = cursor;
+    if !line_end.ends_line() {
+        line_end.forward_to_line_end();
+    }
+    let resto = buffer.text(&cursor, &line_end, true);
+    let mut end = cursor;
+    if let Some(at) = resto.find("::")
+        && !resto[..at].contains("[[")
+    {
+        let mut n = resto[..at + 2].chars().count();
+        if resto[at + 2..].starts_with(' ') {
+            n += 1;
+        }
+        end.forward_chars(n as i32);
+    }
+    buffer.begin_user_action();
+    let mut at = buffer.iter_at_offset(start);
+    buffer.delete(&mut at, &mut end);
+    buffer.insert(&mut at, &format!("{tipo}:: "));
+    buffer.place_cursor(&at);
+    buffer.end_user_action();
+}
+
 /// Rectángulo en coordenadas de ventana para anclar el popover de autocompletado al cursor.
 pub fn cursor_popup_rect(
     view: &sourceview5::View,
