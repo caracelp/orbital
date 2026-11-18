@@ -409,6 +409,31 @@ generado; en Código queda el texto plano.
   ```
   ````
 
+- ` ```consulta ` (048): consulta viva. Las líneas que empiezan con `vista:`, `columnas:` u
+  `orden:` son opciones; el resto es una consulta en el lenguaje de la búsqueda (004): `tag:`,
+  `path:`, `file:`, `line:( … )`, `section:( … )`, `[clave]`, `[clave:valor]`, `OR`, `-` y
+  paréntesis. Solo vista, como el `indice`: el disco conserva el bloque y el grafo no ve el
+  resultado, que se recalcula ante cada cambio de la bóveda. Cuentan las notas `.md` y `.html` fuera
+  de `raw/`.
+
+  ````markdown
+  ```consulta
+  tag:#proyecto [estado:activo]
+  vista: tabla
+  columnas: estado, fecha, prioridad
+  orden: fecha desc
+  ```
+  ````
+
+  | Opción | Por defecto | Qué hace |
+  |---|---|---|
+  | `vista` | `lista` | `lista`: enlaces a las notas; `tabla`: la nota y las `columnas` (solo lectura); `coincidencias`: cada nota con sus líneas coincidentes y lo buscado en negrita (hasta 20 por nota); `conteo`: «N notas» |
+  | `columnas` | — | Propiedades separadas por comas (YAML y `clave:: valor`; el frontmatter manda) |
+  | `orden` | `nombre asc` | `nombre`, `modificado`, `creado` o una propiedad (`[clave]` si se llama como un criterio), con `asc` o `desc`. Por propiedad, el orden es por valor tipado, como en Bases |
+
+  Un error de la consulta o de una opción se muestra en lugar del resultado, con la línea y la
+  columna dentro del bloque; sin resultados, un aviso. En una nota `.html` el bloque se ve como
+  código (su Lectura todavía no completa bloques generados).
 - Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
 - Dentro de una transclusión (`![[…]]`) el contenido generado se completa con la nota incrustada:
   su ` ```toc ` lista los encabezados de esa nota (o de la parte incrustada) y enlaza a ella. En la

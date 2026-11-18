@@ -142,6 +142,8 @@ pub enum GeneratedKind {
     Toc,
     /// Tarjeta de enlace externo (013): url, title, description, host, favicon, image.
     CardLink,
+    /// Consulta viva (048): el cuerpo lo lee [`crate::consulta::parse`].
+    Consulta,
 }
 
 impl GeneratedKind {
@@ -151,6 +153,7 @@ impl GeneratedKind {
             "indice" => Some(Self::Indice),
             "toc" | "table-of-contents" | "tabla-de-contenidos" => Some(Self::Toc),
             "cardlink" => Some(Self::CardLink),
+            "consulta" => Some(Self::Consulta),
             _ => None,
         }
     }
@@ -935,7 +938,8 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
 fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
     // La tabla de contenidos lee su cuerpo línea por línea ([`crate::toc::parse_options`]), con
     // comentarios y valores vacíos que no siempre son YAML válido: siempre es generada.
-    if kind == GeneratedKind::Toc {
+    // La consulta (048) tampoco es YAML: un error de su cuerpo se muestra en la vista.
+    if matches!(kind, GeneratedKind::Toc | GeneratedKind::Consulta) {
         return Some(Vec::new());
     }
     let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;

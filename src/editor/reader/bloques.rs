@@ -944,22 +944,39 @@ impl Reader {
         let mut tags: Vec<gtk::TextTag> = base.to_vec();
         tags.extend(table.lookup("table"));
         tags.push(tab_tag);
-        let line = |end: &mut gtk::TextIter, cells: &[String], bold: bool| {
-            let mut l = String::new();
-            for c in 0..cols {
-                l.push('\t');
-                l.push_str(cells.get(c).map(String::as_str).unwrap_or(""));
-            }
-            l.push('\n');
-            let mut t = tags.clone();
-            if bold {
-                t.extend(table.lookup("table-head"));
-            }
-            buf.insert_with_tags(end, &l, &t.iter().collect::<Vec<_>>());
-        };
-        line(end, &head, true);
-        for row in &body {
-            line(end, row, false);
+        let line =
+            |end: &mut gtk::TextIter, cells: &[String], inlines: &[Vec<Inline>], bold: bool| {
+                let mut t = tags.clone();
+                if bold {
+                    t.extend(table.lookup("table-head"));
+                }
+                // Una fila de texto solo va de una vez; con enlaces u otro formato (las tablas de
+                // una consulta, 048) cada celda se vuelca con sus etiquetas.
+                if inlines
+                    .iter()
+                    .all(|c| c.iter().all(|i| matches!(i, Inline::Text(_))))
+                {
+                    let mut l = String::new();
+                    for c in 0..cols {
+                        l.push('\t');
+                        l.push_str(cells.get(c).map(String::as_str).unwrap_or(""));
+                    }
+                    l.push('\n');
+                    buf.insert_with_tags(end, &l, &t.iter().collect::<Vec<_>>());
+                    return;
+                }
+                let refs: Vec<&gtk::TextTag> = t.iter().collect();
+                for c in 0..cols {
+                    buf.insert_with_tags(end, "\t", &refs);
+                    if let Some(cell) = inlines.get(c) {
+                        self.inlines(s, end, &celda(cell), &t);
+                    }
+                }
+                buf.insert_with_tags(end, "\n", &refs);
+            };
+        line(end, &head, header, true);
+        for (row, cells) in body.iter().zip(rows) {
+            line(end, row, cells, false);
         }
     }
 
@@ -1073,6 +1090,27 @@ impl Reader {
             }
         }
     }
+}
+
+/// Una celda de tabla en una sola línea: sin saltos ni tabulaciones (rompen las columnas) y con
+/// las imágenes como su texto alternativo, igual que lo que mide el ancho.
+fn celda(inlines: &[Inline]) -> Vec<Inline> {
+    inlines
+        .iter()
+        .map(|i| match i {
+            Inline::Text(t) => Inline::Text(t.replace(['\t', '\n'], " ")),
+            Inline::SoftBreak | Inline::HardBreak => Inline::Text(" ".into()),
+            Inline::Image { alt, .. } => Inline::Text(alt.clone()),
+            Inline::Strong(c) => Inline::Strong(celda(c)),
+            Inline::Emph(c) => Inline::Emph(celda(c)),
+            Inline::Strike(c) => Inline::Strike(celda(c)),
+            Inline::Link { url, children } => Inline::Link {
+                url: url.clone(),
+                children: celda(children),
+            },
+            otro => otro.clone(),
+        })
+        .collect()
 }
 
 /// Si el texto de un encabezado es el nombre de la parte (o un sinónimo): «Síntesis», «Resumen»,

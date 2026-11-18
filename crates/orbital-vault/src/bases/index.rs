@@ -211,7 +211,7 @@ impl BaseIndex {
         }
     }
 }
-fn compare(a: Option<&PropValue>, b: Option<&PropValue>) -> std::cmp::Ordering {
+pub(crate) fn compare(a: Option<&PropValue>, b: Option<&PropValue>) -> std::cmp::Ordering {
     use PropValue::*;
     fn rank(v: Option<&PropValue>) -> u8 {
         match v {

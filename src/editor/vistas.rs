@@ -235,13 +235,14 @@ impl Editor {
                 };
                 // Las flechitas del plegado (028), en el mismo hilo que el análisis.
                 prepared.con_plegables(&orbital_vault::plegado::plegables(&text));
-                // Los codeblocks generados (`indice`, `toc`) se completan con el índice y la ruta
+                // Los codeblocks generados (`indice`, `toc`, `consulta`) se completan con el índice y la ruta
                 // de la nota (005, T015/T019); los rangos y casillas quedan intactos.
                 let idx = index.as_deref().and_then(|i| i.read().ok());
                 let genero = reader::complete_generated(
                     &mut prepared.doc,
                     &mut prepared.hashes,
                     idx.as_deref(),
+                    place.0.as_deref().map(orbital_vault::Vault::root),
                     place.1.as_ref(),
                 );
                 (prepared, props, genero)

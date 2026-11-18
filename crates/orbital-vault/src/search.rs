@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::ops::Range;
+use std::time::SystemTime;
 
 use memchr::memmem;
 
@@ -76,12 +77,18 @@ pub struct Doc {
     pub tags: Vec<String>,
     pub raw_tags: Vec<String>,
     pub props: Vec<(String, String)>,
+    /// Las mismas propiedades con su clave original y su valor tipado (048): el frontmatter
+    /// manda y los campos `clave:: valor` que no repiten clave van como texto, como en Bases.
+    pub values: Vec<(String, PropValue)>,
+    /// Fechas del archivo al indexarlo (048: orden de las consultas).
+    pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
 }
 
 /// Índice de búsqueda en memoria para toda la bóveda.
 #[derive(Clone, Debug, Default)]
 pub struct SearchIndex {
-    docs: HashMap<RelPath, Doc>,
+    pub(crate) docs: HashMap<RelPath, Doc>,
 }
 
 impl SearchIndex {
@@ -130,6 +137,10 @@ impl SearchIndex {
             for (k, v) in &doc.props {
                 total += k.capacity() + v.capacity();
             }
+            total += doc.values.capacity() * std::mem::size_of::<(String, PropValue)>();
+            for (k, v) in &doc.values {
+                total += k.capacity() + prop_value_bytes(v);
+            }
         }
 
         total
@@ -174,14 +185,18 @@ impl SearchIndex {
                     for path in chunk {
                         let full_path = path.to_path(root);
                         if let Ok(file) = fs::File::open(&full_path)
-                            && let Ok(text) = read_file_up_to(file, MAX_INDEXABLE_BYTES)
+                            && let Ok(text) = read_file_up_to(&file, MAX_INDEXABLE_BYTES)
                         {
                             let zone = if path.as_str().starts_with("raw/") {
                                 Zone::Raw
                             } else {
                                 Zone::Wiki
                             };
-                            let doc = build_doc(&path, zone, &text);
+                            let mut doc = build_doc(&path, zone, &text);
+                            if let Ok(meta) = file.metadata() {
+                                doc.modified = meta.modified().ok();
+                                doc.created = meta.created().ok();
+                            }
                             local_docs.insert(path, doc);
                         }
                     }
@@ -230,7 +245,11 @@ impl SearchIndex {
         };
 
         let zone = vault.zone(path);
-        let doc = build_doc(path, zone, valid_text);
+        let mut doc = build_doc(path, zone, valid_text);
+        if let Ok(meta) = fs::metadata(path.to_path(vault.root())) {
+            doc.modified = meta.modified().ok();
+            doc.created = meta.created().ok();
+        }
         self.docs.insert(path.clone(), doc);
     }
 
@@ -447,7 +466,7 @@ fn build_tag_forest(
     nodes
 }
 
-fn read_file_up_to(file: fs::File, limit: usize) -> std::io::Result<String> {
+fn read_file_up_to(file: &fs::File, limit: usize) -> std::io::Result<String> {
     let mut buf = Vec::new();
     let mut reader = file.take(limit as u64);
     reader.read_to_end(&mut buf)?;
@@ -555,11 +574,13 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
     // Propiedades
     // 1. Campos inline (sobre el texto visible, para HTML extrae sin etiquetas)
     let mut inline_props = Vec::new();
-    for (k, v) in inline_fields(&content) {
-        inline_props.push((fold(&k), fold(&v)));
+    let inline_raw = inline_fields(&content);
+    for (k, v) in &inline_raw {
+        inline_props.push((fold(k), fold(v)));
     }
     // 2. Frontmatter YAML (el bloque manda si la clave se repite, T027)
     let mut yaml_props = Vec::new();
+    let mut values: Vec<(String, PropValue)> = Vec::new();
     let mut yaml_keys = HashSet::new();
     let region = if is_html {
         html::scan(text).block
@@ -576,6 +597,7 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
             for v in vals {
                 yaml_props.push((k_fold.clone(), fold(&v)));
             }
+            values.push((entry.key, entry.value));
         }
     }
 
@@ -590,9 +612,19 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         yaml_keys.insert(crate::props::TYPE_KEY.to_owned());
     }
     let mut props = yaml_props;
-    for (k, v) in inline_props {
-        if !yaml_keys.contains(&k) {
-            props.push((k, v));
+    for (k, v) in &inline_props {
+        if !yaml_keys.contains(k) {
+            props.push((k.clone(), v.clone()));
+        }
+    }
+    let yaml_values = values.len();
+    for ((k, v), (k_fold, _)) in inline_raw.into_iter().zip(&inline_props) {
+        if !yaml_keys.contains(k_fold)
+            && !values[yaml_values..]
+                .iter()
+                .any(|(vk, _)| fold(vk) == *k_fold)
+        {
+            values.push((k, PropValue::Text(v)));
         }
     }
 
@@ -606,6 +638,28 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         tags,
         raw_tags,
         props,
+        values,
+        modified: None,
+        created: None,
+    }
+}
+
+fn prop_value_bytes(v: &PropValue) -> usize {
+    match v {
+        PropValue::Text(s)
+        | PropValue::Link(s)
+        | PropValue::Number(s)
+        | PropValue::Date(s)
+        | PropValue::DateTime(s) => s.capacity(),
+        PropValue::List(items) => items
+            .iter()
+            .map(|i| std::mem::size_of::<PropValue>() + prop_value_bytes(i))
+            .sum(),
+        PropValue::Map(m) => m
+            .iter()
+            .map(|(k, v)| k.capacity() + prop_value_bytes(v))
+            .sum(),
+        PropValue::Null | PropValue::Bool(_) => 0,
     }
 }
 
@@ -640,7 +694,7 @@ fn extract_title(text: &str, is_html: bool) -> Option<String> {
     None
 }
 
-fn extract_positive_terms(query: &Query) -> Vec<String> {
+pub(crate) fn extract_positive_terms(query: &Query) -> Vec<String> {
     let mut terms = Vec::new();
     for and_group in &query.any_of {
         for clause in and_group {
@@ -671,7 +725,7 @@ fn collect_terms(atom: &Atom, out: &mut Vec<String>) {
     }
 }
 
-fn matches_query(doc: &Doc, path: &RelPath, query: &Query) -> bool {
+pub(crate) fn matches_query(doc: &Doc, path: &RelPath, query: &Query) -> bool {
     query.any_of.iter().any(|and_group| {
         and_group.iter().all(|clause| {
             let matched = matches_atom(doc, path, &clause.atom);
@@ -823,7 +877,11 @@ fn calculate_score(doc: &Doc, positive_terms: &[String]) -> u32 {
     score.max(1)
 }
 
-fn find_matches_in_file(doc: &Doc, source_text: &str, positive_terms: &[String]) -> Vec<Match> {
+pub(crate) fn find_matches_in_file(
+    doc: &Doc,
+    source_text: &str,
+    positive_terms: &[String],
+) -> Vec<Match> {
     let mut matches = Vec::new();
     let source_lines: Vec<&str> = source_text.lines().collect();
 

@@ -109,9 +109,17 @@ impl<'a> Parser<'a> {
 
         self.skip_whitespace();
         if self.is_eof() {
-            return Err(QueryError {
-                at: 0,
-                message: "Consulta vacía".to_string(),
+            // Dentro de un grupo, lo que falta es el cierre del paréntesis que lo abrió.
+            return Err(if depth == 0 {
+                QueryError {
+                    at: 0,
+                    message: "Consulta vacía".to_string(),
+                }
+            } else {
+                QueryError {
+                    at: self.pos,
+                    message: "Paréntesis sin cerrar".to_string(),
+                }
             });
         }
 

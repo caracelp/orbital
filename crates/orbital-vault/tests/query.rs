@@ -190,4 +190,9 @@ fn query_errors_with_position() {
     // Grupo vacío
     let err = parse_query("()").unwrap_err();
     assert!(err.message.to_lowercase().contains("vacía"));
+
+    // Un grupo abierto al final: el error va donde termina, no al principio.
+    let err = parse_query("tag:#a (").unwrap_err();
+    assert_eq!(err.at, 8);
+    assert!(err.message.to_lowercase().contains("paréntesis"));
 }
