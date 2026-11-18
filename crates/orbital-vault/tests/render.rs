@@ -390,6 +390,27 @@ fn interpolacion_dentro_de_negrita_y_encabezado() {
 }
 
 #[test]
+fn tareas_en_lista_con_renglones_vacios() {
+    // Con un renglón vacío entre ítems la lista es «suelta» y la casilla llega dentro del párrafo.
+    let text = "- [ ] Repasar teoremas\n\n- [x] Hacer ejercicios\n";
+    let doc = render_markdown(text);
+    let BlockKind::List { items, .. } = &doc.blocks[0].kind else {
+        panic!("{:?}", doc.blocks[0].kind)
+    };
+    assert_eq!(items.len(), 2);
+    let pending = items[0].task.expect("casilla del primer ítem");
+    let done = items[1].task.expect("casilla del segundo ítem");
+    assert!(!pending.checked && done.checked);
+    assert_eq!(&text[pending.offset..pending.offset + 1], " ");
+    assert_eq!(&text[done.offset..done.offset + 1], "x");
+    let visible = plain_text(match &items[0].blocks[0].kind {
+        BlockKind::Paragraph(p) => p,
+        k => panic!("{k:?}"),
+    });
+    assert_eq!(visible, "Repasar teoremas");
+}
+
+#[test]
 fn casilla_junto_a_marcador_sigue_mapeando_al_mismo_byte() {
     let text = "estado:: activo\n\n- [ ] Tarea con [%estado] dentro\n";
     let repl = orbital_vault::resolve_markers(text, &[]);

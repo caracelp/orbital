@@ -902,6 +902,19 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
                 | Tag::Table(_),
             )
             | Event::Rule => {
+                // En una lista suelta (renglón vacío entre ítems) la casilla llega como primer
+                // evento del primer párrafo del ítem.
+                if task.is_none()
+                    && blocks.is_empty()
+                    && loose_start.is_none()
+                    && matches!(ev, Event::Start(Tag::Paragraph))
+                    && let Some((Event::TaskListMarker(checked), r)) = evs.get(*i + 1)
+                {
+                    task = Some(TaskMark {
+                        checked: *checked,
+                        offset: ctx.abs(r).start + 1,
+                    });
+                }
                 flush(&mut loose, &mut loose_start, &mut blocks);
                 let mut sub = parse_blocks_one(ctx, evs, i);
                 blocks.append(&mut sub);
