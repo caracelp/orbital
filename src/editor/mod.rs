@@ -26,6 +26,7 @@ pub mod props;
 pub mod reader;
 pub mod right_sidebar;
 mod sugerencias;
+mod vista_previa;
 mod vistas;
 
 use std::cell::{Cell, RefCell};
@@ -232,6 +233,9 @@ struct Inner {
     plegado_claves: RefCell<Vec<orbital_vault::Clave>>,
     /// Sube con cada cambio de lo plegado (el canal guarda lo oculto de cada cuadro).
     plegado_version: Cell<u64>,
+    /// Globito con la fórmula bajo el cursor en Código (050); se arma con la primera.
+    vista_previa: RefCell<Option<vista_previa::VistaPrevia>>,
+    vista_previa_gen: Cell<u64>,
 }
 
 /// El editor de la nota abierta.
@@ -403,6 +407,8 @@ impl Editor {
                 on_plegado: RefCell::new(None),
                 plegado_claves: RefCell::new(Vec::new()),
                 plegado_version: Cell::new(0),
+                vista_previa: RefCell::new(None),
+                vista_previa_gen: Cell::new(0),
             }
         }));
         let key_ctrl = gtk::EventControllerKey::new();
@@ -602,7 +608,9 @@ impl Editor {
         let weak = Rc::downgrade(&this.0);
         this.0.buffer.connect_cursor_position_notify(move |_| {
             if let Some(inner) = weak.upgrade() {
-                Editor(inner).check_link_completion();
+                let e = Editor(inner);
+                e.check_link_completion();
+                e.programar_vista_previa();
             }
         });
 
