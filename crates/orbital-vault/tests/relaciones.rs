@@ -215,6 +215,35 @@ fn medir_indexado() {
     let tipos = medir(&|| {
         std::hint::black_box(g.tipos_usados());
     });
+    let sin_tipo = medir(&|| {
+        std::hint::black_box(g.enlaces_resueltos());
+    });
+    let textos: Vec<String> = vault
+        .entries()
+        .iter()
+        .filter(|e| e.path.as_str().ends_with(".md"))
+        .filter_map(|e| std::fs::read_to_string(e.path.to_path(vault.root())).ok())
+        .collect();
+    let analisis = medir(&|| {
+        for t in &textos {
+            std::hint::black_box(orbital_vault::relaciones::relaciones(t));
+        }
+    });
+    let enlaces = medir(&|| {
+        for t in &textos {
+            std::hint::black_box(orbital_vault::extract_links(t, false));
+        }
+    });
+    let campos = medir(&|| {
+        for t in &textos {
+            std::hint::black_box(orbital_vault::inline_fields(t));
+        }
+    });
+    println!(
+        "DETALLE: enlaces_resueltos {sin_tipo:.1} ms; relaciones() {analisis:.1} ms; \
+         extract_links {enlaces:.1} ms; inline_fields {campos:.1} ms ({} notas .md)",
+        textos.len()
+    );
     let tipadas = g
         .enlaces_resueltos_con_tipo()
         .iter()

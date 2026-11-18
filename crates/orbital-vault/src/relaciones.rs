@@ -97,11 +97,18 @@ pub fn clave(tipo: &str) -> String {
 
 /// El tipo base al que corresponde `tipo` y si se escribió con su nombre inverso.
 pub fn tipo_base(tipo: &str) -> Option<(&'static TipoBase, bool)> {
+    static CLAVES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    let claves = CLAVES.get_or_init(|| {
+        TIPOS_BASE
+            .iter()
+            .map(|t| (clave(t.nombre), clave(t.inversa)))
+            .collect()
+    });
     let k = clave(tipo);
-    TIPOS_BASE.iter().find_map(|t| {
-        if clave(t.nombre) == k {
+    TIPOS_BASE.iter().zip(claves).find_map(|(t, (n, i))| {
+        if *n == k {
             Some((t, false))
-        } else if clave(t.inversa) == k {
+        } else if *i == k {
             Some((t, true))
         } else {
             None
@@ -297,31 +304,85 @@ pub fn analizar_renglon(linea: &str) -> Option<RenglonTipado<'_>> {
     })
 }
 
-/// Las relaciones con tipo de una nota `.md`, en orden. Un recorrido de renglones, que corta
-/// enseguida si la nota no tiene parte Conexiones.
+/// Un ítem de la parte Conexiones que declara un tipo, sin analizar todavía sus enlaces. Los
+/// rangos son posiciones en bytes del texto completo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenglonConTipo<'a> {
+    pub tipo: &'a str,
+    /// Línea en el archivo (base 1).
+    pub linea: usize,
+    /// Donde empieza el valor (después del `::`).
+    pub valor: usize,
+    /// Donde termina el renglón (sin el salto).
+    pub fin: usize,
+}
+
+/// Los ítems con tipo de las partes Conexiones (`texto` es una nota `.md`). Sin parte
+/// Conexiones no recorre nada; con ella, empieza a recorrer renglones desde su apertura.
+pub fn renglones_con_tipo(texto: &str) -> Vec<RenglonConTipo<'_>> {
+    let mut out = Vec::new();
+    let b = texto.as_bytes();
+    let Some(primera) = [
+        &b"<!-- connections"[..],
+        b"<!-- conexiones",
+        b"<!--connections",
+    ]
+    .iter()
+    .filter_map(|p| memchr::memmem::find(b, p))
+    .min() else {
+        return out;
+    };
+    let mut inicio = b[..primera]
+        .iter()
+        .rposition(|&c| c == b'\n')
+        .map_or(0, |p| p + 1);
+    let mut linea = 1 + memchr::memchr_iter(b'\n', &b[..inicio]).count();
+    let mut r = Rastreador::default();
+    while inicio <= texto.len() {
+        let fin = memchr::memchr(b'\n', &b[inicio..]).map_or(texto.len(), |p| inicio + p);
+        let l = &texto[inicio..fin];
+        if r.paso(l) && !r.en_cerca && sin_marcador(l).len() != l.trim_start().len() {
+            if let Some(sep) = l.find("::")
+                && !l[..sep].contains("[[")
+                && !l[..sep].contains("](")
+                && let Some(tipo) = tipo_de_prefijo(&l[..sep + 2])
+            {
+                out.push(RenglonConTipo {
+                    tipo,
+                    linea,
+                    valor: inicio + sep + 2,
+                    fin,
+                });
+            }
+        }
+        inicio = fin + 1;
+        linea += 1;
+    }
+    out
+}
+
+/// Las relaciones con tipo de una nota `.md`, en orden.
 pub fn relaciones(texto: &str) -> Vec<Relacion> {
     let mut out = Vec::new();
-    if !tiene_conexiones(texto) {
-        return out;
-    }
-    let mut r = Rastreador::default();
-    for (n, linea) in texto.split('\n').enumerate() {
-        if !r.paso(linea) || r.en_cerca {
-            continue;
-        }
-        let Some(rt) = analizar_renglon(linea) else {
+    for rc in renglones_con_tipo(texto) {
+        let valor = &texto[rc.valor..rc.fin];
+        let enlaces: Vec<_> = extract_links(valor, false)
+            .into_iter()
+            .filter(|o| o.kind != LinkKind::Transclusion)
+            .collect();
+        let Some(ultimo) = enlaces.last() else {
             continue;
         };
         let info = Arc::new(RelacionInfo {
-            tipo: rt.tipo.to_owned(),
-            motivo: rt.motivo.map(str::to_owned),
+            tipo: rc.tipo.to_owned(),
+            motivo: motivo_de_sufijo(&valor[ultimo.byte_range.end..]).map(str::to_owned),
         });
-        for (kind, destino, _) in rt.enlaces {
+        for o in enlaces {
             out.push(Relacion {
                 info: info.clone(),
-                kind,
-                destino,
-                linea: n + 1,
+                kind: o.kind,
+                destino: o.target,
+                linea: rc.linea,
             });
         }
     }
