@@ -411,8 +411,8 @@ generado; en Código queda el texto plano.
 
 - ` ```consulta ` (048): consulta viva. Las líneas que empiezan con `vista:`, `columnas:` u
   `orden:` son opciones; el resto es una consulta en el lenguaje de la búsqueda (004): `tag:`,
-  `path:`, `file:`, `line:( … )`, `section:( … )`, `[clave]`, `[clave:valor]`, `OR`, `-` y
-  paréntesis. Solo vista, como el `indice`: el disco conserva el bloque y el grafo no ve el
+  `path:`, `file:`, `line:( … )`, `section:( … )`, `[clave]`, `[clave:valor]`, `rel:` (049), `OR`,
+  `-` y paréntesis. Solo vista, como el `indice`: el disco conserva el bloque y el grafo no ve el
   resultado, que se recalcula ante cada cambio de la bóveda. Cuentan las notas `.md` y `.html` fuera
   de `raw/`.
 
@@ -481,6 +481,55 @@ Respuesta, con $$…$$ y varias líneas.
 - Cuenta como propiedad de la nota para la búsqueda (`[clave]`, `[clave:valor]`) y queda disponible para
   las bases. Si la misma clave está en el bloque de propiedades, manda el bloque.
 - Orbital no reescribe los campos: siguen siendo texto normal de la nota.
+- Dentro de la parte Conexiones (`<!-- connections ID -->`, 041) un renglón `clave:: [[nota]]` **no**
+  es un campo sino una relación con tipo (ver abajo): no cuenta para `[clave]`, `[%clave]` ni las
+  bases. Se busca con `rel:`.
+
+### Conexiones con tipo y motivo (049)
+
+Solo en notas `.md`, dentro de la parte Conexiones, un ítem de lista (`-`, `*`, `+`, `1.`) puede declarar
+el tipo de la relación con la forma de los campos y, opcionalmente, un motivo:
+
+```markdown
+<!-- connections AP-001 -->
+- amplía:: [[Derivadas]] — agrega la regla de la cadena
+- contradice a:: [[Límites intuitivos]] - no vale para x→0
+- es fuente de:: [[Integrales]], [[Series]]
+- [[Cálculo]]
+<!---->
+```
+
+- **Tipo**: lo que va antes del `::`, sin el marcador de lista. Puede tener espacios y tildes;
+  no puede tener `[`, `]`, `|`, `` ` ``, `<`, `>` ni otro `::`, y tiene hasta 60 caracteres. El `::`
+  tiene que ir antes del primer enlace. Se compara sin mayúsculas ni tildes y con los espacios
+  colapsados (`Contradice  A` = `contradice a`).
+- **Destinos**: cada wikilink o enlace Markdown del renglón (las transclusiones `![[…]]` no). Un
+  renglón con tipo y sin enlaces no declara nada.
+- **Motivo**: el texto que sigue al **último** enlace, sin el separador `—`, `–`, `--`, `-` o `:`
+  del principio (el separador es opcional). Como solo se mira después del último enlace, un guion
+  dentro de un nombre (`[[Uno - dos]]`) no se confunde.
+- Un `[[enlace]]` sin tipo vale como siempre. Fuera de la parte Conexiones, `tipo:: [[nota]]` es
+  un campo común (sección anterior).
+- Cualquier tipo es válido. Los de la lista base tienen nombre inverso, que es como se ve la
+  relación desde la nota destino (si A «amplía» B, en B aparece «ampliada por A» sin escribir
+  nada en B). Un tipo escrito con su nombre inverso vuelve al directo; uno libre se muestra en la
+  otra nota como «← tipo».
+
+  | Tipo | En la otra nota |
+  |---|---|
+  | amplía | ampliada por |
+  | contradice a | contradicha por |
+  | es fuente de | tiene como fuente |
+  | ejemplifica | ejemplificada por |
+  | responde a | respondida por |
+  | depende de | es requisito de |
+  | es parte de | contiene |
+  | precede a | sigue a |
+  | se opone a | se opone a (simétrica) |
+  | complementa | complementa (simétrica) |
+
+- En notas `.html` no hay partes de la 041: sus enlaces cuentan siempre sin tipo.
+- Orbital nunca reescribe estos renglones; el índice de tipos es derivado y vive en memoria.
 
 ### Sintaxis de búsqueda
 
@@ -496,6 +545,8 @@ La búsqueda ignora mayúsculas y tildes, y **no** interpreta expresiones regula
 | `path:wiki/fisica` / `file:entropia` | Por carpeta o por nombre de archivo. |
 | `line:(a b)` / `section:(a b)` | Todos los términos en la misma línea o en la misma sección. |
 | `[clave]` / `[clave:valor]` | Por propiedades del bloque o campos `clave:: valor`. |
+| `rel:tipo` | Notas que declaran en Conexiones una relación cuyo tipo empieza con `tipo` (`rel:contradice`, `rel:"contradice a"`). |
+| `rel:tipo:nota` / `rel::nota` | Lo mismo, hacia esa nota (por nombre, sin extensión; `[[…]]` opcional); `rel::nota`, con cualquier tipo. Cada parte puede ir entre comillas. |
 
 Una consulta mal escrita muestra un aviso con la columna del problema y no borra lo escrito. Los
 resultados de `raw/` llevan la marca «fuente» y se pueden ocultar. Las búsquedas guardadas viven en

@@ -1,13 +1,13 @@
 //! Barra derecha del diseño de interfaz (025) con tres modos, como la maqueta:
 //! - **Propiedades**: «Metadatos de la nota» (Nombre, Formato, Ubicación, Palabras) y «Etiquetas».
-//! - **Contexto**: retroenlaces con fragmento (el panel de la 003), «Enlaces entrantes» y
-//!   «Etiquetas».
+//! - **Contexto**: retroenlaces (el panel de la 003) y «Etiquetas». La sección «Enlaces entrantes»
+//!   de la maqueta se quitó en la 049: repetía las mismas notas que Retroenlaces (salían de los
+//!   mismos retroenlaces del grafo).
 //! - **Grafo**: la nota abierta y sus vecinos (decisión de la usuaria: grafo local real).
 //!
 //! Solo muestra: los datos los arma la ventana. El grafo local se pide solo con su modo a la vista.
 
 use gtk::prelude::*;
-use orbital_vault::RelPath;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -31,8 +31,6 @@ struct Inner {
     stack: gtk::Stack,
     valores: [gtk::Label; 4],
     chips: [gtk::FlowBox; 2],
-    entrantes_titulo: gtk::Label,
-    entrantes: gtk::Box,
     grafo: VistaGrafo,
     grafo_msg: gtk::Label,
     saltos: Cell<u8>,
@@ -143,21 +141,11 @@ impl PanelDerecho {
             chips[0].upcast_ref(),
         ]));
 
-        // Contexto: retroenlaces (el panel existente), entrantes y etiquetas.
-        let entrantes_titulo = titulo("ENLACES ENTRANTES (0)");
-        let entrantes = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        entrantes.update_property(&[gtk::accessible::Property::Label("Enlaces entrantes")]);
+        // Contexto: retroenlaces (el panel existente) y etiquetas.
         let ctx = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let retro = contexto.widget();
         retro.set_vexpand(false);
         ctx.append(retro);
-        ctx.append(&bloque(&[
-            entrantes_titulo.upcast_ref(),
-            entrantes.upcast_ref(),
-        ]));
         ctx.append(&bloque(&[
             titulo("ETIQUETAS").upcast_ref(),
             chips[1].upcast_ref(),
@@ -246,8 +234,6 @@ impl PanelDerecho {
             stack,
             valores,
             chips,
-            entrantes_titulo,
-            entrantes,
             grafo,
             grafo_msg,
             saltos: Cell::new(1),
@@ -352,7 +338,7 @@ impl PanelDerecho {
         *self.0.al_cambiar_modo.borrow_mut() = Some(Box::new(f));
     }
 
-    /// Abrir una nota desde «Enlaces entrantes» o un nodo del grafo local.
+    /// Abrir una nota desde un nodo del grafo local.
     pub fn connect_abrir(&self, f: impl Fn(&str) + 'static) {
         *self.0.al_abrir.borrow_mut() = Some(Box::new(f));
     }
@@ -399,54 +385,6 @@ impl PanelDerecho {
     /// Cambia solo «Palabras» (mientras se escribe).
     pub fn set_palabras(&self, palabras: usize) {
         self.0.valores[3].set_label(&palabras.to_string());
-    }
-
-    /// Notas distintas que enlazan a la abierta.
-    pub fn set_entrantes(&self, notas: &[RelPath]) {
-        let i = &self.0;
-        while let Some(c) = i.entrantes.first_child() {
-            i.entrantes.remove(&c);
-        }
-        i.entrantes_titulo
-            .set_label(&format!("ENLACES ENTRANTES ({})", notas.len()));
-        if notas.is_empty() {
-            i.entrantes.append(
-                &gtk::Label::builder()
-                    .label("Sin enlaces entrantes")
-                    .xalign(0.0)
-                    .css_classes(["orbital-context-empty"])
-                    .build(),
-            );
-            return;
-        }
-        for ruta in notas {
-            let nombre = ruta.file_name();
-            let b = gtk::Button::builder()
-                .child(
-                    &gtk::Label::builder()
-                        .label(format!(
-                            "↗  {}",
-                            nombre.rsplit_once('.').map_or(nombre, |(s, _)| s)
-                        ))
-                        .xalign(0.0)
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
-                        .build(),
-                )
-                .tooltip_text(ruta.as_str())
-                .css_classes(["orbital-context-card"])
-                .build();
-            b.update_property(&[gtk::accessible::Property::Label(&format!("Abrir {nombre}"))]);
-            let weak = Rc::downgrade(&self.0);
-            let r = ruta.to_string();
-            b.connect_clicked(move |_| {
-                if let Some(i) = weak.upgrade()
-                    && let Some(f) = i.al_abrir.borrow().as_ref()
-                {
-                    f(&r);
-                }
-            });
-            i.entrantes.append(&b);
-        }
     }
 
     /// Datos del grafo local (`None`: sin nota o cargando).

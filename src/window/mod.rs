@@ -140,6 +140,8 @@ struct Inner {
     /// Datos y vista del grafo de enlaces (008).
     grafo_datos: RefCell<Option<std::rc::Rc<crate::grafo::GrafoDatos>>>,
     grafo_vista: crate::grafo::VistaGrafo,
+    /// Dueña de la brújula (017): sin esto se liberaba al armar la ventana.
+    _brujula_vista: crate::grafo::brujula::VistaBrujula,
     grafo_cerrar: gtk::Button,
     /// Presentación OnStage de la nota abierta (014): se crea con la ventana, oculta.
     onstage: std::rc::Rc<crate::onstage::OnStage>,
@@ -212,6 +214,7 @@ impl Window {
             url_abrir,
             url_page,
             grafo_vista,
+            brujula_vista,
             grafo_cerrar,
             content_title,
             pestanas,
@@ -368,6 +371,7 @@ impl Window {
             exports_pendientes: RefCell::new(Vec::new()),
             grafo_datos: RefCell::new(None),
             grafo_vista,
+            _brujula_vista: brujula_vista,
             grafo_cerrar,
             onstage,
             externo_ruta: RefCell::new(None),

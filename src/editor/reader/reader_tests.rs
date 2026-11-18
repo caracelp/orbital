@@ -637,6 +637,50 @@ fn partes_especiales_en_lectura() {
     });
 }
 
+/// 049: las relaciones con tipo se agrupan por tipo (en el orden en que aparece cada uno), con
+/// el nombre del tipo y el motivo como texto visible; las que no tienen tipo siguen como píldoras.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn conexiones_con_tipo_en_lectura() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let text = "---\nid: AP-001\n---\n\n<!-- connections AP-001 -->\n## Conexiones\n\n- amplía:: [[Derivadas]] — agrega la regla de la cadena\n- contradice a:: [[Límites intuitivos]] - no vale para x→0\n- [[Cálculo]]\n- AMPLIA:: [[Series]], [[Taylor]]\n- refuta:: [[Otra]]\n<!---->\n";
+        reader.render(Prepared::new(text, &[]), || None, None);
+        esperar_volcado(&reader).await;
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        assert!(!visible.contains("::"), "{visible:?}");
+        let pos = |t: &str| visible.find(t).unwrap_or_else(|| panic!("falta {t:?} en {visible:?}"));
+        // Un rótulo por tipo, con su nombre canónico; los dos «amplía» van juntos.
+        assert_eq!(visible.matches("amplía").count(), 1, "{visible:?}");
+        assert!(pos("amplía") < pos("Derivadas"));
+        assert!(pos("Derivadas") < pos("Series") && pos("Series") < pos("contradice a"));
+        assert!(pos("contradice a") < pos("refuta") && pos("refuta") < pos("Cálculo"));
+        assert!(visible.contains("— agrega la regla de la cadena"));
+        assert!(visible.contains("— no vale para x→0"));
+        let items = reader.all_link_items();
+        for url in ["[[Derivadas]]", "[[Series]]", "[[Taylor]]", "[[Cálculo]]", "[[Otra]]"] {
+            assert!(items.iter().any(|l| l.url == url), "{url}");
+        }
+        let pildoras: usize = reader
+            .0
+            .blocks
+            .borrow()
+            .iter()
+            .flat_map(|b| b.capas.iter())
+            .map(|c| match c {
+                capas::Capa::Seccion { chips, .. } => chips.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(pildoras, 6);
+        assert!(reader.0.pending.borrow().is_empty(), "sin widgets anclados");
+    });
+}
+
 /// Cuenta las capas de cada clase en el lector.
 fn contar_capas(reader: &Reader, f: impl Fn(&capas::Capa) -> bool) -> usize {
     reader

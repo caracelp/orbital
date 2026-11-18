@@ -72,6 +72,54 @@ fn nombre_corto(ruta: &str) -> &str {
 }
 
 impl VecindarioBrujula {
+    /// Como [`Self::calcular`], y además muestra el tipo de relación (049) en los vecinos que lo
+    /// tienen, visto desde la nota central: en el Sur el tipo declarado («amplía»), en el Norte su
+    /// inverso («ampliada por») y en el Oeste los dos, si los hay. `tipos`: pares dirigidos
+    /// `(origen, destino)` con su tipo.
+    pub fn calcular_con_tipos(
+        centro: &str,
+        enlaces: &[(String, String)],
+        tipos: &[(String, String, String)],
+    ) -> Self {
+        let mut v = Self::calcular(centro, enlaces);
+        if tipos.is_empty() {
+            return v;
+        }
+        let sale: HashMap<&str, &str> = tipos
+            .iter()
+            .filter(|(a, _, _)| a == centro)
+            .map(|(_, b, t)| (b.as_str(), t.as_str()))
+            .collect();
+        let entra: HashMap<&str, String> = tipos
+            .iter()
+            .filter(|(_, b, _)| b == centro)
+            .map(|(a, _, t)| (a.as_str(), orbital_vault::relaciones::nombre_inverso(t)))
+            .collect();
+        let poner = |it: &mut ItemBrujula, rel: Option<String>| {
+            if let Some(r) = rel {
+                *it = ItemBrujula::nuevo(std::mem::take(&mut it.ruta), Some(r));
+            }
+        };
+        for it in &mut v.sur {
+            let r = sale.get(it.ruta.as_str()).map(|t| (*t).to_owned());
+            poner(it, r);
+        }
+        for it in &mut v.norte {
+            let r = entra.get(it.ruta.as_str()).cloned();
+            poner(it, r);
+        }
+        for it in &mut v.oeste {
+            let s = sale.get(it.ruta.as_str()).map(|t| (*t).to_owned());
+            let e = entra.get(it.ruta.as_str()).cloned();
+            let r = match (s, e) {
+                (Some(s), Some(e)) => Some(format!("{s} · {e}")),
+                (s, e) => s.or(e),
+            };
+            poner(it, r);
+        }
+        v
+    }
+
     /// Calcula los cuatro puntos cardinales de `centro` a partir de los enlaces dirigidos
     /// resueltos `(origen, destino)` del `LinkGraph`.
     pub fn calcular(centro: &str, enlaces: &[(String, String)]) -> Self {
@@ -595,10 +643,11 @@ impl VistaBrujula {
                     .tooltip_text(&item.ruta)
                     .css_classes(["orbital-context-card"])
                     .build();
-                b_abrir.update_property(&[gtk::accessible::Property::Label(&format!(
-                    "Abrir {}",
-                    item.nombre
-                ))]);
+                let rotulo = match &item.detalle {
+                    Some(d) => format!("Abrir {}, {d}", item.nombre),
+                    None => format!("Abrir {}", item.nombre),
+                };
+                b_abrir.update_property(&[gtk::accessible::Property::Label(&rotulo)]);
                 let weak = Rc::downgrade(&self.0);
                 let ruta_abrir = item.ruta.clone();
                 b_abrir.connect_clicked(move |_| {
@@ -633,6 +682,48 @@ impl VistaBrujula {
                 cuad.lista.append(&fila);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_049 {
+    use super::VecindarioBrujula;
+
+    #[test]
+    fn vecinos_muestran_el_tipo_desde_la_nota_central() {
+        let e = |a: &str, b: &str| (format!("wiki/{a}.md"), format!("wiki/{b}.md"));
+        let t = |a: &str, b: &str, tipo: &str| {
+            (
+                format!("wiki/{a}.md"),
+                format!("wiki/{b}.md"),
+                tipo.to_owned(),
+            )
+        };
+        let enlaces = vec![
+            e("c", "s"),
+            e("n", "c"),
+            e("c", "m"),
+            e("m", "c"),
+            e("c", "x"),
+        ];
+        let tipos = vec![
+            t("c", "s", "amplía"),
+            t("n", "c", "amplía"),
+            t("c", "m", "se opone a"),
+            t("m", "c", "refuta"),
+        ];
+        let v = VecindarioBrujula::calcular_con_tipos("wiki/c.md", &enlaces, &tipos);
+        let det = |l: &[super::ItemBrujula], r: &str| {
+            l.iter()
+                .find(|i| i.nombre == r)
+                .and_then(|i| i.detalle.clone())
+        };
+        assert_eq!(det(&v.sur, "s").as_deref(), Some("amplía"));
+        assert_eq!(det(&v.sur, "x"), None);
+        assert_eq!(det(&v.norte, "n").as_deref(), Some("ampliada por"));
+        assert_eq!(det(&v.oeste, "m").as_deref(), Some("se opone a · ← refuta"));
+        // El tipo entra en el filtro rápido.
+        assert!(v.sur.iter().any(|i| i.coincide("amplia")));
     }
 }
 

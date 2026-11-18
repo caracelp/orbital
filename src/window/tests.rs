@@ -614,6 +614,100 @@ mod captura_v13 {
     }
 }
 
+mod captura_049 {
+    use super::super::*;
+
+    fn guardar(window: &Window, dir: &std::path::Path, nombre: &str) {
+        let (ancho, alto) = (window.0.window.width(), window.0.window.height());
+        let pintable = gtk::WidgetPaintable::new(Some(&window.0.window));
+        let snap = gtk::Snapshot::new();
+        pintable.snapshot(&snap, f64::from(ancho), f64::from(alto));
+        let node = snap.to_node().expect("cuadro");
+        window
+            .0
+            .window
+            .renderer()
+            .unwrap()
+            .render_texture(&node, None)
+            .save_to_png(dir.join(format!("{nombre}.png")))
+            .unwrap();
+    }
+
+    /// Capturas de las conexiones con tipo (049): Lectura de una nota con Conexiones, los
+    /// retroenlaces agrupados de la nota destino, el grafo global, el grafo filtrado por tipo y
+    /// la brújula. `ORBITAL_CAPTURA_BOVEDA=<bóveda> ORBITAL_CAPTURA_DIR=<carpeta>`; la bóveda es
+    /// la de demostración de `specs/049-conexiones-con-tipo/quickstart.md`.
+    #[test]
+    #[ignore = "captura de desarrollo; requiere GTK"]
+    fn captura_conexiones_con_tipo() {
+        let (Some(boveda), Some(dir)) = (
+            std::env::var_os("ORBITAL_CAPTURA_BOVEDA"),
+            std::env::var_os("ORBITAL_CAPTURA_DIR"),
+        ) else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        adw::init().expect("se necesita acceso a GTK");
+        crate::style::apply();
+        let app = adw::Application::builder()
+            .application_id("io.github.caracelp.Orbital.Captura049")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        glib::MainContext::default().block_on(async {
+            let espera = |ms| glib::timeout_future(std::time::Duration::from_millis(ms));
+            let window = Window::new(&app);
+            window.set_persist(false);
+            window.0.window.set_default_size(1440, 900);
+            let v = orbital_vault::open(std::path::Path::new(&boveda)).unwrap();
+            let tree = build_tree(v.entries());
+            window.show_vault(v, tree, orbital_vault::NoteMeta::default());
+            window.0.window.present();
+            for _ in 0..100 {
+                if window.0.graph.borrow().is_some() {
+                    break;
+                }
+                espera(30).await;
+            }
+            window.show_path("wiki/Regla de la cadena.md");
+            espera(900).await;
+            window.0.code_editor.set_view(crate::editor::View::Lectura);
+            window.0.panel.set_modo("contexto");
+            espera(900).await;
+            guardar(&window, &dir, "049-lectura");
+            window.show_path("wiki/Derivadas.md");
+            espera(900).await;
+            window.0.code_editor.set_view(crate::editor::View::Lectura);
+            window.0.panel.set_modo("contexto");
+            espera(900).await;
+            guardar(&window, &dir, "049-retroenlaces");
+            window.show_path("wiki/Consultas.md");
+            espera(900).await;
+            window.0.code_editor.set_view(crate::editor::View::Lectura);
+            espera(900).await;
+            guardar(&window, &dir, "049-consultas");
+            window.show_path("wiki/Regla de la cadena.md");
+            espera(600).await;
+            window.ver_grafo();
+            espera(4000).await;
+            guardar(&window, &dir, "049-grafo");
+            window
+                .0
+                .grafo_vista
+                .set_filtro(crate::grafo::FiltroTipo::ConTipo);
+            espera(500).await;
+            guardar(&window, &dir, "049-grafo-solo-con-tipo");
+            window.cerrar_grafo();
+            espera(400).await;
+            window.ver_brujula();
+            window.actualizar_brujula(Some(RelPath::new("wiki/Regla de la cadena.md").unwrap()));
+            espera(1200).await;
+            guardar(&window, &dir, "049-brujula");
+            window.0.window.destroy();
+        });
+    }
+}
+
 mod esqueleto_tests {
     use super::super::*;
 

@@ -77,6 +77,68 @@ impl LinkGraph {
         out
     }
 
+    /// Como [`Self::enlaces_resueltos`], con el tipo de la relación (049) en su nombre canónico:
+    /// si un par tiene enlaces con y sin tipo, gana el primer tipo (en orden de ruta y línea).
+    pub fn enlaces_resueltos_con_tipo(&self) -> Vec<(RelPath, RelPath, Option<String>)> {
+        let mut out: Vec<(&RelPath, &RelPath, usize, Option<&str>)> = self
+            .backlinks
+            .iter()
+            .flat_map(|(destino, refs)| {
+                refs.iter().map(move |r| {
+                    (
+                        &r.from,
+                        destino,
+                        r.line,
+                        r.relacion.as_deref().map(|i| i.tipo.as_str()),
+                    )
+                })
+            })
+            .collect();
+        // Por par; dentro del par, primero los que tienen tipo y después por línea.
+        out.sort_by(|a, b| (a.0, a.1, a.3.is_none(), a.2).cmp(&(b.0, b.1, b.3.is_none(), b.2)));
+        out.dedup_by(|b, a| a.0 == b.0 && a.1 == b.1);
+        // Pocos tipos distintos: el nombre canónico se calcula una vez por cada uno.
+        let mut nombres: HashMap<&str, String> = HashMap::new();
+        out.into_iter()
+            .map(|(a, b, _, t)| {
+                let t = t.map(|t| {
+                    nombres
+                        .entry(t)
+                        .or_insert_with(|| crate::relaciones::nombre_canonico(t))
+                        .clone()
+                });
+                (a.clone(), b.clone(), t)
+            })
+            .collect()
+    }
+
+    /// Los tipos de relación usados en la bóveda (049), en su nombre canónico y sin repetir
+    /// claves, del más usado al menos usado (empate: alfabético).
+    pub fn tipos_usados(&self) -> Vec<String> {
+        // Primero por tipo tal como se escribió (pocos distintos), después por clave.
+        let mut escritos: HashMap<&str, usize> = HashMap::new();
+        for r in self
+            .backlinks
+            .values()
+            .chain(self.unresolved.values())
+            .flatten()
+        {
+            if let Some(info) = &r.relacion {
+                *escritos.entry(info.tipo.as_str()).or_default() += 1;
+            }
+        }
+        let mut cuenta: HashMap<String, (String, usize)> = HashMap::new();
+        for (tipo, n) in escritos {
+            let e = cuenta
+                .entry(crate::relaciones::clave(tipo))
+                .or_insert_with(|| (crate::relaciones::nombre_canonico(tipo), 0));
+            e.1 += n;
+        }
+        let mut v: Vec<(String, usize)> = cuenta.into_values().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v.into_iter().map(|(n, _)| n).collect()
+    }
+
     /// Todas las notas del grafo, ordenadas por ruta (008).
     pub fn notas(&self) -> Vec<RelPath> {
         let mut out: Vec<RelPath> = self.outgoing.keys().cloned().collect();
@@ -100,9 +162,14 @@ impl LinkGraph {
             self.clean_outgoing_from(path);
         }
 
-        // 2. Extraer los enlaces nuevos
+        // 2. Extraer los enlaces nuevos y, en Markdown, los tipos de la parte Conexiones (049).
         let occurrences = extract_links(text, is_html);
         self.outgoing.insert(path.clone(), occurrences.clone());
+        let relaciones = if is_html {
+            Vec::new()
+        } else {
+            tipos_por_enlace(text, &occurrences)
+        };
 
         // 3. Registrar los retroenlaces
         for occ in occurrences {
@@ -114,11 +181,16 @@ impl LinkGraph {
                 continue;
             }
 
+            let relacion = relaciones
+                .iter()
+                .find(|(r, _)| es_del_renglon(r, &occ))
+                .and_then(|(_, info)| info.clone());
             let backlink = BacklinkRef {
                 from: path.clone(),
                 target: occ.target.clone(),
                 line: occ.line,
                 snippet: occ.snippet.clone(),
+                relacion,
             };
 
             let resolution = match occ.kind {
@@ -166,4 +238,38 @@ impl LinkGraph {
         }
         self.unresolved.retain(|_, list| !list.is_empty());
     }
+}
+
+/// El enlace va en el valor de ese renglón con tipo (049).
+fn es_del_renglon(r: &crate::relaciones::RenglonConTipo, occ: &LinkOccurrence) -> bool {
+    occ.line == r.linea && occ.byte_range.start >= r.valor && occ.kind != LinkKind::Transclusion
+}
+
+/// Los renglones con tipo de la nota con su tipo y motivo, a partir de los enlaces ya extraídos
+/// (el motivo es lo que sigue al último enlace del renglón). Sin enlaces, el renglón no declara.
+fn tipos_por_enlace<'t>(
+    text: &'t str,
+    occurrences: &[LinkOccurrence],
+) -> Vec<(
+    crate::relaciones::RenglonConTipo<'t>,
+    Option<std::sync::Arc<crate::relaciones::RelacionInfo>>,
+)> {
+    crate::relaciones::renglones_con_tipo(text)
+        .into_iter()
+        .map(|r| {
+            let fin = occurrences
+                .iter()
+                .filter(|o| es_del_renglon(&r, o))
+                .map(|o| o.byte_range.end)
+                .max();
+            let info = fin.map(|e| {
+                std::sync::Arc::new(crate::relaciones::RelacionInfo {
+                    tipo: r.tipo.to_owned(),
+                    motivo: crate::relaciones::motivo_de_sufijo(&text[e.min(r.fin)..r.fin])
+                        .map(str::to_owned),
+                })
+            });
+            (r, info)
+        })
+        .collect()
 }

@@ -188,6 +188,8 @@ struct Inner {
     completion_active_start: Cell<Option<i32>>,
     completion_is_tag: Cell<bool>,
     completion_is_marker: Cell<bool>,
+    /// El autocompletado abierto es de tipos de relación (049).
+    completion_is_relation: Cell<bool>,
     /// Bloques de la nota de `[[nota#^` (026): `(nota, bloques)`; `None` mientras se lee.
     completion_bloques: RefCell<Option<(String, Option<BloquesDeNota>)>>,
     /// Bóveda de la que salieron los candidatos de autocompletado. `Weak`: mientras exista, la
@@ -374,6 +376,7 @@ impl Editor {
                 completion_active_start: Cell::new(None),
                 completion_is_tag: Cell::new(false),
                 completion_is_marker: Cell::new(false),
+                completion_is_relation: Cell::new(false),
                 completion_bloques: RefCell::new(None),
                 completion_vault: RefCell::new(std::sync::Weak::new()),
                 embed_deps: RefCell::new(Vec::new()),
@@ -579,12 +582,15 @@ impl Editor {
                 // Cerrar el contexto antes de editar: los cambios del buffer disparan detección.
                 let is_tag = i.completion_is_tag.get();
                 let is_marker = i.completion_is_marker.get();
+                let is_relation = i.completion_is_relation.get();
                 i.completion_active_start.set(None);
                 i.completion_dismissed_at.set(Some(start_offset));
                 if is_tag {
                     code::insert_tag_completion(&i.buffer, start_offset, &target);
                 } else if is_marker {
                     code::insert_marker_completion(&i.buffer, start_offset, &target);
+                } else if is_relation {
+                    code::insert_relation_completion(&i.buffer, start_offset, &target);
                 } else {
                     code::insert_link_completion(&i.buffer, &i.view, start_offset, &target);
                 }

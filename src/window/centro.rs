@@ -19,6 +19,9 @@ pub(super) struct Centro {
     pub(super) url_abrir: gtk::Button,
     pub(super) url_page: gtk::Box,
     pub(super) grafo_vista: crate::grafo::VistaGrafo,
+    /// La brújula (017): la ventana la mantiene viva (su registro solo guarda una referencia
+    /// débil, y sin dueño `desde_stack` no la encontraba).
+    pub(super) brujula_vista: crate::grafo::brujula::VistaBrujula,
     pub(super) grafo_cerrar: gtk::Button,
     pub(super) content_title: adw::WindowTitle,
     pub(super) pestanas: crate::pestanas::Pestanas,
@@ -228,6 +231,7 @@ pub(super) fn construir_centro() -> Centro {
     grafo_barra.pack_end(&grafo_cerrar);
     grafo_barra.pack_end(&grafo_recalcular);
     grafo_barra.pack_end(&grafo_pausar);
+    grafo_barra.pack_start(&grafo_vista.selector_tipos());
     grafo_barra.pack_start(&grafo_aviso);
     let grafo_page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -414,6 +418,7 @@ pub(super) fn construir_centro() -> Centro {
         url_abrir,
         url_page,
         grafo_vista,
+        brujula_vista,
         grafo_cerrar,
         content_title,
         pestanas,

@@ -225,6 +225,8 @@ struct Inner {
     filtered: RefCell<Vec<Suggestion>>,
     tags: RefCell<Vec<TagCandidate>>,
     markers: RefCell<Vec<MarkerCandidate>>,
+    /// Tipos de relación (049): la lista base y los usados en la bóveda.
+    relation_types: RefCell<Vec<String>>,
     on_selected: RefCell<Option<SelectedFn>>,
 }
 
@@ -315,6 +317,7 @@ impl LinkCompletionPopover {
             filtered: RefCell::new(Vec::new()),
             tags: RefCell::new(Vec::new()),
             markers: RefCell::new(Vec::new()),
+            relation_types: RefCell::new(base_relation_types(&[])),
             on_selected: RefCell::new(None),
         }));
 
@@ -425,6 +428,32 @@ impl LinkCompletionPopover {
             })
             .collect();
         self.show_suggestions(suggestions, "marcadores")
+    }
+
+    /// Los tipos usados en la bóveda (049), después de la lista base.
+    pub fn set_relation_types(&self, usados: &[String]) {
+        *self.0.relation_types.borrow_mut() = base_relation_types(usados);
+    }
+
+    pub fn filter_relation_query(&self, query: &str) -> usize {
+        let tipos = self.0.relation_types.borrow();
+        let suggestions = orbital_vault::relaciones::filtrar_tipos(&tipos, query, 8)
+            .into_iter()
+            .map(|t| {
+                let inversa = orbital_vault::relaciones::nombre_inverso(t);
+                Suggestion {
+                    label: t.to_owned(),
+                    detail: if inversa.starts_with('←') {
+                        "tipo usado en la bóveda".to_owned()
+                    } else {
+                        format!("en la otra nota: «{inversa}»")
+                    },
+                    target: t.to_owned(),
+                }
+            })
+            .collect();
+        drop(tipos);
+        self.show_suggestions(suggestions, "tipos de relación")
     }
 
     /// Los bloques de `nota` cuyo id o texto contienen `query` (026).
@@ -575,6 +604,16 @@ impl LinkCompletionPopover {
     }
 }
 
+/// Los tipos base (049) y, después, los usados en la bóveda que no son base.
+pub fn base_relation_types(usados: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = orbital_vault::relaciones::TIPOS_BASE
+        .iter()
+        .map(|t| t.nombre.to_owned())
+        .collect();
+    v.extend(usados.iter().cloned());
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +680,71 @@ mod tests {
         let keys = marker_candidates(text, true);
         let names: Vec<_> = keys.iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, ["estado", "prioridad"]);
+    }
+
+    /// 049: dentro de la parte Conexiones, el tipo que se escribe al principio de un ítem se
+    /// completa con la lista base y los tipos de la bóveda; afuera (u otra parte) no se sugiere.
+    #[test]
+    #[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+    fn tipos_de_relacion_se_completan_en_conexiones() {
+        use sourceview5::prelude::*;
+        gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+        let (view, buffer) = super::super::code::new_view();
+        // La vista va en una ventana, como en el editor: un popover hijo de una vista suelta
+        // deja a GTK repitiendo un aviso sin fin al destruirla.
+        let window = gtk::Window::builder().child(&view).build();
+        window.present();
+        let popover = LinkCompletionPopover::new(&view);
+        popover.set_relation_types(&["refuta".to_owned(), "amplía".to_owned()]);
+        let cabeza = "---\nid: AP-001\n---\n<!-- block 1 AP-001 -->\n- contra\n<!---->\n<!-- connections AP-001 -->\n- [[Cálculo]]\n";
+        let q = super::super::code::relation_query_at_cursor;
+        // En el cuerpo (un bloque), no.
+        buffer.set_text(cabeza);
+        let mut it = buffer.start_iter();
+        it.forward_lines(4);
+        it.forward_to_line_end();
+        buffer.place_cursor(&it);
+        assert!(q(&buffer).is_none());
+        // En Conexiones, sí: «contra» → «contradice a», una sola vez aunque esté en la bóveda.
+        let texto = format!("{cabeza}- contra");
+        buffer.set_text(&texto);
+        buffer.place_cursor(&buffer.end_iter());
+        let (query, start) = q(&buffer).unwrap();
+        assert_eq!(query, "contra");
+        assert_eq!(start, cabeza.chars().count() as i32 + 2);
+        assert_eq!(popover.filter_relation_query(&query), 1);
+        assert_eq!(popover.filter_relation_query("ref"), 1);
+        assert_eq!(popover.filter_relation_query("amp"), 1);
+        let for_insert = buffer.clone();
+        popover.connect_selected(move |t| {
+            super::super::code::insert_relation_completion(&for_insert, start, &t)
+        });
+        popover.filter_relation_query(&query);
+        assert!(popover.activate_selected());
+        let escrito = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        assert_eq!(escrito, format!("{cabeza}- contradice a:: "));
+        buffer.undo();
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
+            texto
+        );
+        // Corregir un tipo ya escrito reemplaza hasta su `::`.
+        let texto = format!("{cabeza}- amp:: [[X]]");
+        buffer.set_text(&texto);
+        let mut it = buffer.end_iter();
+        it.set_line_offset(5);
+        buffer.place_cursor(&it);
+        let (query, start) = q(&buffer).unwrap();
+        assert_eq!(query, "amp");
+        super::super::code::insert_relation_completion(&buffer, start, "amplía");
+        assert_eq!(
+            buffer.text(&buffer.start_iter(), &buffer.end_iter(), true),
+            format!("{cabeza}- amplía:: [[X]]")
+        );
+        // Después del cierre de la parte, no.
+        buffer.set_text(&format!("{cabeza}<!---->\n- amp"));
+        buffer.place_cursor(&buffer.end_iter());
+        assert!(q(&buffer).is_none());
     }
 
     #[test]
