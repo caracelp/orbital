@@ -15,9 +15,9 @@ const AUMENTO: f32 = 1.3;
 
 /// El globito.
 pub(super) struct VistaPrevia {
-    popover: gtk::Popover,
-    imagen: gtk::Picture,
-    error: gtk::Label,
+    pub(super) popover: gtk::Popover,
+    pub(super) imagen: gtk::Picture,
+    pub(super) error: gtk::Label,
     /// La fórmula que se está mostrando (LaTeX, modo) y el inicio en el buffer.
     actual: RefCell<Option<(String, Modo, i32)>>,
 }
@@ -139,9 +139,9 @@ impl Editor {
         Some((inicio, tex, modo))
     }
 
-    fn actualizar_vista_previa(&self) {
+    pub(super) fn actualizar_vista_previa(&self) {
         let i = &self.0;
-        let activa = i.view.has_focus()
+        let activa = i.view.is_focus()
             && matches!(i.mode.get(), View::Codigo | View::Dividida)
             && !i.loading.get();
         let hallada = activa.then(|| self.formula_en_cursor()).flatten();

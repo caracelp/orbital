@@ -13,6 +13,9 @@ mod edicion_visual;
 mod enfoque;
 pub mod find;
 mod flechas;
+#[cfg(test)]
+#[path = "formulas_tests.rs"]
+mod formulas_tests;
 mod guardado;
 pub mod html;
 mod ids_bloque;

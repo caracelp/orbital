@@ -208,7 +208,7 @@ impl Reader {
     }
 
     /// El motivo del error de la fórmula con error bajo `iter`, para el tooltip.
-    pub(super) fn error_de_formula_en(&self, iter: &gtk::TextIter) -> Option<String> {
+    pub(crate) fn error_de_formula_en(&self, iter: &gtk::TextIter) -> Option<String> {
         let tag = self.buffer().tag_table().lookup("formula-error")?;
         if !iter.has_tag(&tag) {
             return None;
