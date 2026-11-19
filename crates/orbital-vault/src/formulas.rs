@@ -10,6 +10,9 @@ use pulldown_cmark::{Event, Options, Parser};
 pub struct FormulaEn {
     /// Rango de la fórmula con sus delimitadores (o de todo el codeblock ` ```math `).
     pub rango: Range<usize>,
+    /// Rango del LaTeX, sin los delimitadores ni los renglones de la cerca (051: el editor de
+    /// ecuaciones reescribe solo esto).
+    pub contenido: Range<usize>,
     pub tex: String,
     /// `$$…$$` o ` ```math ` (en bloque); si no, en línea.
     pub bloque: bool,
@@ -34,9 +37,13 @@ pub fn formula_en(texto: &str, offset: usize) -> Option<FormulaEn> {
                 if marca == Some(c) && largo >= n && t[largo..].trim().is_empty() {
                     cerca = None;
                     if (desde..fin).contains(&offset) {
-                        let cuerpo = texto[desde..inicio].split_once('\n').map_or("", |(_, c)| c);
+                        let primera = texto[desde..inicio]
+                            .find('\n')
+                            .map_or(inicio, |n| desde + n + 1);
+                        let cuerpo = &texto[primera..inicio];
                         return es_math.then(|| FormulaEn {
                             rango: desde..fin,
+                            contenido: primera..inicio,
                             tex: cuerpo.to_owned(),
                             bloque: true,
                         });
@@ -62,9 +69,13 @@ pub fn formula_en(texto: &str, offset: usize) -> Option<FormulaEn> {
         && offset >= desde
     {
         // Una cerca sin cerrar que contiene el cursor.
-        let cuerpo = texto[desde..].split_once('\n').map_or("", |(_, c)| c);
+        let primera = texto[desde..]
+            .find('\n')
+            .map_or(texto.len(), |n| desde + n + 1);
+        let cuerpo = &texto[primera..];
         return es_math.then(|| FormulaEn {
             rango: desde..texto.len(),
+            contenido: primera..texto.len(),
             tex: cuerpo.to_owned(),
             bloque: true,
         });
@@ -86,6 +97,7 @@ pub fn formula_en(texto: &str, offset: usize) -> Option<FormulaEn> {
         match ev {
             Event::InlineMath(t) if !crate::render::cierre_con_digito(texto, &rango) => {
                 return Some(FormulaEn {
+                    contenido: rango.start + 1..rango.end - 1,
                     rango,
                     tex: t.to_string(),
                     bloque: false,
@@ -93,6 +105,7 @@ pub fn formula_en(texto: &str, offset: usize) -> Option<FormulaEn> {
             }
             Event::DisplayMath(t) => {
                 return Some(FormulaEn {
+                    contenido: rango.start + 2..rango.end - 2,
                     rango,
                     tex: t.to_string(),
                     bloque: true,
@@ -135,5 +148,21 @@ mod tests {
     fn cerca_sin_cerrar() {
         let t = "```math\na+b";
         assert_eq!(en(t, "a+b"), Some(("a+b".into(), true)));
+    }
+
+    #[test]
+    fn contenido_sin_delimitadores() {
+        let t = "Sea $x^2$ y\n\n$$\n\\frac{a}{b}\n$$\n\n```math\n\\sqrt{2}\n```\n\n$$a$$ fin";
+        let c = |m: &str| {
+            let f = formula_en(t, t.find(m).unwrap()).unwrap();
+            t[f.contenido].to_owned()
+        };
+        assert_eq!(c("x^2"), "x^2");
+        assert_eq!(c("\\frac"), "\n\\frac{a}{b}\n");
+        assert_eq!(c("\\sqrt"), "\\sqrt{2}\n");
+        assert_eq!(c("a$$"), "a");
+        let t = "```math\na+b";
+        let f = formula_en(t, 9).unwrap();
+        assert_eq!(&t[f.contenido], "a+b");
     }
 }

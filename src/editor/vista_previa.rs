@@ -13,6 +13,16 @@ const RENGLONES: i32 = 200;
 /// Las fórmulas del globito, un poco más grandes que el texto de Código.
 const AUMENTO: f32 = 1.3;
 
+/// Una fórmula del buffer, en caracteres.
+pub(super) struct FormulaEnBuffer {
+    /// Comienzo de la fórmula con sus delimitadores.
+    pub(super) inicio: i32,
+    /// Rango del LaTeX, sin delimitadores.
+    pub(super) contenido: std::ops::Range<i32>,
+    pub(super) tex: String,
+    pub(super) modo: Modo,
+}
+
 /// El globito.
 pub(super) struct VistaPrevia {
     pub(super) popover: gtk::Popover,
@@ -102,9 +112,19 @@ impl Editor {
 
     /// La fórmula bajo el cursor, si hay: (inicio en el buffer, LaTeX, modo).
     fn formula_en_cursor(&self) -> Option<(i32, String, Modo)> {
+        let b = &self.0.buffer;
+        let f = self.formula_en_offset(b.cursor_position())?;
+        if f.tex.trim().is_empty() {
+            return None;
+        }
+        Some((f.inicio, f.tex, f.modo))
+    }
+
+    /// La fórmula que contiene el carácter `offset` del buffer, si hay (busca en ±200 renglones).
+    pub(super) fn formula_en_offset(&self, offset: i32) -> Option<FormulaEnBuffer> {
         let i = &self.0;
         let b = &i.buffer;
-        let cursor = b.iter_at_offset(b.cursor_position());
+        let cursor = b.iter_at_offset(offset);
         let linea = cursor.line();
         let desde = b.iter_at_line((linea - RENGLONES).max(0))?;
         let mut hasta = b
@@ -119,24 +139,30 @@ impl Editor {
             return None;
         }
         let antes = b.text(&desde, &cursor, true);
-        let offset = antes.len();
-        let (rango, tex, modo) = match i.format.get() {
-            Format::Html => orbital_formulas::html::formula_en(&ventana, offset)?,
+        let byte = antes.len();
+        let (rango, contenido, tex, modo) = match i.format.get() {
+            Format::Html => {
+                let (rango, tex, modo) = orbital_formulas::html::formula_en(&ventana, byte)?;
+                (rango.clone(), rango, tex, modo)
+            }
             _ => {
-                let f = orbital_vault::formulas::formula_en(&ventana, offset)?;
+                let f = orbital_vault::formulas::formula_en(&ventana, byte)?;
                 let modo = if f.bloque {
                     Modo::Bloque
                 } else {
                     Modo::EnLinea
                 };
-                (f.rango, f.tex, modo)
+                (f.rango, f.contenido, f.tex, modo)
             }
         };
-        if tex.trim().is_empty() {
-            return None;
-        }
-        let inicio = desde.offset() + ventana[..rango.start].chars().count() as i32;
-        Some((inicio, tex, modo))
+        let base = desde.offset();
+        let a_offset = |byte: usize| base + ventana[..byte].chars().count() as i32;
+        Some(FormulaEnBuffer {
+            inicio: a_offset(rango.start),
+            contenido: a_offset(contenido.start)..a_offset(contenido.end),
+            tex,
+            modo,
+        })
     }
 
     pub(super) fn actualizar_vista_previa(&self) {
@@ -145,6 +171,9 @@ impl Editor {
             && matches!(i.mode.get(), View::Codigo | View::Dividida)
             && !i.loading.get();
         let hallada = activa.then(|| self.formula_en_cursor()).flatten();
+        if activa && i.format.get() == Format::Md {
+            self.rotular_menu(hallada.is_some());
+        }
         let Some((inicio, tex, modo)) = hallada else {
             self.ocultar_vista_previa();
             return;

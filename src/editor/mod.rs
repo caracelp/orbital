@@ -9,6 +9,10 @@ pub mod code;
 pub mod completion;
 pub mod conflict;
 mod cursores;
+mod ecuacion;
+#[cfg(test)]
+#[path = "ecuaciones_tests.rs"]
+mod ecuaciones_tests;
 mod edicion_visual;
 mod enfoque;
 pub mod find;
@@ -697,6 +701,7 @@ impl Editor {
                 Editor(i).alternar_plegado(linea);
             }
         });
+        this.instalar_ecuaciones();
         this.apply_mode(View::Codigo);
         this
     }
