@@ -12,6 +12,15 @@ pub enum Var {
     Y = 1,
     T = 2,
     Theta = 3,
+    /// La tercera coordenada de los gráficos 3D (053).
+    Z = 4,
+    /// Los parámetros de las superficies (x(u, v), y(u, v), z(u, v)) (053).
+    U = 5,
+    V = 6,
+}
+
+impl Var {
+    pub const TODAS: [Var; 7] = [Var::X, Var::Y, Var::T, Var::Theta, Var::Z, Var::U, Var::V];
 }
 
 impl Var {
@@ -21,6 +30,9 @@ impl Var {
             Var::Y => "y",
             Var::T => "t",
             Var::Theta => "θ",
+            Var::Z => "z",
+            Var::U => "u",
+            Var::V => "v",
         }
     }
 }
@@ -964,6 +976,9 @@ impl Analizador<'_> {
             "y" => Nodo::Var(Var::Y),
             "t" => Nodo::Var(Var::T),
             "θ" => Nodo::Var(Var::Theta),
+            "z" => Nodo::Var(Var::Z),
+            "u" => Nodo::Var(Var::U),
+            "v" => Nodo::Var(Var::V),
             "π" => Nodo::Num(std::f64::consts::PI),
             "τ" => Nodo::Num(std::f64::consts::TAU),
             "e" => Nodo::Num(std::f64::consts::E),
@@ -1125,9 +1140,10 @@ impl Expr {
         }
     }
 
-    /// Evalúa con `vars` = (x, y, t, θ) y los valores de los parámetros.
+    /// Evalúa con `vars` = (x, y, t, θ) —o (x, y, t, θ, z, u, v) en 3D— y los valores de los
+    /// parámetros. Una variable que no está en `vars` vale 0.
     #[inline]
-    pub fn eval(&self, vars: &[f64; 4], params: &[f64]) -> f64 {
+    pub fn eval<const N: usize>(&self, vars: &[f64; N], params: &[f64]) -> f64 {
         let mut pila = [0.0f64; PILA];
         let mut n = 0usize;
         for op in &self.codigo {
@@ -1137,7 +1153,7 @@ impl Expr {
                     n += 1;
                 }
                 Op::Var(k) => {
-                    pila[n] = vars[k as usize];
+                    pila[n] = vars.get(k as usize).copied().unwrap_or(0.0);
                     n += 1;
                 }
                 Op::Param(k) => {

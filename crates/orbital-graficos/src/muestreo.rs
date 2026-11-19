@@ -132,6 +132,8 @@ pub fn muestrear_serie(g: &Grafico, s: &Serie, vista: &Vista, params: &[f64]) ->
             lineas: vec![ps.iter().map(|(x, y)| [*x, *y]).collect()],
             puntos: ps.iter().map(|(x, y)| [*x, *y]).collect(),
         },
+        // Las series del espacio se muestrean en `espacio` (un gráfico 3D no pasa por acá).
+        _ => Trazo::default(),
     }
 }
 
