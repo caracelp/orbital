@@ -462,6 +462,47 @@ Respuesta, con $$…$$ y varias líneas.
   pregunta destacada y la respuesta oculta hasta «Mostrar respuesta» (clic, o Tab e Intro). Varias
   seguidas forman un mazo numerado («Tarjeta 3 de 16»). La vista Código muestra el texto tal cual.
 
+### Fórmulas LaTeX (050)
+
+Las fórmulas son LaTeX de modo matemático escrito en la nota; el archivo guarda solo el LaTeX y
+Orbital nunca lo reescribe.
+
+````markdown
+La identidad $e^{i\pi} + 1 = 0$ va en el renglón.
+
+$$
+f(x) = \begin{cases} x & x \ge 0 \\ -x & x < 0 \end{cases}
+$$
+^ecuacion-1
+
+```math
+\begin{aligned} (a+b)^2 &= a^2 + 2ab + b^2 \end{aligned}
+```
+````
+
+- **En línea**: `$…$`. El `$` de apertura no va seguido de un espacio; el de cierre no va precedido
+  de un espacio ni seguido de un dígito. Así `Cuesta $5 y $10` y `$5,$10` siguen siendo dinero.
+  En las notas `.md`, las llaves de adentro tienen que estar balanceadas (`$\frac{a$` no es una
+  fórmula).
+- **En bloque**: `$$…$$`, en el renglón o en varios renglones, sin renglones en blanco adentro (en
+  LaTeX tampoco valen). Un párrafo que es solo `$$…$$` se ve centrado en su propio renglón; dentro de
+  un párrafo con más texto se ve en el renglón, en estilo de bloque. El codeblock ` ```math ` es
+  siempre una fórmula en bloque y sí admite renglones en blanco.
+- `\$` es un signo pesos literal. Nunca hay fórmulas dentro de código en línea (`` `$x$` ``) ni de
+  bloques de código; tampoco cuentan las etiquetas (`#…`) que aparezcan dentro de una fórmula.
+- **Entornos**: `aligned`/`align`/`align*`, `gather`, `cases`, `matrix`, `pmatrix`, `bmatrix`,
+  `vmatrix`, `Vmatrix`, `array`, `split` y los demás del modo matemático de KaTeX. La química
+  (`\ce`) todavía no: se ve como fórmula con error.
+- **Ids de bloque** (026): `^id` en el renglón siguiente al `$$` de cierre, como en tablas y código.
+- **Con error**: se ve el fuente (con sus delimitadores) subrayado, y el motivo en el tooltip.
+- **Notas `.html`**: las mismas reglas sobre el texto visible de la página (no en `<code>`, `<pre>`,
+  `<script>`, `<style>`, `<textarea>`, `<title>`, atributos ni comentarios; una fórmula no cruza
+  etiquetas: `$a <b>x</b>$` no es una). Las entidades se decodifican (`$a &lt; b$` es `a < b`). En
+  Visual se ven dibujadas y no se editan en el lugar: un clic las vuelve a su fuente. Al guardar, el
+  archivo conserva el texto original. En la tarjeta de una nota `.md` incrustada en una `.html`, las
+  fórmulas quedan como su fuente.
+- **Exportar** (007) las dibuja como SVG con nombre accesible, en `.md` y en `.html`.
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas
