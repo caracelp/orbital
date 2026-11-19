@@ -390,6 +390,119 @@ fn editor_de_graficos_en_codigo() {
     });
 }
 
+/// Medición (052): abrir en Lectura una nota con 40 gráficos (`ORBITAL_MEDIR_GRAFICOS=N`), seis
+/// veces en el mismo proceso; el tramo más largo del hilo de GTK y cuánto tarda en estar todo
+/// muestreado. Después, el cuadro al mover, acercar y mover un deslizador.
+/// `cargo test --release --bin orbital medir_lectura_graficos -- --ignored --nocapture`
+#[test]
+#[ignore = "medición; requiere una sesión gráfica"]
+fn medir_lectura_graficos() {
+    use crate::editor::reader::{Prepared, Reader};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    let n: usize = std::env::var("ORBITAL_MEDIR_GRAFICOS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let corpus = [
+        "y = \\sin(KX) + x/4\ny = \\frac{1}{x - K}",
+        "r = 1 + \\cos(K\\theta)",
+        "(\\cos t, \\sin(Kt))",
+        "x^2 + K y^2 = 9",
+        "a = 1 (0..5)\ny = a \\tan(x/K)",
+        "datos: líneas\n0 0\n1 K\n2 3\n3 5",
+    ];
+    let mut text = String::from("# Muchos gráficos\n\n");
+    for k in 0..n {
+        let g = corpus[k % corpus.len()].replace('K', &format!("{}", k % 7 + 2));
+        text.push_str(&format!("Gráfico {k}:\n\n```grafico\n{g}\n```\n\n"));
+    }
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(800)
+        .build();
+    glib::MainContext::default().block_on(async {
+        for vuelta in 0..6 {
+            let reader = Reader::new();
+            window.set_child(Some(reader.widget()));
+            window.present();
+            let texto = text.clone();
+            let prepared = gtk::gio::spawn_blocking(move || Prepared::new(&texto, &[]))
+                .await
+                .unwrap();
+            let max = Rc::new(Cell::new(0.0f64));
+            let (m, ultimo) = (max.clone(), Rc::new(Cell::new(Instant::now())));
+            let tic = glib::timeout_add_local(Duration::from_millis(1), move || {
+                let ahora = Instant::now();
+                m.set(m.get().max((ahora - ultimo.get()).as_secs_f64() * 1000.0));
+                ultimo.set(ahora);
+                glib::ControlFlow::Continue
+            });
+            let t1 = Instant::now();
+            reader.render(prepared, || None, None);
+            let vista = reader.text_view().clone();
+            // Los gráficos cerca de lo visible se anclan y muestrean; los demás, al acercarse.
+            let mut visibles = Vec::new();
+            for _ in 0..400 {
+                visibles = lienzos(vista.upcast_ref());
+                if !visibles.is_empty() && visibles.iter().all(|l| l.muestreos() > 0 || !l.is_mapped()) {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(2)).await;
+            }
+            let listo = t1.elapsed().as_secs_f64() * 1000.0;
+            glib::timeout_future(Duration::from_millis(100)).await;
+            tic.remove();
+            println!(
+                "Apertura {}: {} gráficos anclados, todo dibujado en {listo:.1} ms, tramo más largo del hilo de GTK {:.1} ms",
+                vuelta + 1,
+                visibles.len(),
+                max.get()
+            );
+        }
+        // El cuadro de un gráfico con varias series al moverlo, acercarlo y mover el deslizador.
+        let fuente = "a = 2 (0..5)\ny = a\\sin(3x) + x/4\ny = \\tan x\nr = 1 + a\\cos(5\\theta)\nx^2 - y^2 = 4\n(\\cos t, \\sin(3t))";
+        let gv = GraficoVista::new(crate::graficos::leer(fuente).unwrap(), fuente, true);
+        window.set_child(Some(gv.widget()));
+        window.set_default_size(900, 500);
+        let l = gv.lienzo().clone();
+        assert!(esperar(|| l.muestreos() > 0).await);
+        let cuadro = |l: &Lienzo| l.medir_cuadro();
+        for (nombre, accion) in [("mover", 0), ("acercar", 1), ("deslizador", 2)] {
+            let mut tiempos = Vec::new();
+            let mut hilo = Vec::new();
+            for k in 0..60 {
+                let t = Instant::now();
+                match accion {
+                    0 => {
+                        let v = l.vista().unwrap();
+                        l.fijar_vista(v.mover(if k % 20 < 10 { 7.0 } else { -7.0 }, 3.0));
+                    }
+                    1 => l.acercar(if k % 20 < 10 { 0.95 } else { 1.0 / 0.95 }, 300.0, 200.0),
+                    _ => gv.deslizadores()[0].set_value(f64::from(k % 20) * 0.25),
+                }
+                hilo.push(t.elapsed().as_secs_f64() * 1000.0);
+                tiempos.push(cuadro(&l));
+                glib::timeout_future(Duration::from_millis(16)).await;
+            }
+            let mediana = |mut v: Vec<f64>| {
+                v.sort_by(f64::total_cmp);
+                (v[v.len() / 2], v[v.len() - 1])
+            };
+            let (mc, xc) = mediana(tiempos);
+            let (mh, xh) = mediana(hilo);
+            println!(
+                "{nombre} ({}×{} px): armar el cuadro mediana {mc:.2} ms (máx {xc:.2}); el cambio en el hilo de GTK mediana {mh:.3} ms (máx {xh:.3}); muestreos {}",
+                l.width(),
+                l.height(),
+                l.muestreos()
+            );
+        }
+    });
+}
+
 /// La ventana con el globito encima (el globito es otra superficie).
 fn capturar_con_globito(window: &gtk::Window, editor: &Editor, nombre: &str) {
     let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {

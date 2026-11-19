@@ -569,6 +569,17 @@ impl Lienzo {
 
     // --- Dibujo ---
 
+    /// Arma el cuadro del lienzo en un `Snapshot` suelto y devuelve cuánto tardó, en ms (para
+    /// las mediciones: lo que cuesta cada cuadro en el hilo de GTK, sin la tarjeta gráfica).
+    #[cfg(test)]
+    pub fn medir_cuadro(&self) -> f64 {
+        let t = std::time::Instant::now();
+        let s = gtk::Snapshot::new();
+        self.dibujar(&s);
+        let _ = s.to_node();
+        t.elapsed().as_secs_f64() * 1000.0
+    }
+
     fn dibujar(&self, s: &gtk::Snapshot) {
         use crate::style;
         let imp = self.imp();
