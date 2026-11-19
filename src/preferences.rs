@@ -1,4 +1,5 @@
-//! Preferencias de la bóveda (`.orbital/config.yaml`, FR-018).
+//! Preferencias: las de la bóveda (`.orbital/config.yaml`, FR-018) y las del editor, que valen
+//! para todas las bóvedas y se guardan con el estado de la app (`estado.yaml`, 054).
 
 use std::path::PathBuf;
 
@@ -6,18 +7,21 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use orbital_vault::{LinkStyle, VaultConfig};
 
-/// Muestra el diálogo. Al cerrarlo, si algo cambió, guarda la configuración (creando
-/// `.orbital/` recién ahora, FR-004) y llama a `on_saved`.
+/// Muestra el diálogo. Al cerrarlo, si algo de la bóveda cambió, guarda su configuración
+/// (creando `.orbital/` recién ahora, FR-004) y llama a `on_saved`. Lo del editor se aplica y se
+/// guarda en el acto (con `persist` en falso, como en las capturas, solo se aplica).
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     root: PathBuf,
     current: VaultConfig,
+    persist: bool,
     on_saved: impl Fn(Result<(), String>) + 'static,
-) {
+) -> adw::PreferencesDialog {
     let dialog = adw::PreferencesDialog::builder()
-        .title("Preferencias de la bóveda")
+        .title("Preferencias")
         .build();
     let page = adw::PreferencesPage::new();
+    page.add(&editor_group(persist));
     let group = adw::PreferencesGroup::builder()
         .title("Notas")
         .description("Se guardan en .orbital/config.yaml, dentro de la bóveda.")
@@ -93,4 +97,37 @@ pub fn show(
         });
     });
     dialog.present(Some(parent));
+    dialog
+}
+
+/// Grupo «Editor»: los números de línea de la vista Código (054).
+fn editor_group(persist: bool) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Editor")
+        .description("Valen para todas las bóvedas.")
+        .build();
+    let numbers = adw::SwitchRow::builder()
+        .title("Números de línea")
+        .subtitle("Numerar las líneas en el margen de la vista Código")
+        .active(crate::editor::code::line_numbers())
+        .build();
+    numbers.connect_active_notify(move |row| {
+        let on = row.is_active();
+        if on == crate::editor::code::line_numbers() {
+            return;
+        }
+        crate::editor::code::set_line_numbers(on);
+        if persist {
+            glib::spawn_future_local(async move {
+                let _ = gio::spawn_blocking(move || {
+                    let mut s = crate::state::AppState::load();
+                    s.hide_line_numbers = !on;
+                    s.save()
+                })
+                .await;
+            });
+        }
+    });
+    group.add(&numbers);
+    group
 }

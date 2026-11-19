@@ -34,6 +34,8 @@ pub struct AppState {
     pub window_height: Option<i32>,
     /// Si la ventana estaba maximizada.
     pub window_maximized: bool,
+    /// Números de línea apagados en la vista Código (054; por defecto se ven).
+    pub hide_line_numbers: bool,
 }
 
 fn state_file() -> PathBuf {
@@ -109,6 +111,11 @@ impl AppState {
                 _ => None,
             })
             .unwrap_or(false);
+        let hide_line_numbers = find(&entries, "line_numbers").is_some_and(|e| match &e.value {
+            PropValue::Bool(b) => !*b,
+            PropValue::Text(s) => s == "false",
+            _ => false,
+        });
         Self {
             last_vault,
             recent,
@@ -119,6 +126,7 @@ impl AppState {
             window_width,
             window_height,
             window_maximized,
+            hide_line_numbers,
         }
     }
 
@@ -194,6 +202,9 @@ impl AppState {
         if self.window_maximized {
             entries.push(("window_maximized", PropValue::Bool(true)));
         }
+        if self.hide_line_numbers {
+            entries.push(("line_numbers", PropValue::Bool(false)));
+        }
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }
 }
@@ -213,6 +224,7 @@ mod tests {
         s.window_width = Some(1200);
         s.window_height = Some(800);
         s.window_maximized = true;
+        s.hide_line_numbers = true;
         assert_eq!(
             s.recent,
             vec![
@@ -222,6 +234,25 @@ mod tests {
         );
         s.save_to(&file).unwrap();
         assert_eq!(AppState::load_from(&file), s);
+        assert!(
+            fs::read_to_string(&file)
+                .unwrap()
+                .contains("line_numbers: false")
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn line_numbers_default_on() {
+        let dir = std::env::temp_dir().join(format!("orbital-lineas-{}", std::process::id()));
+        let file = dir.join("estado.yaml");
+        AppState::default().save_to(&file).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("line_numbers"));
+        assert!(!AppState::load_from(&file).hide_line_numbers);
+        fs::write(&file, "line_numbers: false\n").unwrap();
+        assert!(AppState::load_from(&file).hide_line_numbers);
+        fs::write(&file, "line_numbers: true\n").unwrap();
+        assert!(!AppState::load_from(&file).hide_line_numbers);
         let _ = fs::remove_dir_all(dir);
     }
 

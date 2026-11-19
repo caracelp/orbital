@@ -127,7 +127,7 @@ pub(super) fn construir_izquierda() -> Izquierda {
                 "win.open-as",
                 "Ctrl+Mayús+O",
             ),
-            ("Preferencias de la bóveda", "win.preferences", "Ctrl+,"),
+            ("Preferencias", "win.preferences", "Ctrl+,"),
             ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
         ],
     );

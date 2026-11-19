@@ -345,6 +345,7 @@ impl Editor {
             }
         });
         self.setup_flechas();
+        self.setup_numeros();
     }
 
     /// Si la selección toca algo plegado, pone en el portapapeles su texto con lo oculto (y, al
@@ -982,4 +983,4 @@ impl Editor {
 
 #[cfg(test)]
 #[path = "plegado_tests.rs"]
-mod plegado_tests;
+pub(super) mod plegado_tests;
