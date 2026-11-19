@@ -495,3 +495,58 @@ fn webkit_formulas() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// 050: lo exportado (007) muestra las fórmulas como SVG en WebKit, lo mismo que se imprime a
+/// PDF. Con `ORBITAL_CAPTURA_DIR`, guarda `050-exportado.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn exportar_formulas_en_webkit() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let nota = r"# Exportado
+
+La identidad $e^{i\pi} + 1 = 0$ y una fracción $\frac{a}{b}$; cuesta $5 o $10.
+
+$$
+\begin{aligned} (a+b)^2 &= a^2 + 2ab + b^2 \\ (a-b)^2 &= a^2 - 2ab + b^2 \end{aligned}
+$$
+
+```math
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+```
+
+Con error: $x^^2$.
+";
+        let html = crate::export::html_md(nota, "exportado.md");
+        let web = crate::html_view::new_view(None);
+        let window = gtk::Window::builder()
+            .default_width(820)
+            .default_height(620)
+            .child(&web)
+            .build();
+        window.present();
+        web.load_html(&crate::html_view::with_csp(&html), None);
+        for _ in 0..100 {
+            if !web.is_loading() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(50)).await;
+        }
+        glib::timeout_future(Duration::from_millis(300)).await;
+        assert_eq!(html.matches("<svg").count(), 4, "{html}");
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::Visible,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("050-exportado.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        window.close();
+    });
+}

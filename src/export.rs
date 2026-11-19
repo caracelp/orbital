@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn exporta_formulas_como_svg() {
-        let nota = "Sea $x^2$ y cuesta $5 o $10.\n\n$$\n\\frac{a}{b}\n$$\n\n```math\n\\sqrt{2}\n```\n\nMal: $\\frac{a$ y `$code$`\n";
+        let nota = "Sea $x^2$ y cuesta $5 o $10.\n\n$$\n\\frac{a}{b}\n$$\n\n```math\n\\sqrt{2}\n```\n\nMal: $x^^2$ y `$code$`\n";
         let out = html_md(nota, "n.md");
         assert_eq!(out.matches("<svg").count(), 3, "{out}");
         assert!(out.contains("aria-label=\"Fórmula: x^2\""), "{out}");

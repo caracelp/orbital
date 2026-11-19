@@ -9,7 +9,7 @@ impl Reader {
         let add = |tag: gtk::TextTag| {
             t.add(&tag);
         };
-        let scales = [1.9, 1.55, 1.3, 1.15, 1.05, 1.0];
+        let scales = super::formulas::ESCALAS_TITULO;
         for (n, s) in scales.iter().enumerate() {
             add(gtk::TextTag::builder()
                 .name(format!("h{}", n + 1))

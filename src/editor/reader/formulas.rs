@@ -232,5 +232,5 @@ impl Reader {
     }
 }
 
-/// La escala de cada nivel de encabezado (la misma que sus etiquetas).
+/// La escala de cada nivel de encabezado: la de sus etiquetas y la de sus fórmulas.
 pub(super) const ESCALAS_TITULO: [f64; 6] = [1.9, 1.55, 1.3, 1.15, 1.05, 1.0];

@@ -213,8 +213,10 @@ fn decodificar(png: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => buf
-            .chunks_exact(3)
-            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
             .collect(),
         _ => return None,
     };
@@ -347,11 +349,14 @@ mod tests {
             r"\begin{array}{c|c} 1 & 2 \\ \hline 3 & 4 \end{array}",
             r"\begin{gather} a \\ b \end{gather}",
             r"\sum_{n=1}^\infty \frac{1}{n^2}",
+            r"\begin{Vmatrix} a \\ b \end{Vmatrix}",
+            r"\begin{split} a &= b \\ &= c \end{split}",
+            r"\begin{align*} a &= b \end{align*}",
         ] {
             let img = dibujar(tex, Modo::Bloque, &ESTILO).unwrap_or_else(|e| panic!("{tex}: {e}"));
             assert!(img.ancho > 4 && img.alto > 4, "{tex}");
             assert_eq!(img.rgba.len(), (img.ancho * img.alto * 4) as usize);
-            assert!(img.rgba.chunks_exact(4).any(|p| p[3] > 0), "{tex} vacía");
+            assert!(img.rgba.iter().skip(3).step_by(4).any(|a| *a > 0), "{tex} vacía");
         }
     }
 

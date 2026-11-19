@@ -101,6 +101,52 @@ fn formulas_en_lectura() {
     });
 }
 
+/// Con `ORBITAL_CAPTURA_DIR`, guarda la ventana con el globito encima (el globito es otra
+/// superficie: se dibuja en su lugar).
+fn capturar(window: &gtk::Window, editor: &Editor, nombre: &str) {
+    let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {
+        return;
+    };
+    let (ancho, alto) = (window.width() as f32, window.height() as f32);
+    let snap = gtk::Snapshot::new();
+    snap.append_color(
+        &crate::style::VIEW_BG.rgba(1.0),
+        &gtk::graphene::Rect::new(0.0, 0.0, ancho, alto),
+    );
+    let vista = editor.0.code_scroller.clone();
+    if let Some(b) = vista.compute_bounds(window) {
+        snap.save();
+        snap.translate(&gtk::graphene::Point::new(b.x(), b.y()));
+        gtk::WidgetPaintable::new(Some(&vista)).snapshot(
+            &snap,
+            f64::from(b.width()),
+            f64::from(b.height()),
+        );
+        snap.restore();
+    }
+    if let Some(v) = editor.0.vista_previa.borrow().as_ref()
+        && let Some(b) = v.popover.compute_bounds(window)
+    {
+        snap.save();
+        snap.translate(&gtk::graphene::Point::new(b.x(), b.y()));
+        gtk::WidgetPaintable::new(Some(&v.popover)).snapshot(
+            &snap,
+            f64::from(b.width()),
+            f64::from(b.height()),
+        );
+        snap.restore();
+    }
+    let node = snap.to_node().expect("cuadro");
+    let png = std::path::Path::new(&dir).join(format!("{nombre}.png"));
+    window
+        .renderer()
+        .expect("renderizador")
+        .render_texture(&node, None)
+        .save_to_png(&png)
+        .unwrap();
+    println!("Captura: {}", png.display());
+}
+
 #[test]
 #[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
 fn vista_previa_de_formula_en_codigo() {
@@ -138,6 +184,10 @@ fn vista_previa_de_formula_en_codigo() {
             assert!(!v.error.is_visible());
             assert!(!v.popover.can_focus() && !v.popover.is_autohide());
         }
+        poner("sqrt{2}");
+        editor.actualizar_vista_previa();
+        glib::timeout_future(Duration::from_millis(300)).await;
+        capturar(&window, &editor, "050-globito-codigo");
         // En un ```math.
         poner("sqrt{2}");
         editor.actualizar_vista_previa();
