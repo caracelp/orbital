@@ -6,7 +6,8 @@
 //! recién cuando se abre (nada al arrancar) y sus estilos se cargan con el primero.
 //!
 //! La página «Gráfico» (052) edita un bloque `grafico`: las expresiones y opciones en un campo,
-//! el gráfico en vivo (interactivo, con sus deslizadores) y plantillas para cada tipo. Se arma
+//! el gráfico en vivo (interactivo, con sus deslizadores) y plantillas para cada tipo, también
+//! las del espacio (053: superficies, curvas, implícitas y nubes de puntos). Se arma
 //! al mostrarse por primera vez.
 
 use std::cell::{Cell, RefCell};
@@ -67,11 +68,36 @@ const PLANTILLAS: &[(&str, &str, &str)] = &[
         "Tabla de datos",
         "datos: líneas\n0 0\n1 2\n2 3\n3 5",
     ),
+    ("z = f(x, y)", "Superficie", "z = \\sin(x)\\cos(y)"),
+    (
+        "(x(t), y(t), z(t))",
+        "Curva en el espacio",
+        "(\\cos t, \\sin t, t/6) ; t: 0..6π",
+    ),
+    (
+        "(x(u, v), y(u, v), z(u, v))",
+        "Superficie paramétrica",
+        "(\\cos u \\sin v, \\sin u \\sin v, \\cos v) ; v: 0..π",
+    ),
+    (
+        "F(x, y, z) = 0",
+        "Superficie implícita",
+        "x^2 + y^2 + z^2 = 4",
+    ),
+    ("(a, b, c)", "Puntos en el espacio", "(1, 2, 3), (2, 1, 0)"),
+    (
+        "datos x y z",
+        "Nube de puntos",
+        "datos: nube\n0 0 0\n1 2 3\n2 1 1",
+    ),
     ("a = 1 (0..5)", "Deslizador", "a = 1 (0..5)"),
     ("x: a..b", "Rango de x", "x: -10..10"),
     ("y: a..b", "Rango de y", "y: -5..5"),
     ("θ: a..b", "Rango de θ", "θ: 0..2π"),
     ("t: a..b", "Rango de t", "t: 0..2π"),
+    ("z: a..b", "Rango de z", "z: -5..5"),
+    ("cámara", "Ángulo de la cámara", "cámara: -60, 28"),
+    ("resolución", "Resolución de la malla", "resolución: 80"),
     ("título", "Título", "título: "),
     ("grilla polar", "Grilla polar", "grilla: polar"),
     ("; color", "Color de la serie", " ; color: celeste"),
@@ -718,7 +744,7 @@ impl EditorEcuaciones {
         }
         match crate::graficos::leer(&fuente) {
             Ok(g) => {
-                let alto = (g.alto.unwrap_or(orbital_graficos::ALTO) as i32).min(ALTO_GRAFICO);
+                let alto = (orbital_graficos::alto(&g) as i32).min(ALTO_GRAFICO);
                 let vista = crate::graficos::GraficoVista::new(g, &fuente, true);
                 vista.lienzo().fijar_alto(alto);
                 while let Some(h) = p.vista.first_child() {

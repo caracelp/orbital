@@ -83,6 +83,44 @@ pub enum Tipo {
     Puntos(Vec<(Expr, Expr)>),
     /// Una columna de una tabla de datos.
     Datos(Vec<(f64, f64)>),
+    /// `z = f(x, y)` (053): una superficie coloreada por altura.
+    Superficie(Expr),
+    /// `(x(t), y(t), z(t))`: una curva en el espacio, con su rango de t si lo pide.
+    Curva3 {
+        x: Expr,
+        y: Expr,
+        z: Expr,
+        t: Option<(f64, f64)>,
+    },
+    /// `(x(u, v), y(u, v), z(u, v))`: una superficie paramétrica (esfera, toro, Möbius).
+    SuperficieParametrica {
+        x: Expr,
+        y: Expr,
+        z: Expr,
+        u: Option<(f64, f64)>,
+        v: Option<(f64, f64)>,
+    },
+    /// `F(x, y, z) = 0`: una superficie implícita.
+    Implicita3(Expr),
+    /// Puntos sueltos en el espacio.
+    Puntos3(Vec<[Expr; 3]>),
+    /// Una nube de puntos de una tabla de datos (x y z).
+    Datos3(Vec<[f64; 3]>),
+}
+
+impl Tipo {
+    /// ¿Es una serie del espacio (053)?
+    pub fn es_3d(&self) -> bool {
+        matches!(
+            self,
+            Tipo::Superficie(_)
+                | Tipo::Curva3 { .. }
+                | Tipo::SuperficieParametrica { .. }
+                | Tipo::Implicita3(_)
+                | Tipo::Puntos3(_)
+                | Tipo::Datos3(_)
+        )
+    }
 }
 
 /// Una serie: lo que dibuja un renglón (o una columna de datos).
@@ -95,6 +133,8 @@ pub struct Serie {
     pub estilo: Estilo,
     pub nombre: Option<String>,
     pub grosor: Option<f64>,
+    /// El renglón del bloque donde está (desde 1).
+    pub renglon: usize,
 }
 
 /// La cuadrícula del fondo.
@@ -121,9 +161,26 @@ pub struct Grafico {
     pub alto: Option<u32>,
     pub params: Vec<Parametro>,
     pub series: Vec<Serie>,
+    /// ¿Se pidió el rango de x (`x:`)? En 3D, sin él la caja se ajusta a lo que se dibuja o va
+    /// de −3 a 3.
+    pub x_pedida: bool,
+    /// Rango de z (053); `None`: según lo que se dibuja.
+    pub z: Option<(f64, f64)>,
+    /// Rangos de u y de v de las superficies paramétricas (0..2π si no se piden).
+    pub u: (f64, f64),
+    pub v: (f64, f64),
+    /// Ángulo inicial de la cámara, en grados: (giro alrededor de z, elevación).
+    pub camara: Option<(f64, f64)>,
+    /// Puntos por lado de las mallas (superficies) y de la grilla de las implícitas.
+    pub resolucion: Option<u32>,
 }
 
 impl Grafico {
+    /// ¿Es un gráfico 3D (alguna serie del espacio)?
+    pub fn es_3d(&self) -> bool {
+        self.series.iter().any(|s| s.tipo.es_3d())
+    }
+
     /// Los valores iniciales de los parámetros.
     pub fn valores(&self) -> Vec<f64> {
         self.params.iter().map(|p| p.valor).collect()
@@ -138,7 +195,11 @@ impl Grafico {
 
     /// Lo que dice el lector de pantalla: el título, las expresiones y el rango.
     pub fn descripcion(&self) -> String {
-        let mut s = String::from("Gráfico");
+        let mut s = String::from(if self.es_3d() {
+            "Gráfico 3D"
+        } else {
+            "Gráfico"
+        });
         if let Some(t) = &self.titulo {
             s.push_str(": ");
             s.push_str(t);
@@ -153,6 +214,9 @@ impl Grafico {
         ));
         if let Some((a, b)) = self.y {
             s.push_str(&format!(", y de {} a {}", numero(a), numero(b)));
+        }
+        if let Some((a, b)) = self.z {
+            s.push_str(&format!(", z de {} a {}", numero(a), numero(b)));
         }
         s.push('.');
         s
@@ -326,6 +390,11 @@ fn es_opcion(clave: &str) -> bool {
             | "leyenda"
             | "alto"
             | "datos"
+            | "z"
+            | "u"
+            | "v"
+            | "camara"
+            | "resolucion"
     )
 }
 
@@ -394,7 +463,7 @@ fn parametro(izq: &str, der: &str) -> Option<(String, String, Option<String>)> {
         None => nombre.to_owned(),
     };
     if normal.is_empty()
-        || ["x", "y", "r", "t", "θ", "theta", "e", "π", "pi"].contains(&normal.as_str())
+        || ["x", "y", "z", "r", "t", "θ", "theta", "e", "π", "pi"].contains(&normal.as_str())
         || !normal.chars().next().is_some_and(|c| c.is_alphabetic())
         || !normal.chars().all(|c| c.is_alphanumeric() || c == '_')
     {
@@ -452,11 +521,22 @@ fn nodo(s: &str, params: &[&str], renglon: usize) -> Result<Nodo, Error> {
 }
 
 fn solo(e: &Expr, permitida: Option<Var>, que: &str, renglon: usize) -> Result<(), Error> {
-    for v in [Var::X, Var::Y, Var::T, Var::Theta] {
-        if e.usa().var(v) && Some(v) != permitida {
+    solo_vars(e, permitida.as_slice(), que, renglon)
+}
+
+/// Que `e` use solo las variables `permitidas`.
+fn solo_vars(e: &Expr, permitidas: &[Var], que: &str, renglon: usize) -> Result<(), Error> {
+    for v in Var::TODAS {
+        if e.usa().var(v) && !permitidas.contains(&v) {
+            let n = v.nombre();
             return err(
                 renglon,
-                format!("en {que} no vale la variable {}", v.nombre()),
+                match v {
+                    Var::U | Var::V => format!(
+                        "en {que} no vale la variable {n}: u y v son de las superficies (x(u, v), y(u, v), z(u, v)); si es un parámetro, declaralo, por ejemplo {n} = 1 (0..5)"
+                    ),
+                    _ => format!("en {que} no vale la variable {n}"),
+                },
             );
         }
     }
@@ -470,8 +550,9 @@ fn lado_simple(izq: &str) -> Option<&'static str> {
         "y" => Some("y"),
         "r" => Some("r"),
         "x" => Some("x"),
+        "z" => Some("z"),
         _ => {
-            // `f(x)`, `g(x)`, `r(\theta)`, `r(θ)`.
+            // `f(x)`, `g(x)`, `r(\theta)`, `r(θ)`, `f(x, y)`.
             let (n, arg) = t.split_once('(')?;
             let arg = arg.strip_suffix(')')?;
             if n.is_empty() || !n.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -479,6 +560,7 @@ fn lado_simple(izq: &str) -> Option<&'static str> {
             }
             match arg {
                 "x" => Some("y"),
+                "x,y" => Some("z"),
                 "θ" | "\\theta" | "theta" => Some("r"),
                 _ => None,
             }
@@ -486,8 +568,8 @@ fn lado_simple(izq: &str) -> Option<&'static str> {
     }
 }
 
-/// Una tupla `(a, b)` o varias `(a, b), (c, d)`.
-fn tuplas(s: &str) -> Option<Vec<(&str, &str)>> {
+/// Una tupla `(a, b)` o varias `(a, b), (c, d)`; también de tres: `(a, b, c)`.
+fn tuplas(s: &str) -> Option<Vec<Vec<&str>>> {
     let s = s.trim();
     if !s.starts_with('(') && !s.starts_with("\\left(") {
         return None;
@@ -500,10 +582,11 @@ fn tuplas(s: &str) -> Option<Vec<(&str, &str)>> {
         }
         let p = p.strip_prefix("\\left(").or_else(|| p.strip_prefix('('))?;
         let p = p.strip_suffix("\\right)").or_else(|| p.strip_suffix(')'))?;
-        match dividir_nivel_cero(p, ',').as_slice() {
-            [a, b] => out.push((*a, *b)),
-            _ => return None,
+        let partes = dividir_nivel_cero(p, ',');
+        if !(2..=3).contains(&partes.len()) {
+            return None;
         }
+        out.push(partes);
     }
     (!out.is_empty()).then_some(out)
 }
@@ -524,8 +607,15 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
         alto: None,
         params: Vec::new(),
         series: Vec::new(),
+        x_pedida: false,
+        z: None,
+        u: (0.0, std::f64::consts::TAU),
+        v: (0.0, std::f64::consts::TAU),
+        camara: None,
+        resolucion: None,
     };
     let mut grilla_pedida = false;
+    let mut tablas: Vec<TablaCruda> = Vec::new();
     let renglones: Vec<&str> = texto.lines().collect();
 
     // Primera vuelta: los parámetros (se pueden usar antes de declararlos).
@@ -556,7 +646,29 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
             let c = normalizar(clave);
             if es_opcion(&c) && !clave.contains('=') {
                 match c.as_str() {
-                    "x" => g.x = rango(valor, &nombres_ref, renglon)?,
+                    "x" => {
+                        g.x = rango(valor, &nombres_ref, renglon)?;
+                        g.x_pedida = true;
+                    }
+                    "z" => {
+                        g.z = match normalizar(valor).as_str() {
+                            "auto" | "automatico" => None,
+                            _ => Some(rango(valor, &nombres_ref, renglon)?),
+                        }
+                    }
+                    "u" => g.u = rango(valor, &nombres_ref, renglon)?,
+                    "v" => g.v = rango(valor, &nombres_ref, renglon)?,
+                    "camara" => g.camara = Some(camara(valor, renglon)?),
+                    "resolucion" => {
+                        let v = constante(valor, &[], renglon)?;
+                        if !(8.0..=MAX_RESOLUCION as f64).contains(&v) {
+                            return err(
+                                renglon,
+                                format!("la resolución va de 8 a {MAX_RESOLUCION}"),
+                            );
+                        }
+                        g.resolucion = Some(v.round() as u32);
+                    }
                     "y" => {
                         g.y = match normalizar(valor).as_str() {
                             "auto" | "automatico" => None,
@@ -592,8 +704,13 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
                         g.alto = Some(v.round() as u32);
                     }
                     "datos" => {
-                        let estilo = match normalizar(valor).as_str() {
-                            "" | "puntos" | "dispersion" => Estilo::Puntos,
+                        let pedido = normalizar(valor);
+                        // `datos: nube` (o `3d`): una nube de puntos x y z.
+                        let nube = matches!(pedido.as_str(), "nube" | "3d" | "nube de puntos");
+                        let estilo = match pedido.as_str() {
+                            "" | "puntos" | "dispersion" | "nube" | "3d" | "nube de puntos" => {
+                                Estilo::Puntos
+                            }
                             "lineas" | "linea" => Estilo::Linea,
                             "lineas y puntos" | "ambos" => Estilo::LineaYPuntos,
                             otro => {
@@ -603,7 +720,20 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
                                 );
                             }
                         };
-                        k = tabla(&renglones, k, estilo, &mut g)?;
+                        let primera = g.series.len();
+                        let (siguiente, cruda) = tabla(&renglones, k, estilo, &mut g)?;
+                        // Con encabezado x y z, también es una nube.
+                        let con_z = cruda
+                            .nombres
+                            .as_ref()
+                            .is_some_and(|n| n.get(2).is_some_and(|z| normalizar(z) == "z"));
+                        tablas.push(TablaCruda {
+                            primera,
+                            cuantas: g.series.len() - primera,
+                            nube: nube || con_z,
+                            ..cruda
+                        });
+                        k = siguiente;
                     }
                     _ => unreachable!(),
                 }
@@ -649,6 +779,38 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
                         _ => return err(renglon, "el dominio es para las funciones y = f(x)"),
                     }
                 }
+                "t" => {
+                    let d = rango(valor, &nombres_ref, renglon)?;
+                    match &mut serie.tipo {
+                        Tipo::Curva3 { t, .. } => *t = Some(d),
+                        _ => {
+                            return err(
+                                renglon,
+                                "el rango t: de una serie es para las curvas (x(t), y(t), z(t)); para las del plano, usá la opción t: del gráfico",
+                            );
+                        }
+                    }
+                }
+                "u" | "v" => {
+                    let d = rango(valor, &nombres_ref, renglon)?;
+                    match &mut serie.tipo {
+                        Tipo::SuperficieParametrica { u, v, .. } => {
+                            if clave == "u" {
+                                *u = Some(d);
+                            } else {
+                                *v = Some(d);
+                            }
+                        }
+                        _ => {
+                            return err(
+                                renglon,
+                                format!(
+                                    "el rango {clave}: es para las superficies (x(u, v), y(u, v), z(u, v))"
+                                ),
+                            );
+                        }
+                    }
+                }
                 "" => {
                     // Un color suelto: `y = x ; azul`.
                     serie.color = Some(color(valor, renglon)?);
@@ -667,13 +829,149 @@ pub fn leer(texto: &str) -> Result<Grafico, Error> {
             "el gráfico no tiene nada que dibujar: escribí una expresión, como y = x^2",
         );
     }
+    if g.es_3d() || g.z.is_some() || g.camara.is_some() || tablas.iter().any(|t| t.nube) {
+        a_3d(&mut g, tablas)?;
+    } else if g.resolucion.is_some() {
+        return err(
+            renglones.len().max(1),
+            "la resolución es para los gráficos 3D (superficies e implícitas)",
+        );
+    }
     if !grilla_pedida && g.series.iter().all(|s| matches!(s.tipo, Tipo::Polar(_))) {
         g.grilla = Grilla::Polar;
     }
     Ok(g)
 }
 
-fn serie(fuente: &str, tipo: Tipo) -> Serie {
+/// Lo más fino que se puede pedir con `resolución:`.
+pub const MAX_RESOLUCION: u32 = 160;
+
+/// `cámara: 30, 20` (grados: giro alrededor de z y elevación).
+fn camara(v: &str, renglon: usize) -> Result<(f64, f64), Error> {
+    let v = v.replace('°', "");
+    match dividir_nivel_cero(&v, ',').as_slice() {
+        [a, b] => {
+            let (a, b) = (constante(a, &[], renglon)?, constante(b, &[], renglon)?);
+            if !(-90.0..=90.0).contains(&b) {
+                return err(renglon, "la elevación de la cámara va de -90 a 90 grados");
+            }
+            Ok((a, b))
+        }
+        _ => err(
+            renglon,
+            "la cámara lleva dos ángulos en grados: giro y elevación, por ejemplo cámara: 30, 20",
+        ),
+    }
+}
+
+/// Una tabla tal como se leyó (para volver a leerla en 3D).
+struct TablaCruda {
+    primera: usize,
+    cuantas: usize,
+    filas: Vec<Vec<f64>>,
+    nombres: Option<Vec<String>>,
+    estilo: Estilo,
+    renglon: usize,
+    /// `datos: nube` o encabezado x y z: el gráfico es 3D.
+    nube: bool,
+}
+
+/// Pasa el gráfico a 3D: las ecuaciones de x e y son superficies (x² + y² = 1 es un cilindro),
+/// una expresión sola es la altura z = f(x, y) y las tablas son nubes x y z.
+fn a_3d(g: &mut Grafico, tablas: Vec<TablaCruda>) -> Result<(), Error> {
+    let mut series = std::mem::take(&mut g.series);
+    // Las tablas, de atrás para adelante para no correr los índices.
+    for t in tablas.into_iter().rev() {
+        let columnas = t.filas[0].len();
+        if columnas < 3 {
+            return err(
+                t.renglon,
+                "en un gráfico 3D, cada fila de datos lleva tres números: x y z",
+            );
+        }
+        let nuevas: Vec<Serie> = (2..columnas)
+            .map(|c| {
+                let puntos: Vec<[f64; 3]> = t.filas.iter().map(|f| [f[0], f[1], f[c]]).collect();
+                let nombre = t.nombres.as_ref().and_then(|n| n.get(c)).cloned();
+                let fuente = match &nombre {
+                    Some(n) => format!("datos: {n} ({} puntos)", puntos.len()),
+                    None => format!("datos ({} puntos)", puntos.len()),
+                };
+                Serie {
+                    fuente,
+                    tipo: Tipo::Datos3(puntos),
+                    color: None,
+                    estilo: t.estilo,
+                    nombre,
+                    grosor: None,
+                    renglon: t.renglon,
+                }
+            })
+            .collect();
+        series.splice(t.primera..t.primera + t.cuantas, nuevas);
+    }
+    let nombres: Vec<String> = g.params.iter().map(|p| p.nombre.clone()).collect();
+    let nombres: Vec<&str> = nombres.iter().map(String::as_str).collect();
+    for s in &mut series {
+        let r = s.renglon;
+        let tipo = std::mem::replace(&mut s.tipo, Tipo::Datos(Vec::new()));
+        s.tipo = match tipo {
+            Tipo::Funcion { f, dominio } => {
+                if dominio.is_some() {
+                    return err(r, "en un gráfico 3D no vale el dominio: usá x: e y:");
+                }
+                if let Some((_, der)) = igual(&s.fuente) {
+                    // `y = f(x)` en el espacio: la superficie y − f(x) = 0.
+                    let n = nodo(der, &nombres, r)?;
+                    let e = Expr::de_nodo(&Nodo::Bin(
+                        Bin::Menos,
+                        Box::new(Nodo::Var(Var::Y)),
+                        Box::new(n),
+                    ))
+                    .map_err(|e| Error {
+                        renglon: r,
+                        mensaje: e.0,
+                    })?;
+                    Tipo::Implicita3(e)
+                } else {
+                    Tipo::Superficie(f)
+                }
+            }
+            Tipo::Implicita(f) => Tipo::Implicita3(f),
+            Tipo::Polar(_) => {
+                return err(r, "en un gráfico 3D no van las curvas polares r = f(θ)");
+            }
+            Tipo::Parametrica(..) => {
+                return err(
+                    r,
+                    "en un gráfico 3D, las curvas llevan tres coordenadas: (x(t), y(t), z(t))",
+                );
+            }
+            Tipo::Puntos(_) => {
+                return err(
+                    r,
+                    "en un gráfico 3D, los puntos llevan tres coordenadas: (x, y, z)",
+                );
+            }
+            otro => otro,
+        };
+    }
+    g.series = series;
+    if !g.x_pedida && g.series.iter().any(necesita_caja) {
+        g.x = X_DEFECTO_3D;
+    }
+    Ok(())
+}
+
+/// ¿La serie necesita un rango de x e y para dibujarse (superficies z = f(x, y) e implícitas)?
+pub fn necesita_caja(s: &Serie) -> bool {
+    matches!(s.tipo, Tipo::Superficie(_) | Tipo::Implicita3(_))
+}
+
+/// x (e y) de un gráfico 3D si no se piden y hay superficies o implícitas.
+pub const X_DEFECTO_3D: (f64, f64) = (-3.0, 3.0);
+
+fn serie(fuente: &str, tipo: Tipo, renglon: usize) -> Serie {
     Serie {
         fuente: fuente.trim().to_owned(),
         tipo,
@@ -681,6 +979,7 @@ fn serie(fuente: &str, tipo: Tipo) -> Serie {
         estilo: Estilo::Linea,
         nombre: None,
         grosor: None,
+        renglon,
     }
 }
 
@@ -691,51 +990,84 @@ fn ecuacion(
     g: &mut Grafico,
     renglon: usize,
 ) -> Result<Option<Serie>, Error> {
-    // Puntos o curva paramétrica: `(a, b)`.
+    // Puntos o curva paramétrica: `(a, b)`, `(a, b, c)`.
     if let Some(ts) = tuplas(e) {
-        let mut pares = Vec::new();
-        for (a, b) in ts {
-            pares.push((
-                leer_expr(a, params, renglon)?,
-                leer_expr(b, params, renglon)?,
-            ));
+        let dim = ts[0].len();
+        if ts.iter().any(|t| t.len() != dim) {
+            return err(
+                renglon,
+                "todos los puntos de un renglón llevan la misma cantidad de coordenadas",
+            );
         }
-        let usa_t = pares
-            .iter()
-            .any(|(a, b)| a.usa().var(Var::T) || b.usa().var(Var::T));
-        for (a, b) in &pares {
-            for x in [a, b] {
-                solo(
-                    x,
-                    usa_t.then_some(Var::T),
-                    "un punto o una curva (x(t), y(t))",
-                    renglon,
-                )?;
+        let mut tuplas_e: Vec<Vec<Expr>> = Vec::with_capacity(ts.len());
+        for t in &ts {
+            let mut v = Vec::with_capacity(dim);
+            for c in t {
+                v.push(leer_expr(c, params, renglon)?);
             }
+            tuplas_e.push(v);
+        }
+        let usa = |var: Var| tuplas_e.iter().flatten().any(|x| x.usa().var(var));
+        if dim == 3 {
+            let (t, uv) = (usa(Var::T), usa(Var::U) || usa(Var::V));
+            return tupla_3d(e, tuplas_e, t, uv, renglon).map(Some);
+        }
+        let usa_t = usa(Var::T);
+        for x in tuplas_e.iter().flatten() {
+            solo(
+                x,
+                usa_t.then_some(Var::T),
+                "un punto o una curva (x(t), y(t))",
+                renglon,
+            )?;
         }
         if usa_t {
-            if pares.len() != 1 {
+            if tuplas_e.len() != 1 {
                 return err(renglon, "una curva (x(t), y(t)) va sola en su renglón");
             }
-            let (a, b) = pares.pop().expect("uno");
-            return Ok(Some(serie(e, Tipo::Parametrica(a, b))));
+            let mut t = tuplas_e.pop().expect("una");
+            let b = t.pop().expect("dos");
+            let a = t.pop().expect("dos");
+            return Ok(Some(serie(e, Tipo::Parametrica(a, b), renglon)));
         }
-        let mut s = serie(e, Tipo::Puntos(pares));
+        let pares = tuplas_e
+            .into_iter()
+            .map(|mut t| {
+                let b = t.pop().expect("dos");
+                let a = t.pop().expect("dos");
+                (a, b)
+            })
+            .collect();
+        let mut s = serie(e, Tipo::Puntos(pares), renglon);
         s.estilo = Estilo::Puntos;
         return Ok(Some(s));
     }
-    // Paramétrica escrita como `x = cos t, y = sin t`.
-    if let [a, b] = dividir_nivel_cero(e, ',').as_slice()
-        && let (Some((xa, xe)), Some((ya, ye))) = (igual(a), igual(b))
-        && lado_simple(xa) == Some("x")
-        && lado_simple(ya) == Some("y")
-    {
-        let fx = leer_expr(xe, params, renglon)?;
-        let fy = leer_expr(ye, params, renglon)?;
-        for f in [&fx, &fy] {
-            solo(f, Some(Var::T), "x = f(t), y = g(t)", renglon)?;
+    // Paramétrica escrita como `x = cos t, y = sin t` (y `, z = t` en el espacio).
+    let partes = dividir_nivel_cero(e, ',');
+    if (2..=3).contains(&partes.len()) {
+        let lados: Vec<Option<(&str, &str)>> = partes.iter().map(|p| igual(p)).collect();
+        let esperado = ["x", "y", "z"];
+        if lados
+            .iter()
+            .enumerate()
+            .all(|(k, l)| l.is_some_and(|(izq, _)| lado_simple(izq) == Some(esperado[k])))
+        {
+            let mut fs = Vec::with_capacity(3);
+            for (_, der) in lados.into_iter().flatten() {
+                fs.push(leer_expr(der, params, renglon)?);
+            }
+            if fs.len() == 3 {
+                let usa = |var: Var| fs.iter().any(|x| x.usa().var(var));
+                let (t, uv) = (usa(Var::T), usa(Var::U) || usa(Var::V));
+                return tupla_3d(e, vec![fs], t, uv, renglon).map(Some);
+            }
+            for f in &fs {
+                solo(f, Some(Var::T), "x = f(t), y = g(t)", renglon)?;
+            }
+            let fy = fs.pop().expect("dos");
+            let fx = fs.pop().expect("dos");
+            return Ok(Some(serie(e, Tipo::Parametrica(fx, fy), renglon)));
         }
-        return Ok(Some(serie(e, Tipo::Parametrica(fx, fy))));
     }
     let Some((izq, der)) = igual(e) else {
         if e.contains(['<', '>', '≤', '≥']) || e.contains("\\le") || e.contains("\\ge") {
@@ -744,17 +1076,21 @@ fn ecuacion(
         if dividir_nivel_cero(e, '=').len() > 2 {
             return err(renglon, "un renglón lleva un solo «=»");
         }
-        // Una expresión sola: y = f(x), o r = f(θ) si usa θ.
+        // Una expresión sola: y = f(x), r = f(θ) si usa θ, o la altura z = f(x, y) si usa y.
         let f = leer_expr(e, params, renglon)?;
         if f.usa().var(Var::Theta) {
             solo(&f, Some(Var::Theta), "r = f(θ)", renglon)?;
-            return Ok(Some(serie(e, Tipo::Polar(f))));
+            return Ok(Some(serie(e, Tipo::Polar(f), renglon)));
+        }
+        if f.usa().var(Var::Z) {
+            return err(renglon, "falta el «=»: por ejemplo x^2 + y^2 + z^2 = 1");
         }
         if f.usa().var(Var::Y) {
-            return err(renglon, "falta el «=»: por ejemplo x^2 + y^2 = 1");
+            solo_vars(&f, &[Var::X, Var::Y], "z = f(x, y)", renglon)?;
+            return Ok(Some(serie(e, Tipo::Superficie(f), renglon)));
         }
         solo(&f, Some(Var::X), "y = f(x)", renglon)?;
-        return Ok(Some(serie(e, Tipo::Funcion { f, dominio: None })));
+        return Ok(Some(serie(e, Tipo::Funcion { f, dominio: None }, renglon)));
     };
     if dividir_nivel_cero(der, ',').len() > 1 {
         return err(
@@ -764,85 +1100,153 @@ fn ecuacion(
     }
     // Un parámetro: `a = 1 (0..5)` o `a = 2`.
     if let Some((nombre, valor, rango_txt)) = parametro(izq, der) {
-        {
-            if g.params.iter().any(|p| p.nombre == nombre) {
-                return err(renglon, format!("el parámetro {nombre} ya está declarado"));
-            }
-            let valor = constante(&valor, &[], renglon)?;
-            let (rango, paso) = match rango_txt {
-                Some(r) => {
-                    let partes = dividir_nivel_cero(&r, ',');
-                    let rg = rango(partes[0], &[], renglon)?;
-                    let paso = match partes.get(1) {
-                        Some(p) => {
-                            let p = p.trim();
-                            let p = p.strip_prefix("paso").unwrap_or(p);
-                            let v = constante(p.trim_start_matches([':', ' ']), &[], renglon)?;
-                            if v <= 0.0 {
-                                return err(renglon, "el paso tiene que ser positivo");
-                            }
-                            Some(v)
-                        }
-                        None => None,
-                    };
-                    (Some(rg), paso)
-                }
-                None => (None, None),
-            };
-            if let Some((a, b)) = rango
-                && !(a..=b).contains(&valor)
-            {
-                return err(
-                    renglon,
-                    format!("el valor de {nombre} está fuera de su rango"),
-                );
-            }
-            g.params.push(Parametro {
-                nombre,
-                valor,
-                rango,
-                paso,
-            });
-            return Ok(None);
+        if g.params.iter().any(|p| p.nombre == nombre) {
+            return err(renglon, format!("el parámetro {nombre} ya está declarado"));
         }
+        let valor = constante(&valor, &[], renglon)?;
+        let (rango, paso) = match rango_txt {
+            Some(r) => {
+                let partes = dividir_nivel_cero(&r, ',');
+                let rg = rango(partes[0], &[], renglon)?;
+                let paso = match partes.get(1) {
+                    Some(p) => {
+                        let p = p.trim();
+                        let p = p.strip_prefix("paso").unwrap_or(p);
+                        let v = constante(p.trim_start_matches([':', ' ']), &[], renglon)?;
+                        if v <= 0.0 {
+                            return err(renglon, "el paso tiene que ser positivo");
+                        }
+                        Some(v)
+                    }
+                    None => None,
+                };
+                (Some(rg), paso)
+            }
+            None => (None, None),
+        };
+        if let Some((a, b)) = rango
+            && !(a..=b).contains(&valor)
+        {
+            return err(
+                renglon,
+                format!("el valor de {nombre} está fuera de su rango"),
+            );
+        }
+        g.params.push(Parametro {
+            nombre,
+            valor,
+            rango,
+            paso,
+        });
+        return Ok(None);
     }
     match lado_simple(izq) {
         Some("y") => {
             let f = leer_expr(der, params, renglon)?;
-            if !f.usa().var(Var::Y) {
+            if !f.usa().var(Var::Y) && !f.usa().var(Var::Z) {
                 solo(&f, Some(Var::X), "y = f(x)", renglon)?;
-                return Ok(Some(serie(e, Tipo::Funcion { f, dominio: None })));
+                return Ok(Some(serie(e, Tipo::Funcion { f, dominio: None }, renglon)));
             }
         }
         Some("r") => {
             let f = leer_expr(der, params, renglon)?;
             solo(&f, Some(Var::Theta), "r = f(θ)", renglon)?;
-            return Ok(Some(serie(e, Tipo::Polar(f))));
+            return Ok(Some(serie(e, Tipo::Polar(f), renglon)));
+        }
+        Some("z") => {
+            let f = leer_expr(der, params, renglon)?;
+            if !f.usa().var(Var::Z) {
+                solo_vars(&f, &[Var::X, Var::Y], "z = f(x, y)", renglon)?;
+                return Ok(Some(serie(e, Tipo::Superficie(f), renglon)));
+            }
         }
         _ => {}
     }
-    // Implícita: `L = R` como `L - R = 0`.
+    // Implícita: `L = R` como `L - R = 0` (en el espacio si usa z).
     let l = nodo(izq, params, renglon)?;
     let r = nodo(der, params, renglon)?;
     let f = Expr::de_nodo(&Nodo::Bin(Bin::Menos, Box::new(l), Box::new(r))).map_err(|e| Error {
         renglon,
         mensaje: e.0,
     })?;
-    if !f.usa().var(Var::X) && !f.usa().var(Var::Y) {
-        return err(renglon, "la ecuación no tiene x ni y");
+    if !f.usa().var(Var::X) && !f.usa().var(Var::Y) && !f.usa().var(Var::Z) {
+        return err(renglon, "la ecuación no tiene x, y ni z");
     }
-    for v in [Var::T, Var::Theta] {
-        if f.usa().var(v) {
-            return err(
-                renglon,
-                format!(
-                    "en una ecuación F(x, y) = 0 no vale la variable {}",
-                    v.nombre()
-                ),
-            );
-        }
+    if f.usa().var(Var::Z) {
+        solo_vars(
+            &f,
+            &[Var::X, Var::Y, Var::Z],
+            "una ecuación F(x, y, z) = 0",
+            renglon,
+        )?;
+        return Ok(Some(serie(e, Tipo::Implicita3(f), renglon)));
     }
-    Ok(Some(serie(e, Tipo::Implicita(f))))
+    solo_vars(&f, &[Var::X, Var::Y], "una ecuación F(x, y) = 0", renglon)?;
+    Ok(Some(serie(e, Tipo::Implicita(f), renglon)))
+}
+
+/// Una tupla de tres: una curva si usa t, una superficie si usa u o v, y si no, puntos.
+fn tupla_3d(
+    e: &str,
+    mut tuplas: Vec<Vec<Expr>>,
+    usa_t: bool,
+    usa_uv: bool,
+    renglon: usize,
+) -> Result<Serie, Error> {
+    if usa_t && usa_uv {
+        return err(
+            renglon,
+            "una curva usa t y una superficie usa u y v: no las dos en el mismo renglón",
+        );
+    }
+    if (usa_t || usa_uv) && tuplas.len() != 1 {
+        return err(renglon, "una curva o una superficie va sola en su renglón");
+    }
+    let permitidas: &[Var] = if usa_t {
+        &[Var::T]
+    } else if usa_uv {
+        &[Var::U, Var::V]
+    } else {
+        &[]
+    };
+    let que = if usa_t {
+        "una curva (x(t), y(t), z(t))"
+    } else if usa_uv {
+        "una superficie (x(u, v), y(u, v), z(u, v))"
+    } else {
+        "un punto (x, y, z)"
+    };
+    for x in tuplas.iter().flatten() {
+        solo_vars(x, permitidas, que, renglon)?;
+    }
+    let tres = |mut t: Vec<Expr>| -> [Expr; 3] {
+        let z = t.pop().expect("tres");
+        let y = t.pop().expect("tres");
+        let x = t.pop().expect("tres");
+        [x, y, z]
+    };
+    if usa_t || usa_uv {
+        let [x, y, z] = tres(tuplas.pop().expect("una"));
+        let tipo = if usa_t {
+            Tipo::Curva3 { x, y, z, t: None }
+        } else {
+            Tipo::SuperficieParametrica {
+                x,
+                y,
+                z,
+                u: None,
+                v: None,
+            }
+        };
+        return Ok(serie(e, tipo, renglon));
+    }
+    let mut s = serie(
+        e,
+        Tipo::Puntos3(tuplas.into_iter().map(tres).collect()),
+        renglon,
+    );
+    s.estilo = Estilo::Puntos;
+    Ok(s)
 }
 
 /// Una tabla de datos desde el renglón `k` (después de `datos:`). Devuelve el renglón siguiente.
@@ -851,7 +1255,7 @@ fn tabla(
     mut k: usize,
     estilo: Estilo,
     g: &mut Grafico,
-) -> Result<usize, Error> {
+) -> Result<(usize, TablaCruda), Error> {
     let inicio = k;
     let mut nombres: Option<Vec<String>> = None;
     let mut filas: Vec<Vec<f64>> = Vec::new();
@@ -908,9 +1312,21 @@ fn tabla(
             estilo,
             nombre,
             grosor: None,
+            renglon: inicio,
         });
     }
-    Ok(k)
+    Ok((
+        k,
+        TablaCruda {
+            primera: 0,
+            cuantas: 0,
+            filas,
+            nombres,
+            estilo,
+            renglon: inicio,
+            nube: false,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -927,6 +1343,12 @@ mod tests {
                 Tipo::Implicita(_) => "implicita",
                 Tipo::Puntos(_) => "puntos",
                 Tipo::Datos(_) => "datos",
+                Tipo::Superficie(_) => "superficie",
+                Tipo::Curva3 { .. } => "curva3",
+                Tipo::SuperficieParametrica { .. } => "parametrica3",
+                Tipo::Implicita3(_) => "implicita3",
+                Tipo::Puntos3(_) => "puntos3",
+                Tipo::Datos3(_) => "datos3",
             })
             .collect()
     }
@@ -1036,6 +1458,105 @@ mod tests {
         );
         let msg = leer("y = (x").unwrap_err().to_string();
         assert!(msg.starts_with("Error en el gráfico (renglón 1):"), "{msg}");
+    }
+
+    #[test]
+    fn tres_d_en_las_dos_notaciones() {
+        let g = leer(
+            "z = x^2 - y^2\nf(x, y) = \\sin x \\cos y\nx y\n(\\cos t, \\sin t, t/5)\nx = cos(t), y = sin(t), z = t\n(\\cos u \\sin v, \\sin u \\sin v, \\cos v) ; v: 0..π\nx = u, y = v, z = u v\nx^2 + y^2 + z^2 = 1\n\\frac{x^2}{4} + y^2 - z = 0\n(1, 2, 3), (4, 5, 6)\n",
+        )
+        .unwrap();
+        assert!(g.es_3d());
+        assert_eq!(
+            tipos(&g),
+            [
+                "superficie",
+                "superficie",
+                "superficie",
+                "curva3",
+                "curva3",
+                "parametrica3",
+                "parametrica3",
+                "implicita3",
+                "implicita3",
+                "puntos3"
+            ]
+        );
+        assert!(matches!(
+            g.series[5].tipo,
+            Tipo::SuperficieParametrica {
+                v: Some((0.0, _)),
+                u: None,
+                ..
+            }
+        ));
+        assert!(g.descripcion().starts_with("Gráfico 3D. z = x^2 - y^2;"));
+        // Sin x pedida y con superficies, la caja va de −3 a 3.
+        assert_eq!(g.x, X_DEFECTO_3D);
+    }
+
+    #[test]
+    fn deteccion_2d_y_3d() {
+        // Del plano: nada cambia.
+        let g = leer("y = x^2\nx^2 + y^2 = 1\nr = 2\n(1, 2)").unwrap();
+        assert!(!g.es_3d());
+        assert_eq!(g.x, (-10.0, 10.0));
+        // Con una serie del espacio, todo el gráfico es 3D: x² + y² = 1 es un cilindro, una
+        // expresión sola de x es la altura y y = f(x) es una superficie.
+        let g = leer("x^2 + y^2 = 1\nsin(x)\ny = x^2\nz = 1").unwrap();
+        assert_eq!(
+            tipos(&g),
+            ["implicita3", "superficie", "implicita3", "superficie"]
+        );
+        // Las opciones del espacio también lo hacen 3D.
+        assert!(leer("cámara: 30, 20\nx^2 + y^2 = 1").unwrap().es_3d());
+        assert!(leer("z: 0..1\nx^2 + y^2 = 1").unwrap().es_3d());
+        // Tablas: con encabezado x y z o `datos: nube`, una nube de puntos.
+        let g = leer("datos:\nx y z\n0 0 0\n1 2 3").unwrap();
+        assert_eq!(tipos(&g), ["datos3"]);
+        let g = leer("datos: nube\n0 0 0 1\n1 2 3 4").unwrap();
+        assert_eq!(tipos(&g), ["datos3", "datos3"]);
+        assert_eq!(
+            g.series[1].tipo,
+            Tipo::Datos3(vec![[0.0, 0.0, 1.0], [1.0, 2.0, 4.0]])
+        );
+        let g = leer("datos:\n0 0 0\n1 2 3").unwrap();
+        assert_eq!(
+            tipos(&g),
+            ["datos", "datos"],
+            "sin pistas, dos series del plano"
+        );
+        // Opciones.
+        let g =
+            leer("z: -1..1\nu: 0..π\nv: 0..2π\ncámara: -45, 30°\nresolución: 80\nz = x").unwrap();
+        assert_eq!(g.z, Some((-1.0, 1.0)));
+        assert_eq!(g.camara, Some((-45.0, 30.0)));
+        assert_eq!(g.resolucion, Some(80));
+        assert!((g.u.1 - std::f64::consts::PI).abs() < 1e-12);
+    }
+
+    #[test]
+    fn errores_3d() {
+        let e = |t: &str| leer(t).unwrap_err().to_string();
+        assert!(e("z = k x").contains("«k» no está definido"));
+        assert!(e("x^2 + y^2 + z^2").contains("falta el «=»"));
+        assert!(e("z = x\nr = 2").contains("polares"));
+        assert!(e("z = x\n(1, 2)").contains("tres coordenadas"));
+        assert!(e("z = x\n(cos t, sin t)").contains("tres coordenadas"));
+        assert!(e("(cos t, sin u, 1)").contains("no las dos"));
+        assert!(e("(1, 2, 3), (cos t, 1, 1)").contains("sola en su renglón"));
+        assert!(e("(1, 2, 3), (1, 2)").contains("misma cantidad"));
+        assert!(e("z = x\ndatos:\n0 0\n1 1").contains("tres números"));
+        assert!(e("cámara: 30").contains("dos ángulos"));
+        assert!(e("cámara: 0, 120\nz = x").contains("elevación"));
+        assert!(e("resolución: 4\nz = x").contains("resolución va de 8"));
+        assert!(e("resolución: 40\ny = x").contains("3D"));
+        assert!(e("y = x ; u: 0..1").contains("superficies"));
+        assert!(e("y = u x").contains("u y v son de las superficies"));
+        // Con u declarado, es un parámetro.
+        assert!(leer("u = 1 (0..2)\ny = u x").is_ok());
+        // `z = 2` es un plano, no un parámetro.
+        assert!(leer("z = 2").unwrap().es_3d());
     }
 
     #[test]

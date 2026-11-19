@@ -1,22 +1,29 @@
-//! Gráficos 2D y polares de Orbital (052), sin GTK.
+//! Gráficos 2D, polares (052) y 3D (053) de Orbital, sin GTK.
 //!
 //! Un bloque ` ```grafico ` se lee ([`leer`]) en un [`Grafico`]: opciones, parámetros con
 //! deslizador y series (funciones, polares, paramétricas, implícitas, puntos y datos). Las
 //! expresiones aceptan la notación simple y la de LaTeX ([`expr`]). Para una vista, [`muestreo`]
 //! da las líneas y los puntos; [`guias`], la grilla, los ejes y los rótulos; [`svg`], el gráfico
-//! estático para exportar y para las notas `.html`. Lo usan la Lectura (interactiva), el globito
+//! estático para exportar y para las notas `.html`. Los gráficos 3D (una serie del espacio:
+//! `z = f(x, y)`, curvas y superficies paramétricas, implícitas `F(x, y, z) = 0`, nubes de
+//! puntos) se muestrean con [`espacio`], se miran con [`camara`] y se pintan con [`raster`]
+//! (en la app) o [`svg3`] (estático). Lo usan la Lectura (interactiva), el globito
 //! de Código, el editor de ecuaciones, OnStage y exportar.
 //!
 //! Todo es puro y se puede llamar desde cualquier hilo: las expresiones compiladas no tienen
 //! estado y se evalúan sin asignar memoria.
 
 pub mod bloque;
+pub mod camara;
 pub mod ejes;
+pub mod espacio;
 pub mod expr;
 pub mod guias;
 pub mod html;
 pub mod muestreo;
+pub mod raster;
 pub mod svg;
+pub mod svg3;
 
 pub use bloque::{Color, Estilo, Grafico, Grilla, Parametro, Serie, Tipo, leer};
 pub use ejes::Vista;
@@ -24,6 +31,13 @@ pub use muestreo::{Trazo, muestrear};
 
 /// Alto de un gráfico si el bloque no pide otro, en píxeles.
 pub const ALTO: u32 = 300;
+/// Alto de un gráfico 3D si el bloque no pide otro (la caja gira: necesita más lugar).
+pub const ALTO_3D: u32 = 380;
+
+/// El alto del gráfico: el pedido o el de por defecto (2D o 3D).
+pub fn alto(g: &Grafico) -> u32 {
+    g.alto.unwrap_or(if g.es_3d() { ALTO_3D } else { ALTO })
+}
 
 /// Los colores de las series según el fondo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

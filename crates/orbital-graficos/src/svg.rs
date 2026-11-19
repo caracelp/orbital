@@ -56,6 +56,9 @@ fn n(v: f64) -> String {
 
 /// El SVG del gráfico.
 pub fn svg(g: &Grafico, o: &Opciones) -> String {
+    if g.es_3d() {
+        return crate::svg3::svg3(g, o);
+    }
     let ancho = f64::from(o.ancho.max(80));
     let alto = f64::from(o.alto.or(g.alto).unwrap_or(crate::ALTO).max(80));
     let v = Vista::nueva(g.x, g.y, ancho, alto);
