@@ -4,6 +4,10 @@
 //!
 //! No es un editor estructural: se edita el LaTeX; la paleta solo escribe en el campo. Se arma
 //! recién cuando se abre (nada al arrancar) y sus estilos se cargan con el primero.
+//!
+//! La página «Gráfico» (052) edita un bloque `grafico`: las expresiones y opciones en un campo,
+//! el gráfico en vivo (interactivo, con sus deslizadores) y plantillas para cada tipo. Se arma
+//! al mostrarse por primera vez.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,8 +24,74 @@ const PAUSA: Duration = Duration::from_millis(90);
 /// La fórmula de la vista previa, más grande que el texto.
 const AUMENTO: f32 = 1.9;
 
-/// Lo que se le pasa al aceptar: el LaTeX y el modo elegido.
-type AlAceptar = Box<dyn Fn(String, Modo)>;
+/// Con qué se abre el editor.
+pub enum Apertura {
+    /// Editar una fórmula de la nota: solo la página «Ecuación».
+    Formula { tex: String, modo: Modo },
+    /// Editar un bloque `grafico` (052): solo la página «Gráfico».
+    Grafico { fuente: String },
+    /// Insertar algo nuevo: las dos páginas; `grafico` dice con cuál empieza.
+    Insertar {
+        tex: String,
+        modo: Modo,
+        grafico: bool,
+    },
+}
+
+/// Lo que se aceptó.
+pub enum Aceptado {
+    /// El LaTeX y el modo elegido.
+    Formula(String, Modo),
+    /// Los renglones de un bloque `grafico` (052).
+    Grafico(String),
+}
+
+type AlAceptar = Box<dyn Fn(Aceptado)>;
+
+/// Pausa entre la última tecla y volver a dibujar el gráfico.
+const PAUSA_GRAFICO: Duration = Duration::from_millis(150);
+/// Alto máximo del gráfico de la página.
+const ALTO_GRAFICO: i32 = 250;
+/// Lo que trae un gráfico nuevo.
+const GRAFICO_NUEVO: &str = "y = x^2";
+
+/// Plantillas de la página «Gráfico»: (etiqueta, nombre accesible, texto).
+const PLANTILLAS: &[(&str, &str, &str)] = &[
+    ("y = f(x)", "Función", "y = x^2"),
+    ("r = f(θ)", "Polar", "r = 1 + \\cos\\theta"),
+    ("(x(t), y(t))", "Paramétrica", "(\\cos t, \\sin 2t)"),
+    ("F(x, y) = 0", "Implícita", "x^2 + y^2 = 4"),
+    ("(a, b)", "Puntos", "(1, 2), (2, 3), (3, 5)"),
+    (
+        "datos",
+        "Tabla de datos",
+        "datos: líneas\n0 0\n1 2\n2 3\n3 5",
+    ),
+    ("a = 1 (0..5)", "Deslizador", "a = 1 (0..5)"),
+    ("x: a..b", "Rango de x", "x: -10..10"),
+    ("y: a..b", "Rango de y", "y: -5..5"),
+    ("θ: a..b", "Rango de θ", "θ: 0..2π"),
+    ("t: a..b", "Rango de t", "t: 0..2π"),
+    ("título", "Título", "título: "),
+    ("grilla polar", "Grilla polar", "grilla: polar"),
+    ("; color", "Color de la serie", " ; color: celeste"),
+    ("; nombre", "Nombre de la serie", " ; nombre: "),
+    (
+        "; discontinua",
+        "Línea discontinua",
+        " ; estilo: discontinua",
+    ),
+];
+
+/// La página «Gráfico».
+struct PaginaGrafico {
+    raiz: gtk::Widget,
+    texto: gtk::TextView,
+    vista: gtk::Box,
+    error: gtk::Label,
+    generacion: Cell<u64>,
+    actual: RefCell<Option<crate::graficos::GraficoVista>>,
+}
 
 struct Inner {
     dialogo: adw::Dialog,
@@ -36,6 +106,12 @@ struct Inner {
     conversor: Conversor,
     generacion: Cell<u64>,
     al_aceptar: RefCell<Option<AlAceptar>>,
+    /// Las páginas «Ecuación» y «Gráfico» (052).
+    secciones: adw::ViewStack,
+    /// Dónde va la página «Gráfico» (se arma al mostrarse).
+    contenedor_grafico: gtk::Box,
+    grafico: RefCell<Option<Rc<PaginaGrafico>>>,
+    grafico_inicial: RefCell<String>,
 }
 
 /// La página de conversión de unidades.
@@ -97,6 +173,7 @@ impl EditorEcuaciones {
     /// Abre el editor con `inicial`. `editando`: se está cambiando una fórmula que ya está en la
     /// nota (su modo no cambia); si no, se elige en línea o en bloque. `al_aceptar` recibe el
     /// LaTeX; `al_cerrar` corre siempre al cerrar (aceptado o no).
+    #[cfg(test)]
     pub fn presentar(
         padre: &impl IsA<gtk::Widget>,
         inicial: &str,
@@ -105,11 +182,69 @@ impl EditorEcuaciones {
         al_aceptar: impl Fn(String, Modo) + 'static,
         al_cerrar: impl Fn() + 'static,
     ) -> Self {
-        cargar_estilos();
-        let titulo = if editando {
-            "Editar ecuación"
+        let apertura = if editando {
+            Apertura::Formula {
+                tex: inicial.to_owned(),
+                modo,
+            }
         } else {
-            "Insertar ecuación"
+            Apertura::Insertar {
+                tex: inicial.to_owned(),
+                modo,
+                grafico: false,
+            }
+        };
+        Self::presentar_con(
+            padre,
+            apertura,
+            move |r| {
+                if let Aceptado::Formula(tex, modo) = r {
+                    al_aceptar(tex, modo);
+                }
+            },
+            al_cerrar,
+        )
+    }
+
+    /// Abre el editor según `apertura`. `al_aceptar` recibe la fórmula o el gráfico;
+    /// `al_cerrar` corre siempre al cerrar (aceptado o no).
+    pub fn presentar_con(
+        padre: &impl IsA<gtk::Widget>,
+        apertura: Apertura,
+        al_aceptar: impl Fn(Aceptado) + 'static,
+        al_cerrar: impl Fn() + 'static,
+    ) -> Self {
+        cargar_estilos();
+        let (inicial, modo, editando, grafico_inicial, con_ecuacion, con_grafico, en_grafico) =
+            match apertura {
+                Apertura::Formula { tex, modo } => {
+                    (tex, modo, true, String::new(), true, false, false)
+                }
+                Apertura::Grafico { fuente } => (
+                    String::new(),
+                    Modo::EnLinea,
+                    true,
+                    fuente,
+                    false,
+                    true,
+                    true,
+                ),
+                Apertura::Insertar { tex, modo, grafico } => (
+                    tex,
+                    modo,
+                    false,
+                    GRAFICO_NUEVO.to_owned(),
+                    true,
+                    true,
+                    grafico,
+                ),
+            };
+        let inicial = inicial.as_str();
+        let titulo = match (editando, con_ecuacion) {
+            (true, true) => "Editar ecuación",
+            (true, false) => "Editar gráfico",
+            (false, _) if en_grafico => "Insertar gráfico",
+            _ => "Insertar ecuación",
         };
         let dialogo = adw::Dialog::builder()
             .title(titulo)
@@ -274,9 +409,27 @@ impl EditorEcuaciones {
         cuerpo.append(&desplazar_texto);
         cuerpo.append(&paleta_marco);
 
+        // Las páginas «Ecuación» y «Gráfico» (052): con las dos, un selector en la cabecera.
+        let secciones = adw::ViewStack::new();
+        let contenedor_grafico = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        if con_ecuacion {
+            secciones.add_titled(&cuerpo, Some("ecuacion"), "Ecuación");
+        }
+        if con_grafico {
+            secciones.add_titled(&contenedor_grafico, Some("grafico"), "Gráfico");
+        }
+        if con_ecuacion && con_grafico {
+            let selector = adw::ViewSwitcher::builder()
+                .stack(&secciones)
+                .policy(adw::ViewSwitcherPolicy::Wide)
+                .build();
+            etiquetado(selector.upcast_ref::<gtk::Widget>(), "Qué insertar");
+            cabecera.set_title_widget(Some(&selector));
+        }
+
         let vista = adw::ToolbarView::new();
         vista.add_top_bar(&cabecera);
-        vista.set_content(Some(&cuerpo));
+        vista.set_content(Some(&secciones));
         dialogo.set_child(Some(&vista));
 
         let this = Self(Rc::new(Inner {
@@ -291,6 +444,10 @@ impl EditorEcuaciones {
             conversor,
             generacion: Cell::new(0),
             al_aceptar: RefCell::new(Some(Box::new(al_aceptar))),
+            secciones: secciones.clone(),
+            contenedor_grafico,
+            grafico: RefCell::new(None),
+            grafico_inicial: RefCell::new(grafico_inicial),
         }));
 
         // Señales.
@@ -330,15 +487,277 @@ impl EditorEcuaciones {
         }
         dialogo.add_controller(atajos);
         dialogo.connect_closed(move |_| al_cerrar());
+        {
+            let this = this.clone();
+            secciones.connect_visible_child_name_notify(move |_| this.al_cambiar_seccion());
+        }
 
+        if en_grafico {
+            secciones.set_visible_child_name("grafico");
+            this.al_cambiar_seccion();
+        }
         this.actualizar_aceptar();
-        this.dibujar_ya();
+        if con_ecuacion {
+            this.dibujar_ya();
+        }
         dialogo.present(Some(padre));
-        // El foco, en el LaTeX, con el cursor al final.
-        let b = texto.buffer();
-        b.place_cursor(&b.end_iter());
-        dialogo.set_focus(Some(&texto));
+        if en_grafico {
+            this.enfocar_grafico();
+        } else {
+            // El foco, en el LaTeX, con el cursor al final.
+            let b = texto.buffer();
+            b.place_cursor(&b.end_iter());
+            dialogo.set_focus(Some(&texto));
+        }
         this
+    }
+
+    fn en_grafico(&self) -> bool {
+        self.0.secciones.visible_child_name().as_deref() == Some("grafico")
+    }
+
+    /// Se mostró otra página: la del gráfico se arma la primera vez.
+    fn al_cambiar_seccion(&self) {
+        if self.en_grafico() {
+            if self.0.grafico.borrow().is_none() {
+                let inicial = self.0.grafico_inicial.borrow().clone();
+                let p = self.armar_grafico(&inicial);
+                self.0.contenedor_grafico.append(&p.raiz);
+                self.0.grafico.replace(Some(p));
+                self.dibujar_grafico();
+            }
+            self.enfocar_grafico();
+        } else {
+            self.0.dialogo.set_focus(Some(&self.0.texto));
+        }
+        self.actualizar_aceptar();
+    }
+
+    fn enfocar_grafico(&self) {
+        if let Some(p) = self.0.grafico.borrow().as_ref() {
+            let b = p.texto.buffer();
+            b.place_cursor(&b.end_iter());
+            self.0.dialogo.set_focus(Some(&p.texto));
+        }
+    }
+
+    fn armar_grafico(&self, inicial: &str) -> Rc<PaginaGrafico> {
+        let vista = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .height_request(ALTO_GRAFICO)
+            .build();
+        let error = gtk::Label::builder()
+            .wrap(true)
+            .xalign(0.0)
+            .visible(false)
+            .css_classes(["orbital-ecuacion-error"])
+            .build();
+        error.update_property(&[gtk::accessible::Property::Label("Error en el gráfico")]);
+        let texto = gtk::TextView::builder()
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .accepts_tab(false)
+            .top_margin(4)
+            .bottom_margin(4)
+            .left_margin(4)
+            .right_margin(4)
+            .css_classes(["orbital-ecuacion-texto"])
+            .build();
+        etiquetado(&texto, "Expresiones y opciones del gráfico");
+        texto.buffer().set_text(inicial);
+        let desplazar_texto = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(96)
+            .max_content_height(180)
+            .propagate_natural_height(true)
+            .child(&texto)
+            .build();
+        let rotulo = gtk::Label::builder()
+            .label("_Expresiones y opciones (una por renglón)")
+            .use_underline(true)
+            .mnemonic_widget(&texto)
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .build();
+        let plantillas = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .activate_on_single_click(true)
+            .row_spacing(6)
+            .column_spacing(6)
+            .max_children_per_line(30)
+            .valign(gtk::Align::Start)
+            .css_classes(["orbital-paleta"])
+            .build();
+        etiquetado(&plantillas, "Plantillas del gráfico");
+        for (etiqueta, nombre, plantilla) in PLANTILLAS {
+            let ayuda = format!("{nombre}: {}", plantilla.trim());
+            plantillas.append(&simbolo(etiqueta, nombre, &ayuda));
+        }
+        let ayuda = gtk::Label::builder()
+            .label(
+                "En notación simple (sin(x)/x, 2x^2, |x|) o LaTeX (\\sin x, \\frac{1}{x}), \
+                 incluso mezcladas. Funciones y = f(x), polares r = f(θ), curvas (x(t), y(t)), \
+                 ecuaciones F(x, y) = 0, puntos (a, b) y tablas de datos. Arrastrá el gráfico \
+                 para moverlo, la rueda acerca y aleja; la nota no cambia hasta aceptar.",
+            )
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(["dim-label", "caption"])
+            .build();
+        let caja = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .margin_top(6)
+            .margin_bottom(16)
+            .margin_start(16)
+            .margin_end(16)
+            .build();
+        caja.append(&vista);
+        caja.append(&error);
+        caja.append(&rotulo);
+        caja.append(&desplazar_texto);
+        caja.append(&plantillas);
+        caja.append(&ayuda);
+        let raiz = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&caja)
+            .build();
+        let p = Rc::new(PaginaGrafico {
+            raiz: raiz.upcast(),
+            texto: texto.clone(),
+            vista,
+            error,
+            generacion: Cell::new(0),
+            actual: RefCell::new(None),
+        });
+        {
+            let this = self.clone();
+            texto
+                .buffer()
+                .connect_changed(move |_| this.programar_grafico());
+        }
+        {
+            let this = self.clone();
+            plantillas.connect_child_activated(move |_, hijo| {
+                if let Some((_, _, t)) = usize::try_from(hijo.index())
+                    .ok()
+                    .and_then(|k| PLANTILLAS.get(k))
+                {
+                    this.insertar_plantilla_grafico(t);
+                }
+            });
+        }
+        p
+    }
+
+    /// El texto del gráfico (vacío si la página no se armó).
+    pub fn fuente_grafico(&self) -> String {
+        self.0
+            .grafico
+            .borrow()
+            .as_ref()
+            .map_or_else(String::new, |p| {
+                let b = p.texto.buffer();
+                b.text(&b.start_iter(), &b.end_iter(), true).to_string()
+            })
+    }
+
+    /// Escribe una plantilla en el campo del gráfico: en un renglón nuevo debajo del cursor, o
+    /// al final del renglón si es un atributo (`; color: …`).
+    pub fn insertar_plantilla_grafico(&self, plantilla: &str) {
+        let Some(p) = self.0.grafico.borrow().clone() else {
+            return;
+        };
+        let b = p.texto.buffer();
+        let mut en = b.iter_at_mark(&b.get_insert());
+        if !en.ends_line() {
+            en.forward_to_line_end();
+        }
+        let mut ini = en;
+        ini.set_line_offset(0);
+        let renglon_vacio = b.text(&ini, &en, true).trim().is_empty();
+        let nuevo = if plantilla.starts_with(' ') || renglon_vacio {
+            plantilla.to_owned()
+        } else {
+            format!("\n{plantilla}")
+        };
+        let inicio = en.offset();
+        b.begin_user_action();
+        b.insert(&mut en, &nuevo);
+        b.end_user_action();
+        b.place_cursor(&b.iter_at_offset(inicio + nuevo.chars().count() as i32));
+        p.texto.grab_focus();
+    }
+
+    fn programar_grafico(&self) {
+        self.actualizar_aceptar();
+        let Some(p) = self.0.grafico.borrow().clone() else {
+            return;
+        };
+        let g = p.generacion.get() + 1;
+        p.generacion.set(g);
+        let this = self.clone();
+        glib::timeout_add_local_once(PAUSA_GRAFICO, move || {
+            if p.generacion.get() == g {
+                this.dibujar_grafico();
+            }
+        });
+    }
+
+    /// Lee el campo y muestra el gráfico (el muestreo va fuera del hilo de GTK); con un error,
+    /// el motivo, y queda el último gráfico bueno.
+    pub fn dibujar_grafico(&self) {
+        let Some(p) = self.0.grafico.borrow().clone() else {
+            return;
+        };
+        let fuente = self.fuente_grafico();
+        if fuente.trim().is_empty() {
+            p.error.set_visible(false);
+            return;
+        }
+        match crate::graficos::leer(&fuente) {
+            Ok(g) => {
+                let alto = (g.alto.unwrap_or(orbital_graficos::ALTO) as i32).min(ALTO_GRAFICO);
+                let vista = crate::graficos::GraficoVista::new(g, &fuente, true);
+                vista.lienzo().fijar_alto(alto);
+                while let Some(h) = p.vista.first_child() {
+                    p.vista.remove(&h);
+                }
+                p.vista.append(vista.widget());
+                p.actual.replace(Some(vista));
+                p.error.set_visible(false);
+            }
+            Err(e) => {
+                p.error.set_label(&e.to_string());
+                p.error.set_visible(true);
+            }
+        }
+    }
+
+    /// El gráfico de la página y si hay un error (para las pruebas).
+    #[cfg(test)]
+    pub fn estado_grafico(&self) -> (Option<crate::graficos::GraficoVista>, Option<String>) {
+        let p = self.0.grafico.borrow();
+        let Some(p) = p.as_ref() else {
+            return (None, None);
+        };
+        (
+            p.actual.borrow().clone(),
+            p.error.is_visible().then(|| p.error.label().to_string()),
+        )
+    }
+
+    /// El campo del gráfico (para las pruebas).
+    #[cfg(test)]
+    pub fn texto_grafico(&self) -> Option<gtk::TextView> {
+        self.0.grafico.borrow().as_ref().map(|p| p.texto.clone())
+    }
+
+    /// Muestra la página «Ecuación» o «Gráfico» (para las pruebas).
+    #[cfg(test)]
+    pub fn ir_a_seccion(&self, nombre: &str) {
+        self.0.secciones.set_visible_child_name(nombre);
     }
 
     #[cfg(test)]
@@ -361,17 +780,30 @@ impl EditorEcuaciones {
     }
 
     fn actualizar_aceptar(&self) {
-        self.0.aceptar.set_sensitive(!self.tex().trim().is_empty());
+        let lleno = if self.en_grafico() {
+            !self.fuente_grafico().trim().is_empty()
+        } else {
+            !self.tex().trim().is_empty()
+        };
+        self.0.aceptar.set_sensitive(lleno);
     }
 
     fn aceptar(&self) {
-        let tex = self.tex();
-        if tex.trim().is_empty() {
-            return;
-        }
-        let modo = self.modo();
+        let r = if self.en_grafico() {
+            let fuente = self.fuente_grafico();
+            if fuente.trim().is_empty() {
+                return;
+            }
+            Aceptado::Grafico(fuente)
+        } else {
+            let tex = self.tex();
+            if tex.trim().is_empty() {
+                return;
+            }
+            Aceptado::Formula(tex, self.modo())
+        };
         if let Some(f) = self.0.al_aceptar.take() {
-            f(tex, modo);
+            f(r);
         }
         self.0.dialogo.close();
     }

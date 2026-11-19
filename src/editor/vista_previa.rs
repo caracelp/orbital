@@ -1,7 +1,7 @@
 //! Vista previa de fórmulas en Código (050): con el cursor dentro de una fórmula (`$…$`,
 //! `$$…$$`, ` ```math `), un globito encima muestra la fórmula dibujada, o el motivo si tiene un
 //! error. No toma el foco ni las teclas (como el autocompletado) y se arma recién con la primera
-//! fórmula.
+//! fórmula. Dentro de un ` ```grafico ` (052) muestra el gráfico estático (o el error).
 
 use super::*;
 use crate::formulas::{self, Clave, Formula, Modo};
@@ -23,13 +23,30 @@ pub(super) struct FormulaEnBuffer {
     pub(super) modo: Modo,
 }
 
+/// Un ` ```grafico ` del buffer, en caracteres (052).
+pub(super) struct GraficoEnBuffer {
+    /// Comienzo de la cerca de apertura.
+    pub(super) inicio: i32,
+    /// Los renglones de adentro (sin las cercas).
+    pub(super) contenido: std::ops::Range<i32>,
+    pub(super) fuente: String,
+}
+
+/// Ancho y alto del gráfico del globito.
+const GRAFICO_ANCHO: i32 = 380;
+const GRAFICO_ALTO: i32 = 220;
+
 /// El globito.
 pub(super) struct VistaPrevia {
     pub(super) popover: gtk::Popover,
     pub(super) imagen: gtk::Picture,
     pub(super) error: gtk::Label,
+    /// Donde va el gráfico (052).
+    pub(super) grafico: gtk::Box,
     /// La fórmula que se está mostrando (LaTeX, modo) y el inicio en el buffer.
     actual: RefCell<Option<(String, Modo, i32)>>,
+    /// El fuente del gráfico que se está mostrando.
+    actual_grafico: RefCell<Option<String>>,
 }
 
 impl VistaPrevia {
@@ -51,8 +68,17 @@ impl VistaPrevia {
             .margin_end(8)
             .css_classes(["dim-label"])
             .build();
+        let grafico = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .visible(false)
+            .build();
         let caja = gtk::Box::new(gtk::Orientation::Vertical, 0);
         caja.append(&imagen);
+        caja.append(&grafico);
         caja.append(&error);
         let popover = gtk::Popover::builder()
             .has_arrow(true)
@@ -71,12 +97,15 @@ impl VistaPrevia {
             popover,
             imagen,
             error,
+            grafico,
             actual: RefCell::new(None),
+            actual_grafico: RefCell::new(None),
         }
     }
 
     fn ocultar(&self) {
         self.actual.replace(None);
+        self.actual_grafico.replace(None);
         if self.popover.is_visible() {
             self.popover.popdown();
         }
@@ -165,25 +194,43 @@ impl Editor {
         })
     }
 
-    pub(super) fn actualizar_vista_previa(&self) {
+    /// El ` ```grafico ` que contiene el carácter `offset` del buffer (busca en ±200 renglones).
+    pub(super) fn grafico_en_offset(&self, offset: i32) -> Option<GraficoEnBuffer> {
         let i = &self.0;
-        let activa = i.view.is_focus()
-            && matches!(i.mode.get(), View::Codigo | View::Dividida)
-            && !i.loading.get();
-        let hallada = activa.then(|| self.formula_en_cursor()).flatten();
-        if activa && i.format.get() == Format::Md {
-            self.rotular_menu(hallada.is_some());
+        if i.format.get() != Format::Md {
+            return None;
         }
-        let Some((inicio, tex, modo)) = hallada else {
-            self.ocultar_vista_previa();
-            return;
-        };
-        if i.vista_previa.borrow().is_none() {
-            i.vista_previa.replace(Some(VistaPrevia::new(&i.view)));
+        let b = &i.buffer;
+        let cursor = b.iter_at_offset(offset);
+        let linea = cursor.line();
+        let desde = b.iter_at_line((linea - RENGLONES).max(0))?;
+        let mut hasta = b
+            .iter_at_line(linea + RENGLONES)
+            .unwrap_or_else(|| b.end_iter());
+        if !hasta.ends_line() {
+            hasta.forward_to_line_end();
         }
-        let prestamo = i.vista_previa.borrow();
-        let Some(v) = prestamo.as_ref() else { return };
-        // El globito, sobre el comienzo de la fórmula.
+        let ventana = b.text(&desde, &hasta, true);
+        if !ventana.contains("grafico") {
+            return None;
+        }
+        let byte = b.text(&desde, &cursor, true).len();
+        let c = orbital_vault::formulas::cerca_en(&ventana, byte)?;
+        if c.lang != "grafico" {
+            return None;
+        }
+        let base = desde.offset();
+        let a_offset = |byte: usize| base + ventana[..byte].chars().count() as i32;
+        Some(GraficoEnBuffer {
+            inicio: a_offset(c.rango.start),
+            contenido: a_offset(c.contenido.start)..a_offset(c.contenido.end),
+            fuente: ventana[c.contenido].to_owned(),
+        })
+    }
+
+    /// Lleva el globito sobre el carácter `inicio` del buffer.
+    fn apuntar_globito(&self, v: &VistaPrevia, inicio: i32) {
+        let i = &self.0;
         let it = i.buffer.iter_at_offset(inicio);
         let loc = i.view.iter_location(&it);
         let (wx, wy) =
@@ -195,6 +242,46 @@ impl Editor {
             1,
             loc.height().max(1),
         )));
+    }
+
+    pub(super) fn actualizar_vista_previa(&self) {
+        let i = &self.0;
+        let activa = i.view.is_focus()
+            && matches!(i.mode.get(), View::Codigo | View::Dividida)
+            && !i.loading.get();
+        let hallada = activa.then(|| self.formula_en_cursor()).flatten();
+        let grafico = (activa && hallada.is_none())
+            .then(|| self.grafico_en_offset(i.buffer.cursor_position()))
+            .flatten();
+        if activa && i.format.get() == Format::Md {
+            self.rotular_menu(match (&hallada, &grafico) {
+                (Some(_), _) => super::ecuacion::Sobre::Formula,
+                (None, Some(_)) => super::ecuacion::Sobre::Grafico,
+                _ => super::ecuacion::Sobre::Nada,
+            });
+        }
+        if let Some(g) = grafico {
+            self.mostrar_grafico(g);
+            return;
+        }
+        let Some((inicio, tex, modo)) = hallada else {
+            self.ocultar_vista_previa();
+            return;
+        };
+        if i.vista_previa.borrow().is_none() {
+            i.vista_previa.replace(Some(VistaPrevia::new(&i.view)));
+        }
+        let prestamo = i.vista_previa.borrow();
+        let Some(v) = prestamo.as_ref() else { return };
+        // El globito, sobre el comienzo de la fórmula.
+        self.apuntar_globito(v, inicio);
+        if v.actual_grafico.replace(None).is_some() {
+            v.popover
+                .update_property(&[gtk::accessible::Property::Label(
+                    "Vista previa de la fórmula",
+                )]);
+        }
+        v.grafico.set_visible(false);
         let misma = v
             .actual
             .borrow()
@@ -220,6 +307,50 @@ impl Editor {
                 });
             }
         }
+    }
+
+    /// El gráfico bajo el cursor (052), estático; con error, el motivo.
+    fn mostrar_grafico(&self, g: GraficoEnBuffer) {
+        let i = &self.0;
+        if g.fuente.trim().is_empty() {
+            self.ocultar_vista_previa();
+            return;
+        }
+        if i.vista_previa.borrow().is_none() {
+            i.vista_previa.replace(Some(VistaPrevia::new(&i.view)));
+        }
+        let prestamo = i.vista_previa.borrow();
+        let Some(v) = prestamo.as_ref() else { return };
+        self.apuntar_globito(v, g.inicio);
+        let mismo = v.actual_grafico.borrow().as_deref() == Some(g.fuente.as_str());
+        if mismo && v.popover.is_visible() {
+            return;
+        }
+        v.actual.replace(None);
+        v.imagen.set_paintable(None::<&gtk::gdk::Paintable>);
+        v.imagen.set_visible(false);
+        while let Some(h) = v.grafico.first_child() {
+            v.grafico.remove(&h);
+        }
+        match crate::graficos::leer(&g.fuente) {
+            Ok(grafico) => {
+                let vista = crate::graficos::GraficoVista::new(grafico, &g.fuente, false);
+                vista.lienzo().fijar_alto(GRAFICO_ALTO);
+                vista.widget().set_size_request(GRAFICO_ANCHO, -1);
+                v.grafico.append(vista.widget());
+                v.grafico.set_visible(true);
+                v.error.set_visible(false);
+            }
+            Err(e) => {
+                v.grafico.set_visible(false);
+                v.error.set_label(&e.to_string());
+                v.error.set_visible(true);
+            }
+        }
+        v.actual_grafico.replace(Some(g.fuente));
+        v.popover
+            .update_property(&[gtk::accessible::Property::Label("Vista previa del gráfico")]);
+        v.popover.popup();
     }
 
     fn mostrar_vista_previa(&self, tex: &str, modo: Modo, r: formulas::Resultado) {

@@ -3,6 +3,7 @@ mod ecuaciones;
 mod editor;
 mod export;
 mod formulas;
+mod graficos;
 mod grafo;
 mod guardar_en;
 mod html_view;

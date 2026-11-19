@@ -1,0 +1,12 @@
+[package]
+name = "orbital-graficos"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Gráficos 2D y polares de Orbital (052): sintaxis del bloque, expresiones, muestreo y SVG, sin GTK."
+publish = false
+
+# Sin dependencias: el analizador de expresiones (notación simple y LaTeX), el evaluador, el
+# muestreo y el SVG son propios. La comparación con los crates de expresiones y de dibujo está en
+# specs/052-graficos-2d/research.md.
+[dependencies]

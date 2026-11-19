@@ -15,7 +15,9 @@ padding:0.25em 1em;color:#55555c;background:#fff7fb}table{border-collapse:collap
 th,td{border:1px solid #d0d0d4;padding:0.35em 0.6em;text-align:left}\
 img{max-width:100%}input[type=checkbox]{margin-right:0.4em}\
 .formula-bloque{display:block;text-align:center;margin:0.6em 0;overflow-x:auto}\
-.formula-error{text-decoration:underline wavy #c2185b}";
+.formula-error{text-decoration:underline wavy #c2185b}\
+figure.grafico{margin:1em 0}figure.grafico svg{max-width:100%;height:auto}\
+.grafico-aviso{color:#c2185b}";
 
 /// Título de la página: el título de la nota (frontmatter) o el nombre del archivo.
 fn titulo(texto: &str, defecto: &str) -> String {
@@ -49,28 +51,40 @@ pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
 }
 
 /// Las fórmulas (050) como SVG del mismo motor que la Lectura: `$…$`, `$$…$$` y ` ```math `. Un
-/// `$` de cierre seguido de un dígito no cierra (dinero), igual que en Lectura.
+/// `$` de cierre seguido de un dígito no cierra (dinero), igual que en Lectura. Los gráficos
+/// (052, ` ```grafico `), como SVG estático para papel.
 fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item = Event<'a>> + 'a {
-    let mut en_math: Option<String> = None;
+    // (texto del bloque, es un gráfico)
+    let mut en_bloque: Option<(String, bool)> = None;
     parser.into_offset_iter().filter_map(move |(ev, rango)| {
-        if let Some(tex) = &mut en_math {
+        if let Some((texto, _)) = &mut en_bloque {
             return match ev {
                 Event::Text(t) => {
-                    tex.push_str(&t);
+                    texto.push_str(&t);
                     None
                 }
                 Event::End(TagEnd::CodeBlock) => {
-                    let tex = en_math.take().unwrap_or_default();
-                    Some(Event::Html(formula_html(&tex, true, true).into()))
+                    let (texto, grafico) = en_bloque.take().unwrap_or_default();
+                    Some(Event::Html(
+                        if grafico {
+                            grafico_html(&texto)
+                        } else {
+                            formula_html(&texto, true, true)
+                        }
+                        .into(),
+                    ))
                 }
                 _ => None,
             };
         }
         match ev {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(ref lang)))
-                if lang.split_whitespace().next() == Some("math") =>
+                if matches!(lang.split_whitespace().next(), Some("math" | "grafico")) =>
             {
-                en_math = Some(String::new());
+                en_bloque = Some((
+                    String::new(),
+                    lang.split_whitespace().next() == Some("grafico"),
+                ));
                 None
             }
             Event::InlineMath(t) => {
@@ -117,6 +131,24 @@ fn formula_html(tex: &str, bloque: bool, sola: bool) -> String {
     }
 }
 
+/// Ancho de los gráficos exportados, en píxeles (el SVG se achica si la página es más angosta).
+const ANCHO_GRAFICO: u32 = 760;
+
+/// Un gráfico (052) como SVG accesible; con error, su fuente y el motivo.
+fn grafico_html(fuente: &str) -> String {
+    let fuente = fuente.strip_suffix('\n').unwrap_or(fuente);
+    match crate::graficos::svg(fuente, ANCHO_GRAFICO) {
+        Ok(svg) => format!("<figure class=\"grafico\">{svg}</figure>\n"),
+        Err(e) => {
+            let e = orbital_formulas::html::escapar_atributo(&e.to_string());
+            format!(
+                "<pre class=\"grafico-error\" title=\"{e}\"><code>{}</code></pre>\n<p class=\"grafico-aviso\">⚠ {e}</p>\n",
+                orbital_formulas::html::escapar_atributo(fuente)
+            )
+        }
+    }
+}
+
 /// Formato de exportación.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Formato {
@@ -148,9 +180,11 @@ pub fn pagina(body: &str, titulo: &str) -> String {
 /// HTML de una nota `.html`: el contenido tal cual (FR-3), con las fórmulas (050) dibujadas como
 /// SVG en el texto visible. Sin fórmulas, una copia exacta.
 pub fn html_passthrough(texto: &str) -> String {
-    orbital_formulas::html::reemplazar(texto, |tex, modo| {
+    let con_formulas = orbital_formulas::html::reemplazar(texto, |tex, modo| {
         formula_html(tex, modo == orbital_formulas::Modo::Bloque, false)
-    })
+    });
+    // Los gráficos (052): `<pre><code class="language-grafico">`.
+    orbital_graficos::html::reemplazar(&con_formulas, grafico_html)
 }
 
 #[cfg(test)]
@@ -200,6 +234,29 @@ mod tests {
         let out = html_passthrough(html);
         assert_eq!(out.matches("<svg").count(), 1, "{out}");
         assert!(out.contains("<code>$y$</code>"), "{out}");
+    }
+
+    #[test]
+    fn exporta_graficos_como_svg() {
+        let nota = "# G\n\n```grafico\ntítulo: Ondas\ny = sin(x)\nr = 2\n```\n\n```grafico\ny = (x\n```\n\n```rust\nlet y = 1;\n```\n";
+        let out = html_md(nota, "n.md");
+        assert_eq!(
+            out.matches("<figure class=\"grafico\"><svg").count(),
+            1,
+            "{out}"
+        );
+        assert!(
+            out.contains("aria-label=\"Gráfico: Ondas. y = sin(x); r = 2."),
+            "{out}"
+        );
+        assert!(out.contains("class=\"grafico-error\""), "{out}");
+        assert!(out.contains("Error en el gráfico (renglón 1)"), "{out}");
+        assert!(out.contains("<code class=\"language-rust\">"), "{out}");
+        assert!(!out.contains("http"), "{out}");
+        let html = "<html><body><pre><code class=\"language-grafico\">y = x^2</code></pre><p>$x$</p></body></html>";
+        let out = html_passthrough(html);
+        assert_eq!(out.matches("<svg").count(), 2, "{out}");
+        assert!(!out.contains("language-grafico"), "{out}");
     }
 
     #[test]

@@ -202,6 +202,10 @@
       el.replaceWith(doc.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
     doc.querySelectorAll('[data-orbital-formula]').forEach((el) =>
       el.replaceWith(doc.createTextNode(el.dataset.orbitalFormula)));
+    // Un gráfico pegado: la figura sale y su fuente queda en el `pre`.
+    doc.querySelectorAll('[data-orbital-grafico]').forEach((el) => el.remove());
+    doc.querySelectorAll('[data-orbital-grafico-oculto]').forEach((el) =>
+      el.removeAttribute('data-orbital-grafico-oculto'));
     const allowed = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL',
       'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'TABLE',
       'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'IMG', 'HR', 'BR', 'DIV', 'SPAN']);
@@ -399,6 +403,58 @@
     wrapPendingFormulas();
   }
 
+  // Gráficos (052): para cada `pre > code.language-grafico`, Orbital pasa su SVG (estático, de la
+  // vista inicial) por el fuente, o `!` y el motivo. La figura va después del `pre`, que se
+  // oculta; no es editable y body() la quita. Un clic en la figura muestra el fuente.
+  const GRAFICO_CSS =
+    'pre[data-orbital-grafico-oculto]{display:none}' +
+    '.orbital-grafico{margin:0.6em 0;cursor:pointer;max-width:100%}' +
+    '.orbital-grafico svg{max-width:100%;height:auto}' +
+    '.orbital-grafico-error{color:#ff8cc6;cursor:default}';
+  let graficoMap = {};
+  function setGraficos(map) {
+    graficoMap = map;
+    if (!document.getElementById('orbital-grafico-style')) {
+      const st = document.createElement('style');
+      st.id = 'orbital-grafico-style';
+      st.textContent = GRAFICO_CSS;
+      document.head.appendChild(st);
+    }
+    document.querySelectorAll('[data-orbital-grafico]').forEach((f) => f.remove());
+    document.querySelectorAll('pre[data-orbital-grafico-oculto]').forEach((p) =>
+      p.removeAttribute('data-orbital-grafico-oculto'));
+    document.querySelectorAll('pre > code.language-grafico').forEach((code) => {
+      const pre = code.parentElement;
+      if (pre.closest('[data-orbital-embed]')) return;
+      // El que se está editando queda como fuente hasta que el cursor salga.
+      const sel = window.getSelection();
+      if (sel && sel.anchorNode && pre.contains(sel.anchorNode)) return;
+      const src = code.textContent;
+      let html = graficoMap[src];
+      if (html === undefined) html = graficoMap[src.replace(/\n$/, '')];
+      if (html === undefined) return;
+      const fig = document.createElement('figure');
+      fig.setAttribute('contenteditable', 'false');
+      fig.setAttribute('data-orbital-grafico', '');
+      if (html.startsWith('!')) {
+        fig.className = 'orbital-grafico orbital-grafico-error';
+        fig.setAttribute('role', 'alert');
+        fig.textContent = '⚠ ' + html.slice(1);
+        pre.after(fig);
+        return;
+      }
+      fig.className = 'orbital-grafico';
+      fig.title = 'Clic para editar el fuente del gráfico';
+      fig.innerHTML = html;
+      fig.addEventListener('click', () => {
+        pre.removeAttribute('data-orbital-grafico-oculto');
+        fig.remove();
+      });
+      pre.setAttribute('data-orbital-grafico-oculto', '');
+      pre.after(fig);
+    });
+  }
+
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno
   // (6 caracteres `a-z0-9`, como en Código). Enter en un bloque con id copia el atributo al bloque
   // nuevo: los repetidos se reemplazan desde el segundo. El atributo no se ve, así que también lo
@@ -441,6 +497,10 @@
     copy.querySelectorAll('[data-orbital-formula]').forEach((el) =>
       el.replaceWith(document.createTextNode(el.dataset.orbitalFormula)));
     copy.querySelectorAll('#orbital-formula-style').forEach((e) => e.remove());
+    copy.querySelectorAll('[data-orbital-grafico]').forEach((e) => e.remove());
+    copy.querySelectorAll('[data-orbital-grafico-oculto]').forEach((e) =>
+      e.removeAttribute('data-orbital-grafico-oculto'));
+    copy.querySelectorAll('#orbital-grafico-style').forEach((e) => e.remove());
     return copy.innerHTML;
   }
 
@@ -449,6 +509,7 @@
     setEmbeds,
     setMarkers,
     setFormulas,
+    setGraficos,
     body,
     rememberSelection() {
       rememberSelection();

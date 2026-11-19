@@ -129,6 +129,8 @@ struct Inner {
     markers: RefCell<String>,
     /// Fórmulas (050): objeto JS fórmula tal como se ve → SVG (o `!motivo` si tiene error).
     formulas: RefCell<String>,
+    /// Los gráficos de la nota (052) como objeto de JavaScript: fuente → SVG.
+    graficos: RefCell<String>,
     page_ready: Cell<bool>,
 }
 
@@ -169,6 +171,7 @@ impl Visual {
             embeds: RefCell::new("{}".to_owned()),
             markers: RefCell::new("{}".to_owned()),
             formulas: RefCell::new("{}".to_owned()),
+            graficos: RefCell::new("{}".to_owned()),
             page_ready: Cell::new(false),
         }))
     }
@@ -294,6 +297,7 @@ impl Visual {
                 Visual(i.clone()).apply_embeds();
                 Visual(i.clone()).apply_markers();
                 Visual(i.clone()).apply_formulas();
+                Visual(i.clone()).apply_graficos();
                 if let Some(f) = i.on_ready.borrow().as_ref() {
                     f();
                 }
@@ -417,6 +421,30 @@ impl Visual {
             return;
         };
         let script = format!("window.orbital.setFormulas({})", self.0.formulas.borrow());
+        glib::spawn_future_local(async move {
+            let _ = web
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+        });
+    }
+
+    /// Los gráficos de la nota (052): para cada fuente, su SVG estático, o `!` y el motivo.
+    pub fn set_graficos(&self, graficos: &[(String, String)]) {
+        let body: Vec<String> = graficos
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js_string(k), js_string(v)))
+            .collect();
+        *self.0.graficos.borrow_mut() = format!("{{{}}}", body.join(", "));
+        if self.0.page_ready.get() {
+            self.apply_graficos();
+        }
+    }
+
+    fn apply_graficos(&self) {
+        let Some(web) = self.0.web.borrow().clone() else {
+            return;
+        };
+        let script = format!("window.orbital.setGraficos({})", self.0.graficos.borrow());
         glib::spawn_future_local(async move {
             let _ = web
                 .evaluate_javascript_future(&script, Some(WORLD), None)

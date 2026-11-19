@@ -543,6 +543,85 @@ $$\Delta H = \pu{-285.8 kJ/mol}$$
   (`$…$`) o en bloque (`$$` en su propio párrafo). La página «Convertir unidades» convierte la
   cantidad bajo el cursor del editor y escribe el resultado como `\qty{…}{…}`.
 
+### Gráficos 2D y polares (052)
+
+Un codeblock ` ```grafico ` es un gráfico: el archivo guarda el bloque tal cual y Orbital lo dibuja
+en Lectura y Dividida (interactivo), en el globito de Código, en OnStage, al exportar (SVG) y en la
+Visual de las notas `.html` (SVG estático). Mirarlo, moverlo o mover sus deslizadores no cambia la
+nota.
+
+````markdown
+```grafico
+título: Ondas
+x: -2π..2π
+y: -3..3
+a = 1 (0..3)
+y = a sin(x)
+y = \frac{1}{x} ; color: azul ; nombre: inversa
+r = 1 + \cos\theta
+(\cos t, \sin 2t)
+x^2 + y^2 = 4 ; estilo: discontinua
+(1, 2), (2, 3)
+datos: líneas
+| t | v |
+|---|---|
+| 0 | 0 |
+| 1 | 1.5 |
+```
+````
+
+- **Un renglón por cosa**: una expresión, una opción `clave: valor`, un parámetro o el comienzo
+  de una tabla de datos. Los renglones en blanco separan; `%` o `//` empiezan un comentario.
+- **Expresiones**, en notación simple (`sin(x)/x`, `2x^2`, `x**2`, `sqrt(x)`, `|x|`, `2pi`,
+  `log(x)` de base 10, `ln`, `exp`, `abs`, `floor`, `min(a, b)`, `max`, `mod`, `atan2`; también
+  `sen`, `raiz`) o en LaTeX (`\sin x`, `\sin^2 x`, `\sin^{-1} x`, `\frac{a}{b}`, `\sqrt{x}`,
+  `\sqrt[3]{x}`, `\left| x \right|`, `\lfloor x \rfloor`, `\log_2 x`, `\cdot`, `\pi`, `\theta`,
+  `\operatorname{sgn}`), mezclables. La multiplicación puede ir implícita (`2x`, `3(x+1)`,
+  `\sin x \cos x`, `xy` es `x·y`). `π`, `τ` y `e` son constantes. `(-8)^{1/3}` es `-2`.
+- **Qué dibuja cada renglón**:
+  - `y = f(x)`, `f(x) = …` o una expresión con x sola: una función. Con `; dominio: 0..5`, solo
+    ahí.
+  - `r = f(θ)` o una expresión con θ (`theta`, `\theta`, `θ`): una curva polar, θ de 0 a 2π (o el
+    rango de `θ:`). Si todas las series son polares, la grilla es polar.
+  - `(x(t), y(t))` o `x = f(t), y = g(t)`: una curva paramétrica, t de 0 a 2π (o el de `t:`).
+  - Cualquier otra ecuación con x o y (`x^2 + y^2 = 1`, `y = x + y^2`, `x = 3`): una curva
+    implícita `F(x, y) = 0`.
+  - `(a, b)` o `(a, b), (c, d), …`: puntos sueltos (pueden usar parámetros).
+  - `datos:` (`datos: puntos`, `líneas` o `ambos`) y debajo las filas: números separados por
+    espacios, comas, `;`, tabulaciones o `|` (también una tabla de Markdown con encabezado). La
+    primera columna es x; cada otra columna es una serie, con el nombre del encabezado. La tabla
+    termina en el primer renglón en blanco o que no es una fila.
+- **Parámetros**: `a = 1 (0..5)` declara `a` con un deslizador de 0 a 5 (`(0..5, paso 0.5)` fija
+  el paso); `a = 2`, una constante. Se pueden usar antes de declararlos. Los nombres son una o
+  varias letras, griegas (`\alpha`, `α`) o con subíndice (`a_1`); no `x`, `y`, `r`, `t`, θ, `e` ni
+  π.
+- **Opciones**: `x: -5..5` y `y: -3..3` (rangos; también `[-5, 5]`, y los extremos pueden ser
+  expresiones como `-2π`), `y: auto` (la misma escala que x, centrada en 0: lo que se usa si no
+  se da `y`), `t:` y `θ:` (rangos de las curvas), `título:`, `ejes: sí|no`,
+  `grilla: sí|no|polar`, `leyenda: sí|no` (por defecto, con más de una serie o alguna con
+  nombre) y `alto:` (80 a 1200 píxeles; 300 si no). Sin `x:`, de −10 a 10.
+- **Atributos de una serie**, después de `;`: `color:` (rosa, celeste, amarillo, verde, violeta,
+  naranja, azul, rojo, gris o `#rrggbb`; también solo el nombre, `; azul`), `nombre:` (la
+  leyenda), `estilo:` (línea, discontinua, puntos, ambos), `grosor:` (0,5 a 8) y `dominio:`. Las
+  series sin color toman los de la paleta en orden, sin repetir los pedidos. Los colores se
+  eligen para distinguirse sobre la base oscura y, al exportar, sobre papel blanco.
+- **Discontinuidades**: los saltos y las asíntotas (`1/x`, `tan x`, `floor x`) no se unen; donde
+  la función no está definida (`sqrt x` con x < 0) la línea termina en el borde.
+- **Con error** (un nombre sin declarar, un paréntesis sin cerrar, una desigualdad, que todavía no
+  se grafican): se ve el fuente como código y el motivo con el renglón («Error en el gráfico
+  (renglón 2): …»). El archivo no cambia.
+- **Lectura y Dividida**: arrastrar mueve, la rueda acerca y aleja alrededor del puntero, abajo se
+  ven las coordenadas del puntero (y r y θ con grilla polar), «Volver a la vista original» (o 0, o
+  doble clic) vuelve, y cada parámetro con rango tiene su deslizador. Con el gráfico enfocado
+  (Tab): flechas para mover, + y − para acercar y alejar, 0 para volver.
+- **Notas `.html`**: un `<pre><code class="language-grafico">…</code></pre>` (como sale un
+  bloque de código de Markdown convertido a HTML) con el mismo contenido. En Visual se ve su SVG estático y un clic muestra el fuente
+  para editarlo; al guardar, el archivo conserva el `pre` tal cual.
+- **Editor de ecuaciones** (Ctrl+M en Código): con el cursor en un ` ```grafico `, abre la página
+  «Gráfico» con las expresiones, el gráfico en vivo y plantillas; al aceptar, reescribe los
+  renglones de adentro. Sin bloque bajo el cursor, la página «Gráfico» (o «Insertar gráfico» de la
+  paleta de comandos) inserta uno nuevo en su propio párrafo.
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas

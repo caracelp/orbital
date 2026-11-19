@@ -96,6 +96,8 @@ impl OnStage {
     pub fn new<P: glib::object::IsA<gtk::Window>>(principal: &P) -> Self {
         let reader = Reader::new();
         reader.widget().add_css_class("onstage-escala");
+        // Los gráficos (052), estáticos: la diapositiva no se maneja con el puntero.
+        reader.fijar_graficos_estaticos(true);
         let window = gtk::Window::builder()
             .title("OnStage")
             .transient_for(principal)

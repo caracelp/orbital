@@ -1123,6 +1123,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "orbital-formulas",
+ "orbital-graficos",
  "orbital-vault",
  "pulldown-cmark",
  "sourceview5",
@@ -1140,6 +1141,10 @@ dependencies = [
  "ratex-svg",
  "ratex-types",
 ]
+
+[[package]]
+name = "orbital-graficos"
+version = "0.1.0"
 
 [[package]]
 name = "orbital-vault"

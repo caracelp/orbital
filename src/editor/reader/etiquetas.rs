@@ -233,6 +233,11 @@ impl Reader {
             .underline_rgba(&crate::style::ACCENT_TEXT.rgba(1.0))
             .build());
         add(gtk::TextTag::builder()
+            .name("grafico-aviso")
+            .foreground_rgba(&crate::style::ACCENT_TEXT.rgba(1.0))
+            .pixels_below_lines(10)
+            .build());
+        add(gtk::TextTag::builder()
             .name("fuera-de-enfoque")
             .invisible(true)
             .build());
