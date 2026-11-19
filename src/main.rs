@@ -17,6 +17,7 @@ mod pestanas;
 mod pie_boveda;
 mod preferences;
 mod reparto;
+mod resaltado;
 mod search_panel;
 mod state;
 mod status_bar;

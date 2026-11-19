@@ -168,6 +168,9 @@ struct Inner {
     hay_formulas: Cell<bool>,
     /// Los gráficos (052) sin interacción (OnStage).
     graficos_estaticos: Cell<bool>,
+    /// Bloques de primer nivel con código por resaltar en reposo (055).
+    resaltar: RefCell<Vec<resaltar::Pendiente>>,
+    resaltar_programado: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -252,6 +255,8 @@ impl Reader {
             tamano_formulas: Cell::new(None),
             hay_formulas: Cell::new(false),
             graficos_estaticos: Cell::new(false),
+            resaltar: RefCell::new(Vec::new()),
+            resaltar_programado: Cell::new(false),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -476,6 +481,10 @@ mod generado;
 mod graficos;
 mod plegado;
 mod puntero;
+mod resaltar;
+#[cfg(test)]
+#[path = "resaltar_tests.rs"]
+mod resaltar_tests;
 use bloques::*;
 pub use generado::complete_generated;
 

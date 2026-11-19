@@ -52,10 +52,10 @@ pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
 
 /// Las fórmulas (050) como SVG del mismo motor que la Lectura: `$…$`, `$$…$$` y ` ```math `. Un
 /// `$` de cierre seguido de un dígito no cierra (dinero), igual que en Lectura. Los gráficos
-/// (052, ` ```grafico `), como SVG estático para papel.
+/// (052, ` ```grafico `), como SVG estático para papel. Los bloques de código con lenguaje
+/// conocido, resaltados con los colores de Código pasados a papel (055).
 fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item = Event<'a>> + 'a {
-    // (texto del bloque, es un gráfico)
-    let mut en_bloque: Option<(String, bool)> = None;
+    let mut en_bloque: Option<(String, Cercado)> = None;
     parser.into_offset_iter().filter_map(move |(ev, rango)| {
         if let Some((texto, _)) = &mut en_bloque {
             return match ev {
@@ -64,12 +64,12 @@ fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item =
                     None
                 }
                 Event::End(TagEnd::CodeBlock) => {
-                    let (texto, grafico) = en_bloque.take().unwrap_or_default();
+                    let (texto, cercado) = en_bloque.take()?;
                     Some(Event::Html(
-                        if grafico {
-                            grafico_html(&texto)
-                        } else {
-                            formula_html(&texto, true, true)
+                        match cercado {
+                            Cercado::Grafico => grafico_html(&texto),
+                            Cercado::Formula => formula_html(&texto, true, true),
+                            Cercado::Codigo(lang) => codigo_html(&lang, &texto),
                         }
                         .into(),
                     ))
@@ -83,8 +83,19 @@ fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item =
             {
                 en_bloque = Some((
                     String::new(),
-                    lang.split_whitespace().next() == Some("grafico"),
+                    if lang.split_whitespace().next() == Some("grafico") {
+                        Cercado::Grafico
+                    } else {
+                        Cercado::Formula
+                    },
                 ));
+                None
+            }
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(ref info)))
+                if crate::resaltado::puede(info.split_whitespace().next().unwrap_or("")) =>
+            {
+                let lang = info.split_whitespace().next().unwrap_or("").to_owned();
+                en_bloque = Some((String::new(), Cercado::Codigo(lang)));
                 None
             }
             Event::InlineMath(t) => {
@@ -131,6 +142,24 @@ fn formula_html(tex: &str, bloque: bool, sola: bool) -> String {
     }
 }
 
+/// Qué se junta de un bloque cercado para dibujarlo aparte.
+enum Cercado {
+    Formula,
+    Grafico,
+    /// Código para resaltar (055), con su lenguaje.
+    Codigo(String),
+}
+
+/// Un bloque de código resaltado (055); con un lenguaje que GtkSourceView no conoce, como lo
+/// escribe `pulldown-cmark`.
+fn codigo_html(lang: &str, texto: &str) -> String {
+    let clase = orbital_formulas::html::escapar_atributo(lang);
+    // Sin tramos, el texto escapado igual que `pulldown-cmark` (`&`, `<` y `>`).
+    let cuerpo = crate::resaltado::html(lang, texto)
+        .unwrap_or_else(|| crate::resaltado::html_de(texto, &[]));
+    format!("<pre><code class=\"language-{clase}\">{cuerpo}</code></pre>\n")
+}
+
 /// Ancho de los gráficos exportados, en píxeles (el SVG se achica si la página es más angosta).
 const ANCHO_GRAFICO: u32 = 760;
 
@@ -173,7 +202,13 @@ pub fn pagina(body: &str, titulo: &str) -> String {
     format!(
         "<!doctype html>\n<html lang=\"es\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-<title>{titulo}</title>\n<style>{ESTILOS}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n"
+<title>{titulo}</title>\n<style>{ESTILOS}{sintaxis}</style>\n</head>\n<body>\n{body}\n</body>\n</html>\n",
+        // Los colores del código (055), solo si hay código resaltado.
+        sintaxis = if body.contains("<span class=\"sx-") {
+            crate::resaltado::CSS_PAPEL
+        } else {
+            ""
+        }
     )
 }
 
