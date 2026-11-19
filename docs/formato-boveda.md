@@ -622,6 +622,75 @@ datos: líneas
   renglones de adentro. Sin bloque bajo el cursor, la página «Gráfico» (o «Insertar gráfico» de la
   paleta de comandos) inserta uno nuevo en su propio párrafo.
 
+### Gráficos 3D (053)
+
+El mismo bloque ` ```grafico ` es un gráfico 3D en cuanto tiene una serie del espacio (una
+expresión con z, `z = f(x, y)`, una curva o superficie paramétrica de tres coordenadas, puntos de
+tres coordenadas o una tabla x y z) o una opción del espacio (`z:`, `cámara:`). Se ve en los
+mismos lugares que los 2D: Lectura y Dividida (interactivo), el globito de Código, OnStage, la
+Visual de las notas `.html` y al exportar (estáticos, SVG). Girarlo, acercarlo o mover sus
+deslizadores no cambia la nota.
+
+````markdown
+```grafico
+título: Silla y hélice
+x: -2..2
+y: -2..2
+a = 1 (0..2)
+z = a(x^2 - y^2)
+(\cos t, \sin t, t/6) ; t: 0..6π ; nombre: hélice
+(\cos u \sin v, \sin u \sin v, \cos v) ; v: 0..π ; color: celeste
+x^2 + y^2 + z^2 = 1 ; color: violeta
+(0, 0, 2), (1, 1, 1)
+cámara: -60, 28
+```
+````
+
+- **Qué dibuja cada renglón** (las dos notaciones, simple y LaTeX, mezclables, como en 2D):
+  - `z = f(x, y)`, `f(x, y) = …` o una expresión con y (`x^2 - y^2`, `\sin x \cos y`): una
+    superficie, coloreada por altura (violeta abajo, rosa al medio, ámbar arriba). En un gráfico
+    3D, una expresión sola de x también es una altura.
+  - `(x(t), y(t), z(t))` o `x = f(t), y = g(t), z = h(t)`: una curva en el espacio, t de 0 a 2π
+    (o el de `t:`, del gráfico o de la serie: `; t: 0..6π`).
+  - `(x(u, v), y(u, v), z(u, v))` o `x = …, y = …, z = …` con u y v: una superficie paramétrica
+    (esfera, toro, cinta de Möbius), u y v de 0 a 2π (o los de `u:` y `v:`, del gráfico o de la
+    serie).
+  - Una ecuación con z (`x^2 + y^2 + z^2 = 1`): una superficie implícita `F(x, y, z) = 0`. En un
+    gráfico 3D, una ecuación de x e y también es una superficie (`x^2 + y^2 = 1` es un cilindro;
+    `y = x^2`, una superficie parabólica).
+  - `(a, b, c)` o `(a, b, c), (d, e, f), …`: puntos en el espacio.
+  - `datos: nube` (o una tabla con encabezado `x y z`, o cualquier tabla en un gráfico que ya es
+    3D): una nube de puntos; cada fila lleva x, y y z, y cada columna más es otra nube con la
+    misma x e y. `datos: líneas` o `ambos` también los une.
+  - Las curvas polares, las paramétricas y los puntos del plano no van en un gráfico 3D (error).
+- **Parámetros**: como en 2D, con deslizador; u y v son parámetros si se declaran
+  (`u = 1 (0..2)`), si no son las variables de las superficies. `z` no puede ser un parámetro
+  (`z = 2` es un plano).
+- **Opciones del espacio**: `z: -1..1` (sin él, se ajusta a lo que se dibuja; un polo como
+  `1/(x^2 + y^2)` no aplasta lo demás), `u:` y `v:`, `cámara: giro, elevación` (en grados; por
+  defecto `-60, 28`; la elevación va de −90 a 90) y `resolución:` (puntos por lado de las mallas,
+  60 si no, de 8 a 160; las implícitas usan hasta 96 celdas por lado, 48 si no). Sin `x:` (ni
+  `y:`), las superficies e implícitas van de −3 a 3; si solo hay curvas, superficies paramétricas
+  o puntos, la caja se ajusta a ellos con la misma escala en los tres ejes. `título:`, `ejes:`
+  (la caja con su grilla y sus números), `leyenda:` y `alto:` (380 si no) valen como en 2D.
+- **Atributos de una serie**: `color:`, `nombre:`, `estilo:` (para las curvas y los puntos) y
+  `grosor:` como en 2D, más `t:`, `u:` y `v:` (rangos). Una superficie `z = f(x, y)` sin color va
+  por altura; con color, o las paramétricas e implícitas, van del color de la serie, sombreadas.
+- **Valores sin definir o infinitos**: donde una superficie no está definida
+  (`\sqrt{1 - x^2 - y^2}`) el borde se busca y se corta al ras, sin dientes; los saltos
+  (`\tan(x + y)`) no se unen con paredes; lo que se sale de la caja se recorta contra ella; un
+  polo de una implícita (`z - 1/x = 0` en x = 0) no se dibuja como superficie.
+- **Lectura y Dividida**: arrastrar gira, la rueda acerca y aleja, abajo se ve el punto de la
+  superficie bajo el puntero (x, y, z) o, si no hay, el giro y la elevación; «Volver a la vista
+  original» (o 0, o doble clic) vuelve a la cámara del bloque. Con el gráfico enfocado (Tab):
+  flechas para girar, + y − para acercar y alejar, 0 para volver. Las implícitas se ven primero
+  con una grilla gruesa y se afinan solas.
+- **Editor de ecuaciones** (Ctrl+M): la misma página «Gráfico», con plantillas para la
+  superficie, la curva en el espacio, la superficie paramétrica, la implícita, los puntos, la
+  nube y las opciones `z:`, `cámara:` y `resolución:`.
+- **Estático** (exportar, `.html`, OnStage, globito): la vista de la cámara del bloque. El SVG
+  dibuja de atrás para adelante con mallas más gruesas y los colores para papel blanco.
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas
