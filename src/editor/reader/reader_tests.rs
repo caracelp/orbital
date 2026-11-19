@@ -1362,3 +1362,91 @@ fn consulta_tabla_coincidencias_y_conteo() {
         fs::remove_dir_all(root).unwrap();
     });
 }
+
+/// Medición (050): abrir en Lectura una nota con 200 fórmulas (la primera vez dibuja todas en el
+/// hilo de fondo; después salen de la caché). Imprime, por apertura, la preparación en el hilo de
+/// fondo (análisis + dibujo de las fórmulas), el volcado en el hilo de GTK y el tramo más largo
+/// sin volver al bucle principal. `cargo test --release --bin orbital medir_lectura_formulas --
+/// --ignored --nocapture`; `ORBITAL_MEDIR_SIN_FORMULAS=1` mide la misma nota sin los `$`.
+#[test]
+#[ignore = "medición; correr a mano con --release"]
+fn medir_lectura_formulas() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let corpus = [
+        r"x^2 + y^2 = z^2",
+        r"\frac{a}{b} + \sqrt{x^2+1}",
+        r"\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}",
+        r"\int_0^1 x^2\,dx",
+        r"f(x) = \begin{cases} x & x \ge 0 \\ -x & x < 0 \end{cases}",
+        r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+        r"\begin{aligned} a &= b + c \\ d &= e + f \end{aligned}",
+        r"\alpha \beta \gamma \Delta \Omega",
+    ];
+    let mut text = String::from("---\ntype: atomo\n---\n# Muchas fórmulas\n\n");
+    for n in 0..200 {
+        let f = format!("{} + {n}", corpus[n % corpus.len()]);
+        if n % 4 == 3 {
+            text.push_str(&format!("$$\n{f}\n$$\n\n"));
+        } else {
+            text.push_str(&format!(
+                "Párrafo {n} con ${f}$ en el renglón y más texto.\n\n"
+            ));
+        }
+    }
+    if std::env::var_os("ORBITAL_MEDIR_SIN_FORMULAS").is_some() {
+        text = text.replace('$', "");
+    }
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(800)
+        .build();
+    glib::MainContext::default().block_on(async {
+        // `ORBITAL_MEDIR_TEXTURA=1`: dibujar antes una textura cualquiera (separa el costo de la
+        // primera textura del proceso del de las fórmulas).
+        if std::env::var_os("ORBITAL_MEDIR_TEXTURA").is_some() {
+            let bytes = glib::Bytes::from_owned(vec![255u8; 16 * 16 * 4]);
+            let t = gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &bytes, 64);
+            window.set_child(Some(&gtk::Picture::for_paintable(&t)));
+            window.present();
+            glib::timeout_future(Duration::from_millis(300)).await;
+        }
+        for vuelta in 0..6 {
+            let reader = Reader::new();
+            window.set_child(Some(reader.widget()));
+            window.present();
+            let estilo = reader.estilo_formulas();
+            let t0 = std::time::Instant::now();
+            let texto = text.clone();
+            let prepared = gtk::gio::spawn_blocking(move || {
+                let p = Prepared::new(&texto, &[]);
+                crate::formulas::precalentar(Reader::claves_formulas(&p.doc, &estilo));
+                p
+            })
+            .await
+            .unwrap();
+            let prep = t0.elapsed().as_secs_f64() * 1000.0;
+            // El tramo más largo del hilo de GTK: un reloj que avanza cada 1 ms.
+            let max = Rc::new(Cell::new(0.0f64));
+            let (m, ultimo) = (max.clone(), Rc::new(Cell::new(std::time::Instant::now())));
+            let tic = glib::timeout_add_local(Duration::from_millis(1), move || {
+                let ahora = std::time::Instant::now();
+                m.set(m.get().max((ahora - ultimo.get()).as_secs_f64() * 1000.0));
+                ultimo.set(ahora);
+                glib::ControlFlow::Continue
+            });
+            let t1 = std::time::Instant::now();
+            reader.render(prepared, || None, None);
+            while reader.0.blocks.borrow().is_empty() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            let volcado = t1.elapsed().as_secs_f64() * 1000.0;
+            glib::timeout_future(Duration::from_millis(50)).await;
+            tic.remove();
+            println!(
+                "Apertura {}: preparación {prep:.1} ms, volcado {volcado:.1} ms, tramo más largo {:.1} ms",
+                vuelta + 1,
+                max.get()
+            );
+        }
+    });
+}

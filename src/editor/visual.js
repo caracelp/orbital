@@ -12,6 +12,20 @@
     clearTimeout(markerTimer);
     markerTimer = setTimeout(wrapPendingMarkers, 250);
   }, true);
+  // Una fórmula dibujada se edita como texto: un clic la vuelve a su fuente (050).
+  document.addEventListener('click', (e) => {
+    const f = e.target.closest && e.target.closest('[data-orbital-formula]');
+    if (!f) return;
+    const t = document.createTextNode(f.dataset.orbitalFormula);
+    f.replaceWith(t);
+    const r = document.createRange();
+    r.setStart(t, Math.min(1, t.length));
+    r.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    editingFormula = t;
+  }, true);
   document.execCommand('styleWithCSS', false, false);
 
   // Los controles GTK y sus popovers están fuera del documento. Conservamos el
@@ -186,6 +200,8 @@
     // Un marcador pegado vuelve a su fuente: el span no sobrevive a la limpieza.
     doc.querySelectorAll('[data-orbital-marker]').forEach((el) =>
       el.replaceWith(doc.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
+    doc.querySelectorAll('[data-orbital-formula]').forEach((el) =>
+      el.replaceWith(doc.createTextNode(el.dataset.orbitalFormula)));
     const allowed = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL',
       'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'TABLE',
       'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'IMG', 'HR', 'BR', 'DIV', 'SPAN']);
@@ -300,6 +316,89 @@
     wrapPendingMarkers();
   }
 
+  // Fórmulas (050): Orbital pasa, para cada fórmula tal como se ve en el texto (`$x^2$`), su
+  // SVG. Cada una se envuelve en un span no editable con el fuente en `data-orbital-formula`;
+  // body() y el pegado la restituyen, así el disco solo tiene el LaTeX.
+  const FORMULA_CSS =
+    '.orbital-formula{display:inline-block;cursor:text}' +
+    '.orbital-formula-bloque{display:block;text-align:center;margin:0.4em 0}' +
+    '.orbital-formula-error{font-family:monospace;text-decoration:underline wavy #ff8cc6}';
+  const RAW = 'code, pre, script, style, textarea, title, svg, math, [data-orbital-formula]';
+  let formulaMap = {};
+  let editingFormula = null;
+
+  function wrapPendingFormulas() {
+    const keys = Object.keys(formulaMap).sort((a, b) => b.length - a.length);
+    if (!keys.length) return;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: (t) =>
+        !t.data.includes('$') || (t.parentElement && t.parentElement.closest(RAW)) ||
+        t === editingFormula
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    for (const node of nodes) {
+      const hits = [];
+      for (const k of keys) {
+        let at = 0;
+        for (;;) {
+          const found = node.data.indexOf(k, at);
+          if (found < 0) break;
+          const end = found + k.length;
+          const inline = !k.startsWith('$$');
+          const overlaps = hits.some(([a, len]) => found < a + len && a < end);
+          if (!overlaps && !(inline && /[0-9]/.test(node.data.charAt(end)))) {
+            hits.push([found, k.length, k]);
+          }
+          at = end;
+        }
+      }
+      hits.sort((a, b) => b[0] - a[0]);
+      for (const [at, len, key] of hits) {
+        const tail = node.splitText(at);
+        const rest = tail.splitText(len);
+        const span = document.createElement('span');
+        const html = formulaMap[key];
+        const error = html.startsWith('!');
+        span.setAttribute('contenteditable', 'false');
+        span.setAttribute('data-orbital-formula', key);
+        span.className = 'orbital-formula' + (error ? ' orbital-formula-error' : '') +
+          (!error && key.startsWith('$$') ? ' orbital-formula-bloque' : '');
+        if (error) {
+          span.title = html.slice(1);
+          span.textContent = key;
+        } else {
+          span.innerHTML = html;
+        }
+        tail.replaceWith(span);
+        span.after(rest);
+      }
+    }
+  }
+
+  function setFormulas(map) {
+    formulaMap = map;
+    if (!document.getElementById('orbital-formula-style')) {
+      const st = document.createElement('style');
+      st.id = 'orbital-formula-style';
+      st.textContent = FORMULA_CSS;
+      document.head.appendChild(st);
+    }
+    // Las que ya no están (se borraron o cambiaron en Código) vuelven a texto.
+    document.querySelectorAll('[data-orbital-formula]').forEach((el) => {
+      if (!(el.dataset.orbitalFormula in map)) {
+        el.replaceWith(document.createTextNode(el.dataset.orbitalFormula));
+      }
+    });
+    // La que se está editando se vuelve a dibujar cuando el cursor sale de ella.
+    const sel = window.getSelection();
+    if (editingFormula && !(sel.anchorNode === editingFormula)) editingFormula = null;
+    wrapPendingFormulas();
+  }
+
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno
   // (6 caracteres `a-z0-9`, como en Código). Enter en un bloque con id copia el atributo al bloque
   // nuevo: los repetidos se reemplazan desde el segundo. El atributo no se ve, así que también lo
@@ -339,6 +438,9 @@
     copy.querySelectorAll('[data-orbital-embed]').forEach((e) => e.remove());
     copy.querySelectorAll('[data-orbital-marker]').forEach((el) =>
       el.replaceWith(document.createTextNode('[%' + el.dataset.orbitalMarker + ']')));
+    copy.querySelectorAll('[data-orbital-formula]').forEach((el) =>
+      el.replaceWith(document.createTextNode(el.dataset.orbitalFormula)));
+    copy.querySelectorAll('#orbital-formula-style').forEach((e) => e.remove());
     return copy.innerHTML;
   }
 
@@ -346,6 +448,7 @@
   window.orbital = {
     setEmbeds,
     setMarkers,
+    setFormulas,
     body,
     rememberSelection() {
       rememberSelection();

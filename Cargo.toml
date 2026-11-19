@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/orbital-vault"]
+members = ["crates/orbital-vault", "crates/orbital-formulas"]
 # `cargo test`, `cargo clippy` y `cargo build` sin `-p` cubren la app y el núcleo.
-default-members = [".", "crates/orbital-vault"]
+default-members = [".", "crates/orbital-vault", "crates/orbital-formulas"]
 resolver = "3"
 
 [package]
@@ -14,6 +14,7 @@ license = "GPL-3.0-or-later"
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_8"] }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+orbital-formulas = { version = "0.1.0", path = "crates/orbital-formulas" }
 orbital-vault = { version = "0.1.0", path = "crates/orbital-vault" }
 sourceview5 = "0.11.2"
 webkit6 = "0.6.1"

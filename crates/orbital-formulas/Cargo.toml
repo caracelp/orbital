@@ -1,0 +1,18 @@
+[package]
+name = "orbital-formulas"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Motor de fórmulas LaTeX de Orbital (050): análisis, disposición, imagen y SVG, sin GTK."
+publish = false
+
+# Motor: RaTeX (disposición de KaTeX en Rust, MIT) con las fuentes de KaTeX embebidas (OFL-1.1).
+# Sin la química `\ce` todavía (función `mhchem` de RaTeX, para una spec posterior). La comparación
+# con las otras opciones está en specs/050-formulas-latex/research.md.
+[dependencies]
+png = "0.17"
+ratex-layout = { version = "0.1.16", default-features = false }
+ratex-parser = { version = "0.1.16", default-features = false }
+ratex-render = { version = "0.1.16", default-features = false, features = ["embed-fonts"] }
+ratex-svg = { version = "0.1.16", default-features = false, features = ["embed-fonts"] }
+ratex-types = "0.1.16"

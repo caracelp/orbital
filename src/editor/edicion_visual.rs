@@ -51,6 +51,10 @@ impl Editor {
             replace_changed(b, &text, &new);
         }
         i.visual.mark_loaded(&new);
+        // Una fórmula recién escrita (o editada) se dibuja (050).
+        if new.contains('$') {
+            self.visual_formulas();
+        }
     }
 
     /// Muestra la vista Visual con el texto actual.
@@ -85,6 +89,43 @@ impl Editor {
         self.visual_header();
         self.visual_embeds();
         self.visual_markers();
+        self.visual_formulas();
+    }
+
+    /// Dibuja en segundo plano las fórmulas de la nota `.html` (050) y se las pasa a la vista
+    /// Visual: SVG del mismo motor que la Lectura, con nombre accesible. Sin `$`, nada.
+    pub(super) fn visual_formulas(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+        if !text.contains('$') {
+            i.visual.set_formulas(&[]);
+            return;
+        }
+        let path = self.current_path();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                orbital_formulas::html::formulas(body)
+                    .into_iter()
+                    .map(|(clave, tex, modo)| {
+                        let html = match crate::formulas::svg(&tex, modo) {
+                            Ok(svg) => svg,
+                            Err(e) => format!("!{}", e.mensaje),
+                        };
+                        (clave, html)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            let Ok(formulas) = result else { return };
+            if this.current_path() != path {
+                return;
+            }
+            this.0.visual.set_formulas(&formulas);
+        });
     }
 
     /// Resuelve los marcadores `[%clave]` de la nota `.html` en segundo plano y se los pasa a

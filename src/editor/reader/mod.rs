@@ -161,6 +161,11 @@ struct Inner {
     alternados: RefCell<std::collections::HashSet<(usize, usize)>>,
     /// La clave de `alternados` de cada etiqueta de cuerpo o respuesta, por su nombre.
     clave_de: RefCell<HashMap<String, (usize, usize)>>,
+    /// Tamaño de letra fijo para las fórmulas (OnStage lo cambia por CSS, 050); `None`: el de la
+    /// vista.
+    tamano_formulas: Cell<Option<f32>>,
+    /// Lo volcado tiene alguna fórmula (050).
+    hay_formulas: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -242,6 +247,8 @@ impl Reader {
             replegado: Cell::new(0),
             alternados: RefCell::default(),
             clave_de: RefCell::default(),
+            tamano_formulas: Cell::new(None),
+            hay_formulas: Cell::new(false),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -273,6 +280,10 @@ impl Reader {
                 let Some(inicio) = crate::editor::posicion::iter_en(&vista_closure, tx, ty) else {
                     return false;
                 };
+                if let Some(motivo) = Reader(i.clone()).error_de_formula_en(&inicio) {
+                    tooltip.set_text(Some(&motivo));
+                    return true;
+                }
                 for tag in inicio.tags() {
                     let Some(nombre) = tag
                         .name()
@@ -347,6 +358,7 @@ impl Reader {
         i.replegado.set(i.replegado.get() + 1);
         i.alternados.borrow_mut().clear();
         i.clave_de.borrow_mut().clear();
+        i.hay_formulas.set(false);
         let table = self.buffer().tag_table();
         for b in i.blocks.borrow_mut().drain(..) {
             for t in b.tags {
@@ -456,6 +468,7 @@ mod capas;
 mod consulta;
 mod enlaces;
 mod etiquetas;
+mod formulas;
 mod generado;
 mod plegado;
 mod puntero;

@@ -132,6 +132,7 @@ fn hojas(b: &Block, fija: Option<u32>, out: &mut Vec<(u32, String)>) {
             hoja(plain_text(inlines))
         }
         BlockKind::Code { text, .. } | BlockKind::Html(text) => hoja(text.clone()),
+        BlockKind::Math { tex } => hoja(tex.clone()),
         BlockKind::Table { header, rows, .. } => {
             let mut texto = String::new();
             for fila in std::iter::once(header).chain(rows) {

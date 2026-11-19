@@ -127,6 +127,8 @@ struct Inner {
     embeds: RefCell<String>,
     /// Resolución de los marcadores `[%clave]` (005): objeto JS clave→valor.
     markers: RefCell<String>,
+    /// Fórmulas (050): objeto JS fórmula tal como se ve → SVG (o `!motivo` si tiene error).
+    formulas: RefCell<String>,
     page_ready: Cell<bool>,
 }
 
@@ -166,6 +168,7 @@ impl Visual {
             on_ready: RefCell::new(None),
             embeds: RefCell::new("{}".to_owned()),
             markers: RefCell::new("{}".to_owned()),
+            formulas: RefCell::new("{}".to_owned()),
             page_ready: Cell::new(false),
         }))
     }
@@ -290,6 +293,7 @@ impl Visual {
                 i.page_ready.set(true);
                 Visual(i.clone()).apply_embeds();
                 Visual(i.clone()).apply_markers();
+                Visual(i.clone()).apply_formulas();
                 if let Some(f) = i.on_ready.borrow().as_ref() {
                     f();
                 }
@@ -387,6 +391,32 @@ impl Visual {
             return;
         };
         let script = format!("window.orbital.setMarkers({})", self.0.markers.borrow());
+        glib::spawn_future_local(async move {
+            let _ = web
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+        });
+    }
+
+    /// Las fórmulas de la nota (050): para cada una tal como se ve (`$x^2$`), su SVG, o `!` y
+    /// el motivo si no se puede dibujar. La vista las envuelve en spans no editables y `body()`
+    /// las restituye a su fuente.
+    pub fn set_formulas(&self, formulas: &[(String, String)]) {
+        let body: Vec<String> = formulas
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js_string(k), js_string(v)))
+            .collect();
+        *self.0.formulas.borrow_mut() = format!("{{{}}}", body.join(", "));
+        if self.0.page_ready.get() {
+            self.apply_formulas();
+        }
+    }
+
+    fn apply_formulas(&self) {
+        let Some(web) = self.0.web.borrow().clone() else {
+            return;
+        };
+        let script = format!("window.orbital.setFormulas({})", self.0.formulas.borrow());
         glib::spawn_future_local(async move {
             let _ = web
                 .evaluate_javascript_future(&script, Some(WORLD), None)

@@ -406,3 +406,147 @@ fn webkit_ids_de_bloque() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// 050: en Visual, las fórmulas se ven dibujadas (SVG con nombre accesible), las con error con su
+/// fuente y el motivo, y al guardar el disco conserva el LaTeX tal cual.
+/// `cargo test --bin orbital webkit_formulas -- --ignored --nocapture`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn webkit_formulas() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-050-{}", std::process::id()));
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        let source = "<!doctype html><html><head>\n<script type=\"application/yaml\">\ntype: sintesis\n</script>\n</head><body><p>Sea $a &lt; b^2$ y cuesta $5 o $10.</p>\n<p>$$\\frac{1}{2}$$</p>\n<p>Mal: $x^^2$ y <code>$c$</code>.</p></body></html>";
+        fs::write(root.join("wiki/s.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/s.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .title("Orbital — prueba aislada 050 fórmulas")
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let todas = "document.querySelectorAll('[data-orbital-formula]')";
+        for _ in 0..50 {
+            if eval(&web, &format!("{todas}.length")).await == "3" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(eval(&web, &format!("{todas}.length")).await, "3");
+        assert_eq!(
+            eval(&web, &format!("{todas}[0].dataset.orbitalFormula")).await,
+            "$a < b^2$"
+        );
+        assert_eq!(
+            eval(
+                &web,
+                &format!("{todas}[0].querySelector('svg').getAttribute('aria-label')")
+            )
+            .await,
+            "Fórmula: a < b^2"
+        );
+        assert_eq!(
+            eval(&web, &format!("{todas}[1].className")).await,
+            "orbital-formula orbital-formula-bloque"
+        );
+        let error = eval(&web, &format!("{todas}[2].title")).await;
+        assert!(error.starts_with("Error en la fórmula"), "{error}");
+        assert_eq!(
+            eval(&web, &format!("{todas}[2].textContent")).await,
+            "$x^^2$"
+        );
+        assert_eq!(
+            eval(&web, "document.querySelector('code').textContent").await,
+            "$c$"
+        );
+        assert!(
+            eval(&web, "document.body.textContent")
+                .await
+                .contains("cuesta $5 o $10.")
+        );
+        println!("OK: fórmulas dibujadas, la con error con su fuente, dinero y código intactos");
+
+        // Editar alrededor y guardar: el disco conserva el LaTeX, nunca el SVG.
+        eval(&web,
+            "const p = document.querySelectorAll('body > p')[2]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'Editado $y^2$.')").await;
+        glib::timeout_future(Duration::from_millis(600)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/s.html")).unwrap();
+        assert!(
+            saved.contains("Sea $a &lt; b^2$ y cuesta $5 o $10."),
+            "{saved}"
+        );
+        assert!(saved.contains(">$$\\frac{1}{2}$$</p>"), "{saved}");
+        assert!(saved.contains("Editado $y^2$."), "{saved}");
+        assert!(!saved.contains("<svg"), "{saved}");
+        assert!(!saved.contains("data-orbital-formula"), "{saved}");
+        assert_eq!(saved.split("<body>").next(), source.split("<body>").next());
+        println!("OK: el disco conserva las fórmulas como LaTeX");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
+
+/// 050: lo exportado (007) muestra las fórmulas como SVG en WebKit, lo mismo que se imprime a
+/// PDF. Con `ORBITAL_CAPTURA_DIR`, guarda `050-exportado.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn exportar_formulas_en_webkit() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let nota = r"# Exportado
+
+La identidad $e^{i\pi} + 1 = 0$ y una fracción $\frac{a}{b}$; cuesta $5 o $10.
+
+$$
+\begin{aligned} (a+b)^2 &= a^2 + 2ab + b^2 \\ (a-b)^2 &= a^2 - 2ab + b^2 \end{aligned}
+$$
+
+```math
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+```
+
+Con error: $x^^2$.
+";
+        let html = crate::export::html_md(nota, "exportado.md");
+        let web = crate::html_view::new_view(None);
+        let window = gtk::Window::builder()
+            .default_width(820)
+            .default_height(620)
+            .child(&web)
+            .build();
+        window.present();
+        web.load_html(&crate::html_view::with_csp(&html), None);
+        for _ in 0..100 {
+            if !web.is_loading() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(50)).await;
+        }
+        glib::timeout_future(Duration::from_millis(300)).await;
+        assert_eq!(html.matches("<svg").count(), 4, "{html}");
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::Visible,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("050-exportado.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        window.close();
+    });
+}

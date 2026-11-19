@@ -510,6 +510,12 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                 out.push_str(&escape(text));
                 out.push_str("</code></pre>");
             }
+            // Las fórmulas (050) de una nota incrustada en una `.html` quedan como su fuente.
+            BlockKind::Math { tex } => {
+                out.push_str("<p>");
+                out.push_str(&escape(&format!("$${tex}$$")));
+                out.push_str("</p>");
+            }
             BlockKind::FootnoteDefinition { inlines, .. } => {
                 out.push_str("<p>");
                 inlines_html(out, inlines);
@@ -616,6 +622,10 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
                 out.push_str("\" alt=\"");
                 out.push_str(&escape(alt));
                 out.push_str("\">");
+            }
+            Inline::Math { tex, display } => {
+                let d = if *display { "$$" } else { "$" };
+                out.push_str(&escape(&format!("{d}{tex}{d}")));
             }
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push_str("<br>"),

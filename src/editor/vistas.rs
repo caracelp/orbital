@@ -217,6 +217,7 @@ impl Editor {
         let this = self.clone();
         let place = (i.vault.borrow().clone(), self.current_path());
         let index = i.search_index.borrow().clone();
+        let estilo = i.reader.estilo_formulas();
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
                 let props = orbital_vault::props::markdown::locate(&text)
@@ -245,6 +246,11 @@ impl Editor {
                     place.0.as_deref().map(orbital_vault::Vault::root),
                     place.1.as_ref(),
                 );
+                // Las fórmulas se dibujan acá, fuera del hilo de GTK (050): al volcar ya están.
+                crate::formulas::precalentar(reader::Reader::claves_formulas(
+                    &prepared.doc,
+                    &estilo,
+                ));
                 (prepared, props, genero)
             })
             .await;
