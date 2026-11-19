@@ -106,15 +106,77 @@ pub fn set_language(buffer: &sourceview5::Buffer, language: &str) {
     buffer.set_language(lang.as_ref());
 }
 
-/// Margen entre el canal de las flechitas (028) y el texto.
+/// Margen entre el canal de las flechitas (028) o los números de línea (054) y el texto.
 const MARGEN_CANAL: i32 = 4;
 /// Ancho mínimo del canal: el ícono de 16 px y su relleno.
 pub const CANAL_MIN: i32 = 20;
+/// Relleno a cada lado de un número de línea.
+pub const RELLENO_NUMEROS: i32 = 4;
+
+thread_local! {
+    /// Preferencia de los números de línea (054): la última que se aplicó.
+    static NUMEROS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Las vistas de nota que la siguen (una por ventana), con su renderer de números; se limpian
+    /// las que ya no existen.
+    static NUMERADAS: std::cell::RefCell<Vec<(
+        gtk::glib::WeakRef<sourceview5::View>,
+        gtk::glib::WeakRef<sourceview5::GutterRendererText>,
+    )>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Si los números de línea están prendidos.
+pub fn line_numbers() -> bool {
+    NUMEROS.with(|n| n.get())
+}
+
+/// Prende o apaga los números de línea en todas las vistas de nota abiertas, en el acto.
+pub fn set_line_numbers(on: bool) {
+    NUMEROS.with(|n| n.set(on));
+    NUMERADAS.with(|v| {
+        v.borrow_mut()
+            .retain(|(view, r)| match (view.upgrade(), r.upgrade()) {
+                (Some(view), Some(r)) => {
+                    apply_line_numbers(&view, &r, on);
+                    true
+                }
+                _ => false,
+            })
+    });
+}
+
+/// Hace que la vista y su renderer de números sigan la preferencia (y la aplica ya).
+pub fn follow_line_numbers(view: &sourceview5::View, numeros: &sourceview5::GutterRendererText) {
+    apply_line_numbers(view, numeros, line_numbers());
+    NUMERADAS.with(|v| v.borrow_mut().push((view.downgrade(), numeros.downgrade())));
+}
+
+fn apply_line_numbers(
+    view: &sourceview5::View,
+    numeros: &sourceview5::GutterRendererText,
+    on: bool,
+) {
+    numeros.set_visible(on);
+    // La línea del cursor, apenas resaltada (su número, más claro, lo pone el renderer).
+    view.set_highlight_current_line(on);
+}
+
+/// Cifras del número de línea más alto (al menos dos, para que el canal no cambie de ancho
+/// entre la línea 9 y la 10).
+fn cifras(lineas: i32) -> u32 {
+    (lineas.max(10) as u32).ilog10() + 1
+}
 
 /// Centra el texto en una columna de hasta `max` píxeles con márgenes, sin envolver la vista en
 /// otro widget (que le haría perder el cálculo incremental de la disposición). Con `canal` (las
 /// flechitas del plegado, 028) visible, su ancho toma el lugar del margen izquierdo: la flechita
 /// queda al lado del texto y no en el borde de la ventana.
+///
+/// Con `numeros` (054) visible, el que se estira es el renderer de los números (alineados a la
+/// derecha) y el canal de las flechitas queda en su ancho mínimo: de izquierda a derecha, el
+/// margen libre, los números, las flechitas y el texto, que no se corre de la columna centrada.
+/// Si la columna no deja lugar (ventana angosta, Dividida), los números toman el ancho de sus
+/// cifras y el texto se corre lo justo. El ancho de las cifras se vuelve a medir solo cuando la
+/// nota pasa a tener una cifra más o menos (no en cada tecla).
 ///
 /// Con un canal, cambiar márgenes o anchos dentro del aviso de `page-size` (que GTK emite
 /// mientras valida lo visible) rompe la aserción `onscreen_validated` de `GtkTextView`: el ajuste
@@ -124,32 +186,72 @@ pub fn center_column(
     view: &impl IsA<gtk::TextView>,
     max: i32,
     canal: Option<&sourceview5::GutterRendererPixbuf>,
+    numeros: Option<&sourceview5::GutterRendererText>,
 ) {
     use std::cell::Cell;
     use std::rc::Rc;
     let view = view.as_ref().clone();
-    let notificar = canal.cloned();
+    let buffer = view.buffer();
+    let con_canales = canal.is_some() || numeros.is_some();
+    let avisa_canal = canal.cloned();
+    let avisa_numeros = numeros.cloned();
     let canal = canal.cloned();
+    let numeros = numeros.cloned();
+    // Cifras medidas y su ancho.
+    let medidas: Rc<Cell<(u32, i32)>> = Rc::new(Cell::new((0, 0)));
     let h = scroller.hadjustment();
     let ajustar = {
         let h = h.clone();
+        let medidas = medidas.clone();
+        let view = view.clone();
         move || {
-            // La página del ajuste horizontal es el área de texto, sin el canal: con el canal
-            // visible, el ancho total es la página más el canal (si no, agrandar el canal
-            // achica la página y el ancho oscila).
             let canal_visible = canal.as_ref().filter(|c| c.is_visible());
-            let total =
-                h.page_size() as i32 + canal_visible.map_or(0, |c| c.width_request().max(0));
+            let numeros_visibles = numeros.as_ref().filter(|n| n.is_visible());
+            // El ancho total: el de la vista (área de texto más canales). Antes de la primera
+            // disposición, la página del ajuste horizontal (el área de texto, sin los canales)
+            // más lo pedido por los canales; nunca la página sola: agrandar un canal achica la
+            // página y el ancho oscilaría.
+            let total = if view.width() > 0 {
+                view.width()
+            } else {
+                h.page_size() as i32
+                    + canal_visible.map_or(0, |c| c.width_request().max(0))
+                    + numeros_visibles.map_or(0, |n| n.width_request().max(0))
+            };
             let side = ((total - max) / 2).max(12);
-            let left = match canal_visible {
-                Some(c) => {
+            let left = match (canal_visible, numeros_visibles) {
+                (canal, Some(n)) => {
+                    let fijo = match canal {
+                        Some(c) => {
+                            if c.width_request() != CANAL_MIN {
+                                c.set_size_request(CANAL_MIN, -1);
+                            }
+                            CANAL_MIN
+                        }
+                        None => 0,
+                    };
+                    let cifras = cifras(buffer.line_count());
+                    let (medidas_cifras, mut minimo) = medidas.get();
+                    if medidas_cifras != cifras {
+                        let muestra = "0".repeat(cifras as usize);
+                        minimo =
+                            GutterRendererTextExt::measure(n, &muestra).0 + 2 * RELLENO_NUMEROS;
+                        medidas.set((cifras, minimo));
+                    }
+                    let ancho = (side - MARGEN_CANAL - fijo).max(minimo);
+                    if n.width_request() != ancho {
+                        n.set_size_request(ancho, -1);
+                    }
+                    MARGEN_CANAL
+                }
+                (Some(c), None) => {
                     let ancho = (side - MARGEN_CANAL).max(CANAL_MIN);
                     if c.width_request() != ancho {
                         c.set_size_request(ancho, -1);
                     }
                     MARGEN_CANAL
                 }
-                None => side,
+                (None, None) => side,
             };
             if view.left_margin() != left || view.right_margin() != side {
                 view.set_left_margin(left);
@@ -157,8 +259,8 @@ pub fn center_column(
             }
         }
     };
-    if notificar.is_none() {
-        // Sin canal, como siempre: en el acto.
+    if !con_canales {
+        // Sin canales, como siempre: en el acto.
         ajustar();
         h.connect_page_size_notify(move |_| ajustar());
         return;
@@ -176,9 +278,21 @@ pub fn center_column(
         });
     });
     programar();
-    if let Some(c) = notificar {
+    if let Some(c) = avisa_canal {
         let p = programar.clone();
         c.connect_visible_notify(move |_| p());
+    }
+    if let Some(n) = avisa_numeros {
+        let p = programar.clone();
+        n.connect_visible_notify(move |_| p());
+        // Una cifra más o menos: medir de nuevo (una comparación por tecla).
+        let p = programar.clone();
+        view.buffer().connect_changed(move |b| {
+            let (medidas_cifras, _) = medidas.get();
+            if medidas_cifras != 0 && medidas_cifras != cifras(b.line_count()) {
+                p();
+            }
+        });
     }
     h.connect_page_size_notify(move |_| programar());
 }

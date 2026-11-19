@@ -264,6 +264,8 @@ impl Window {
         toasts.set_child(Some(&stack));
 
         let state = AppState::load();
+        // Números de línea en Código (054): en todas las vistas de nota, también las ya armadas.
+        editor::code::set_line_numbers(!state.hide_line_numbers);
         let default_w = state.window_width.unwrap_or(1100).max(640);
         let default_h = state.window_height.unwrap_or(720).max(450);
 

@@ -32,6 +32,10 @@ mod ids_bloque;
 mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;
+mod numeros;
+#[cfg(test)]
+#[path = "numeros_tests.rs"]
+mod numeros_tests;
 pub mod outliner;
 mod plegado;
 pub(crate) mod posicion;
@@ -241,6 +245,8 @@ struct Inner {
     on_enfoque: RefCell<Option<Box<dyn Fn()>>>,
     /// Canal de las flechitas (`flechas.rs`).
     flechas: sourceview5::GutterRendererPixbuf,
+    /// Canal de los números de línea (`numeros.rs`, 054).
+    numeros: sourceview5::GutterRendererText,
     on_plegado: RefCell<Option<plegado::PlegadoFn>>,
     /// Últimas claves avisadas a la ventana.
     plegado_claves: RefCell<Vec<orbital_vault::Clave>>,
@@ -276,7 +282,10 @@ impl Editor {
             .child(&view)
             .build();
         let flechas = flechas::nuevo();
-        code::center_column(&code_scroller, &view, 860, Some(&flechas));
+        let numeros = numeros::nuevo();
+        code::center_column(&code_scroller, &view, 860, Some(&flechas), Some(&numeros));
+        // Números de línea (054): la preferencia vale para todas las ventanas.
+        code::follow_line_numbers(&view, &numeros);
         let (tag_plegado, tag_fuera) = plegado::crear_etiquetas(&buffer);
         let capa_cursor = gtk::Overlay::new();
         capa_cursor.set_child(Some(&code_scroller));
@@ -417,6 +426,7 @@ impl Editor {
                 migas,
                 on_enfoque: RefCell::new(None),
                 flechas,
+                numeros,
                 on_plegado: RefCell::new(None),
                 plegado_claves: RefCell::new(Vec::new()),
                 plegado_version: Cell::new(0),

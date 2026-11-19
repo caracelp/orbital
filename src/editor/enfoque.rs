@@ -228,6 +228,8 @@ impl Editor {
         let total = buf.line_count() as u32;
         let fuera = nucleo::fuera_de(&ps, idx, total);
         plegado::aplicar_ocultas(buf, &i.tag_fuera, &fuera);
+        // Lo oculto cambió: los números de línea (054) lo vuelven a mirar.
+        self.0.plegado_version.set(self.0.plegado_version.get() + 1);
 
         let nombre_nota = self
             .current_path()
@@ -288,6 +290,8 @@ impl Editor {
         };
         i.buffer.delete_mark(&m);
         plegado::aplicar_ocultas(&i.buffer, &i.tag_fuera, &[]);
+        // Lo oculto cambió: los números de línea (054) lo vuelven a mirar.
+        self.0.plegado_version.set(self.0.plegado_version.get() + 1);
         i.migas.ocultar();
         i.reader.set_enfoque(None);
         self.avisar_enfoque();
@@ -308,6 +312,8 @@ impl Editor {
         let total = self.0.buffer.line_count() as u32;
         let fuera = nucleo::fuera_de(&ps, idx, total);
         plegado::aplicar_ocultas(&self.0.buffer, &self.0.tag_fuera, &fuera);
+        // Lo oculto cambió: los números de línea (054) lo vuelven a mirar.
+        self.0.plegado_version.set(self.0.plegado_version.get() + 1);
         let nombre_nota = self
             .current_path()
             .and_then(|r| {

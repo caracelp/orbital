@@ -239,10 +239,7 @@ impl Window {
             "Abrir como bóveda de Orbital",
             "<Control><Shift>o",
         ));
-        section.add(adw::ShortcutsItem::new(
-            "Preferencias de la bóveda",
-            "<Control>comma",
-        ));
+        section.add(adw::ShortcutsItem::new("Preferencias", "<Control>comma"));
         section.add(adw::ShortcutsItem::new("Nota nueva", "<Control>n"));
         section.add(adw::ShortcutsItem::new("Vista Código", "<Control>1"));
         section.add(adw::ShortcutsItem::new("Vista Lectura", "<Control>2"));
@@ -437,12 +434,7 @@ impl Window {
             Some("Ctrl+Mayús+O"),
             false,
         ),
-        (
-            "Preferencias de la bóveda",
-            "preferences",
-            Some("Ctrl+,"),
-            false,
-        ),
+        ("Preferencias", "preferences", Some("Ctrl+,"), false),
         ("Atajos de teclado", "shortcuts", Some("Ctrl+?"), false),
         (
             "Exportar nota como HTML",
@@ -512,7 +504,7 @@ impl Window {
         );
     }
 
-    /// «Preferencias de la bóveda».
+    /// «Preferencias»: las de la bóveda y las del editor.
     pub(super) fn show_preferences(&self) {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
@@ -524,10 +516,11 @@ impl Window {
             .borrow()
             .as_ref()
             .map(|e| e.path.clone());
-        crate::preferences::show(
+        let _ = crate::preferences::show(
             &self.0.window,
             vault.root().to_path_buf(),
             vault.config().clone(),
+            self.0.persist.get(),
             move |r| {
                 let (this, current) = (this.clone(), current.clone());
                 glib::spawn_future_local(async move {
