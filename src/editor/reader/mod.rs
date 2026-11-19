@@ -166,6 +166,8 @@ struct Inner {
     tamano_formulas: Cell<Option<f32>>,
     /// Lo volcado tiene alguna fórmula (050).
     hay_formulas: Cell<bool>,
+    /// Los gráficos (052) sin interacción (OnStage).
+    graficos_estaticos: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -249,6 +251,7 @@ impl Reader {
             clave_de: RefCell::default(),
             tamano_formulas: Cell::new(None),
             hay_formulas: Cell::new(false),
+            graficos_estaticos: Cell::new(false),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -470,6 +473,7 @@ mod enlaces;
 mod etiquetas;
 mod formulas;
 mod generado;
+mod graficos;
 mod plegado;
 mod puntero;
 use bloques::*;

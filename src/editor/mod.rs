@@ -20,6 +20,9 @@ mod flechas;
 #[cfg(test)]
 #[path = "formulas_tests.rs"]
 mod formulas_tests;
+#[cfg(test)]
+#[path = "graficos_tests.rs"]
+mod graficos_tests;
 mod guardado;
 pub mod html;
 mod ids_bloque;

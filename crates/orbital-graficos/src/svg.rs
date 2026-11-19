@@ -189,6 +189,18 @@ mod tests {
     use crate::bloque::leer;
 
     #[test]
+    fn leyenda_legible() {
+        use crate::guias::legible;
+        assert_eq!(legible("y = \\frac{1}{x}"), "y = 1/x");
+        assert_eq!(legible("y = \\frac{x+1}{2}"), "y = (x+1)/2");
+        assert_eq!(legible("r = 1 + \\cos\\theta"), "r = 1 + cosθ");
+        assert_eq!(legible("y = \\sin x \\cdot x^{2}"), "y = sin x · x²");
+        assert_eq!(legible("y = e^{-x^2}"), "y = e^(−x²)".replace('−', "-"));
+        assert_eq!(legible("y = sqrt(x)"), "y = sqrt(x)");
+        assert_eq!(legible("y = \\sqrt{x}"), "y = √(x)");
+    }
+
+    #[test]
     fn svg_accesible_con_cada_serie() {
         let g = leer("título: Prueba <1>\ny = x^2\nr = 2\n(1, 2)\nx^2 + y^2 = 4").unwrap();
         let s = svg(&g, &Opciones::default());

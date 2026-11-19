@@ -202,6 +202,9 @@ impl Reader {
                 folded,
                 body,
             } => self.callout(s, end, kind, title, *folded, body, depth, b.source.start),
+            BlockKind::Code { lang, text } if lang == "grafico" => {
+                self.grafico(s, end, text, &base)
+            }
             BlockKind::Code { text, .. } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));

@@ -51,9 +51,12 @@ impl Editor {
             replace_changed(b, &text, &new);
         }
         i.visual.mark_loaded(&new);
-        // Una fórmula recién escrita (o editada) se dibuja (050).
+        // Una fórmula recién escrita (o editada) se dibuja (050); un gráfico, también (052).
         if new.contains('$') {
             self.visual_formulas();
+        }
+        if new.contains("language-grafico") {
+            self.visual_graficos();
         }
     }
 
@@ -90,6 +93,43 @@ impl Editor {
         self.visual_embeds();
         self.visual_markers();
         self.visual_formulas();
+        self.visual_graficos();
+    }
+
+    /// Dibuja en segundo plano los gráficos de la nota `.html` (052) como SVG estático (papel:
+    /// el fondo de la página es de la nota) y se los pasa a la vista Visual. Sin gráficos, nada.
+    pub(super) fn visual_graficos(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+        if !text.contains("language-grafico") {
+            i.visual.set_graficos(&[]);
+            return;
+        }
+        let path = self.current_path();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                orbital_graficos::html::graficos(body)
+                    .into_iter()
+                    .map(|g| {
+                        let html = match crate::graficos::svg(&g.fuente, 720) {
+                            Ok(svg) => svg,
+                            Err(e) => format!("!{e}"),
+                        };
+                        (g.fuente, html)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            let Ok(graficos) = result else { return };
+            if this.current_path() != path {
+                return;
+            }
+            this.0.visual.set_graficos(&graficos);
+        });
     }
 
     /// Dibuja en segundo plano las fórmulas de la nota `.html` (050) y se las pasa a la vista

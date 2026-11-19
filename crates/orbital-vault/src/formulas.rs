@@ -117,9 +117,91 @@ pub fn formula_en(texto: &str, offset: usize) -> Option<FormulaEn> {
     None
 }
 
+/// Un bloque de código con cercas de una nota `.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CercaEn {
+    /// El lenguaje (la primera palabra después de la cerca).
+    pub lang: String,
+    /// De la cerca de apertura al final de la de cierre.
+    pub rango: Range<usize>,
+    /// Los renglones de adentro (sin las cercas).
+    pub contenido: Range<usize>,
+}
+
+/// El bloque de código con cercas que contiene el byte `offset` (052: los ` ```grafico `). Las
+/// mismas reglas que [`formula_en`]: `texto` empieza al comienzo de un renglón fuera de código.
+pub fn cerca_en(texto: &str, offset: usize) -> Option<CercaEn> {
+    let offset = offset.min(texto.len());
+    let mut inicio = 0;
+    // (carácter, largo, inicio, lenguaje)
+    let mut cerca: Option<(u8, usize, usize, &str)> = None;
+    for linea in texto.split_inclusive('\n') {
+        let fin = inicio + linea.len();
+        let t = linea.trim_start();
+        let marca = t.bytes().next().filter(|c| *c == b'`' || *c == b'~');
+        let largo = marca.map_or(0, |c| t.bytes().take_while(|b| *b == c).count());
+        match cerca {
+            Some((c, n, desde, lang)) => {
+                if marca == Some(c) && largo >= n && t[largo..].trim().is_empty() {
+                    cerca = None;
+                    if (desde..fin).contains(&offset) {
+                        let primera = texto[desde..inicio]
+                            .find('\n')
+                            .map_or(inicio, |n| desde + n + 1);
+                        return Some(CercaEn {
+                            lang: lang.to_owned(),
+                            rango: desde..fin,
+                            contenido: primera..inicio,
+                        });
+                    }
+                }
+            }
+            None => {
+                if offset < inicio {
+                    return None;
+                }
+                if marca.is_some() && largo >= 3 {
+                    let lang = t[largo..].split_whitespace().next().unwrap_or("");
+                    cerca = Some((t.as_bytes()[0], largo, inicio, lang));
+                }
+            }
+        }
+        inicio = fin;
+    }
+    let (_, _, desde, lang) = cerca?;
+    if offset < desde {
+        return None;
+    }
+    let primera = texto[desde..]
+        .find('\n')
+        .map_or(texto.len(), |n| desde + n + 1);
+    Some(CercaEn {
+        lang: lang.to_owned(),
+        rango: desde..texto.len(),
+        contenido: primera..texto.len(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cerca_bajo_el_cursor() {
+        let t = "Hola\n\n```grafico\ny = x^2\nr = 2\n```\n\nfin\n~~~~rust\nx\n~~~~\n";
+        let c = cerca_en(t, t.find("r = 2").unwrap()).unwrap();
+        assert_eq!(c.lang, "grafico");
+        assert_eq!(&t[c.contenido.clone()], "y = x^2\nr = 2\n");
+        assert!(t[c.rango.clone()].starts_with("```grafico") && t[c.rango].ends_with("```\n"));
+        assert!(cerca_en(t, t.find("Hola").unwrap()).is_none());
+        assert!(cerca_en(t, t.find("fin").unwrap()).is_none());
+        assert_eq!(cerca_en(t, t.find("x\n~").unwrap()).unwrap().lang, "rust");
+        let abierta = "```grafico\ny = x\n";
+        assert_eq!(
+            &abierta[cerca_en(abierta, 12).unwrap().contenido],
+            "y = x\n"
+        );
+    }
 
     fn en(texto: &str, marca: &str) -> Option<(String, bool)> {
         let off = texto.find(marca).expect("marca");

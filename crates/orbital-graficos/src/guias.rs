@@ -143,7 +143,7 @@ pub fn guias(g: &Grafico, v: &Vista) -> Guias {
             ancla: Ancla::Derecha,
         });
     }
-    if eje_x_visible && eje_y_visible {
+    if eje_x_visible && eje_y_visible && oy < v.alto - 20.0 && ox > 20.0 {
         out.rotulos.push(Rotulo {
             texto: "0".into(),
             x: ox - MARGEN,
@@ -154,13 +154,152 @@ pub fn guias(g: &Grafico, v: &Vista) -> Guias {
     out
 }
 
-/// El texto de la leyenda de una serie (su nombre o su expresión, acortada).
+/// El texto de la leyenda de una serie (su nombre o su expresión legible, acortada).
 pub fn nombre_de_serie(s: &crate::bloque::Serie) -> String {
-    let t = s.nombre.as_deref().unwrap_or(&s.fuente);
+    let t = match &s.nombre {
+        Some(n) => n.clone(),
+        None => legible(&s.fuente),
+    };
     if t.chars().count() > 40 {
         let corto: String = t.chars().take(39).collect();
         format!("{corto}…")
     } else {
-        t.to_owned()
+        t
     }
+}
+
+fn superindice(c: char) -> Option<char> {
+    Some(match c {
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        '-' | '−' => '⁻',
+        '+' => '⁺',
+        'n' => 'ⁿ',
+        _ => return None,
+    })
+}
+
+/// Lo que sigue: un grupo `{…}` o un solo carácter. Devuelve (contenido, resto).
+fn grupo(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    if let Some(r) = s.strip_prefix('{') {
+        let mut prof = 1;
+        for (k, c) in r.char_indices() {
+            match c {
+                '{' => prof += 1,
+                '}' => {
+                    prof -= 1;
+                    if prof == 0 {
+                        return (&r[..k], &r[k + 1..]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return (r, "");
+    }
+    match s.chars().next() {
+        Some(c) => s.split_at(c.len_utf8()),
+        None => ("", ""),
+    }
+}
+
+/// Entre paréntesis si tiene más de un término.
+fn agrupado(s: &str) -> String {
+    let l = legible(s);
+    if l.chars().count() > 1 && l.contains([' ', '+', '-', '−', '/', '·']) {
+        format!("({l})")
+    } else {
+        l
+    }
+}
+
+/// Una expresión escrita en LaTeX, legible como texto (para la leyenda): `\frac{1}{x}` → `1/x`,
+/// `x^{2}` → `x²`, `\theta` → `θ`, `\cdot` → `·`. La notación simple queda casi igual.
+pub fn legible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut r = s;
+    while let Some(c) = r.chars().next() {
+        r = &r[c.len_utf8()..];
+        match c {
+            '\\' => {
+                let fin = r
+                    .char_indices()
+                    .find(|(_, c)| !c.is_ascii_alphabetic())
+                    .map_or(r.len(), |(k, _)| k);
+                let (nombre, resto) = if fin == 0 {
+                    r.split_at(r.chars().next().map_or(0, char::len_utf8))
+                } else {
+                    r.split_at(fin)
+                };
+                r = resto;
+                match nombre {
+                    "frac" | "dfrac" | "tfrac" => {
+                        let (a, resto) = grupo(r);
+                        let (b, resto) = grupo(resto);
+                        r = resto;
+                        out.push_str(&format!("{}/{}", agrupado(a), agrupado(b)));
+                    }
+                    "sqrt" => {
+                        let (a, resto) = grupo(r);
+                        r = resto;
+                        out.push_str(&format!("√({})", legible(a)));
+                    }
+                    "cdot" | "times" => out.push('·'),
+                    "div" => out.push('÷'),
+                    "left" | "right" | "," | ";" | ":" | "!" | " " | "displaystyle" | "quad" => {}
+                    "{" | "}" | "|" => out.push_str(nombre),
+                    otro => {
+                        let griega = [
+                            ("alpha", 'α'),
+                            ("beta", 'β'),
+                            ("gamma", 'γ'),
+                            ("delta", 'δ'),
+                            ("theta", 'θ'),
+                            ("lambda", 'λ'),
+                            ("mu", 'μ'),
+                            ("pi", 'π'),
+                            ("rho", 'ρ'),
+                            ("sigma", 'σ'),
+                            ("tau", 'τ'),
+                            ("phi", 'φ'),
+                            ("omega", 'ω'),
+                        ]
+                        .iter()
+                        .find(|(n, _)| *n == otro)
+                        .map(|(_, c)| *c);
+                        match griega {
+                            Some(g) => out.push(g),
+                            None => {
+                                out.push_str(otro);
+                                if r.starts_with(|c: char| c.is_alphanumeric()) {
+                                    out.push(' ');
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            '^' => {
+                let (e, resto) = grupo(r);
+                r = resto;
+                let l = legible(e);
+                match l.chars().map(superindice).collect::<Option<String>>() {
+                    Some(sup) if !sup.is_empty() => out.push_str(&sup),
+                    _ => out.push_str(&format!("^({l})")),
+                }
+            }
+            '{' | '}' => {}
+            c => out.push(c),
+        }
+    }
+    out
 }

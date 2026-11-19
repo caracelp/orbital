@@ -3,20 +3,35 @@
 //! deshacer); sin fórmula, inserta una nueva en el cursor. Se abre con Ctrl+M, desde el menú
 //! contextual de Código y desde la paleta de comandos («Insertar ecuación»). Solo en notas `.md`,
 //! en Código y en la mitad Código de Dividida.
+//!
+//! Gráficos (052): con el cursor en un bloque `grafico`, el editor abre su página «Gráfico» y al
+//! aceptar reescribe los renglones de adentro; al insertar, la página «Gráfico» inserta un
+//! bloque nuevo en su propio párrafo. También una acción de deshacer.
 
 use super::*;
-use crate::ecuaciones::EditorEcuaciones;
+use crate::ecuaciones::{Aceptado, Apertura, EditorEcuaciones};
 use crate::formulas::Modo;
 
 /// Qué hace el editor al aceptar.
 enum Destino {
     /// Reescribe el LaTeX entre las dos marcas.
     Reemplazar { modo: Modo },
-    /// Inserta una fórmula nueva entre las marcas (lo seleccionado, si había).
+    /// Reescribe los renglones de un bloque `grafico` entre las dos marcas.
+    Grafico,
+    /// Inserta una fórmula o un gráfico nuevo entre las marcas (lo seleccionado, si había).
     Insertar,
 }
 
+/// Qué hay bajo el cursor o el puntero, para el rótulo del menú contextual.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Sobre {
+    Nada,
+    Formula,
+    Grafico,
+}
+
 const ROTULO_EDITAR: &str = "Editar ecuación…";
+const ROTULO_EDITAR_GRAFICO: &str = "Editar gráfico…";
 const ROTULO_INSERTAR: &str = "Insertar ecuación…";
 
 impl Editor {
@@ -34,7 +49,7 @@ impl Editor {
         });
         grupo.add_action(&accion);
         i.view.insert_action_group("editor", Some(&grupo));
-        self.rotular_menu(false);
+        self.rotular_menu(Sobre::Nada);
         // Con el clic derecho, el rótulo según lo que hay bajo el puntero (el teclado usa el de
         // la última pausa del cursor, ver `actualizar_vista_previa`).
         let clic = gtk::GestureClick::builder()
@@ -47,10 +62,14 @@ impl Editor {
             let e = Editor(inner);
             let v = e.0.view.upcast_ref::<gtk::TextView>();
             let (bx, by) = posicion::al_buffer(v, x, y);
-            let sobre = e.0.format.get() == Format::Md
-                && posicion::iter_en(v, bx, by)
-                    .and_then(|it| e.formula_en_offset(it.offset()))
-                    .is_some();
+            let it = (e.0.format.get() == Format::Md)
+                .then(|| posicion::iter_en(v, bx, by))
+                .flatten();
+            let sobre = match it {
+                Some(it) if e.formula_en_offset(it.offset()).is_some() => Sobre::Formula,
+                Some(it) if e.grafico_en_offset(it.offset()).is_some() => Sobre::Grafico,
+                _ => Sobre::Nada,
+            };
             e.rotular_menu(sobre);
             // Que GTK siga con su menú.
             g.set_state(gtk::EventSequenceState::None);
@@ -59,12 +78,12 @@ impl Editor {
     }
 
     /// Cambia el rótulo del ítem del menú contextual.
-    pub(super) fn rotular_menu(&self, sobre_formula: bool) {
+    pub(super) fn rotular_menu(&self, sobre: Sobre) {
         let i = &self.0;
-        let rotulo = if sobre_formula {
-            ROTULO_EDITAR
-        } else {
-            ROTULO_INSERTAR
+        let rotulo = match sobre {
+            Sobre::Formula => ROTULO_EDITAR,
+            Sobre::Grafico => ROTULO_EDITAR_GRAFICO,
+            Sobre::Nada => ROTULO_INSERTAR,
         };
         let actual = i
             .view
@@ -97,8 +116,17 @@ impl Editor {
     }
 
     /// Abre el editor de ecuaciones: con `solo_insertar`, siempre una fórmula nueva en el cursor;
-    /// si no, la fórmula bajo el cursor (o una nueva si no hay).
+    /// si no, la fórmula o el gráfico bajo el cursor (o una nueva si no hay).
     pub fn abrir_ecuacion(&self, solo_insertar: bool) -> Option<EditorEcuaciones> {
+        self.abrir_editor(solo_insertar, false)
+    }
+
+    /// Abre el editor en su página «Gráfico» para insertar uno nuevo en el cursor (052).
+    pub fn insertar_grafico(&self) -> Option<EditorEcuaciones> {
+        self.abrir_editor(true, true)
+    }
+
+    fn abrir_editor(&self, solo_insertar: bool, grafico: bool) -> Option<EditorEcuaciones> {
         if let Some(m) = self.motivo_sin_ecuacion() {
             self.error(m);
             return None;
@@ -109,14 +137,23 @@ impl Editor {
         let hallada = (!solo_insertar)
             .then(|| self.formula_en_offset(b.cursor_position()))
             .flatten();
-        let (desde, hasta, inicial, destino) = match hallada {
-            Some(f) => (
+        let grafico_hallado = (!solo_insertar && hallada.is_none())
+            .then(|| self.grafico_en_offset(b.cursor_position()))
+            .flatten();
+        let (desde, hasta, inicial, destino) = match (hallada, grafico_hallado) {
+            (Some(f), _) => (
                 f.contenido.start,
                 f.contenido.end,
                 f.tex.trim().to_owned(),
                 Destino::Reemplazar { modo: f.modo },
             ),
-            None => {
+            (None, Some(g)) => (
+                g.contenido.start,
+                g.contenido.end,
+                g.fuente.trim_end().to_owned(),
+                Destino::Grafico,
+            ),
+            (None, None) => {
                 let (a, z) = b
                     .selection_bounds()
                     .map_or((b.cursor_position(), b.cursor_position()), |(a, z)| {
@@ -135,20 +172,29 @@ impl Editor {
         };
         let marca_desde = b.create_mark(None, &b.iter_at_offset(desde), true);
         let marca_hasta = b.create_mark(None, &b.iter_at_offset(hasta), false);
-        let (modo, editando) = match destino {
-            Destino::Reemplazar { modo } => (modo, true),
-            Destino::Insertar => (Modo::EnLinea, false),
+        let (apertura, editando) = match destino {
+            Destino::Reemplazar { modo } => (Apertura::Formula { tex: inicial, modo }, true),
+            Destino::Grafico => (Apertura::Grafico { fuente: inicial }, true),
+            Destino::Insertar => (
+                Apertura::Insertar {
+                    tex: inicial,
+                    modo: Modo::EnLinea,
+                    grafico,
+                },
+                false,
+            ),
         };
         let padre = i.view.clone();
         let (aceptar, cerrar) = (self.clone(), self.clone());
         let (md, mh) = (marca_desde.clone(), marca_hasta.clone());
-        Some(EditorEcuaciones::presentar(
+        Some(EditorEcuaciones::presentar_con(
             &padre,
-            &inicial,
-            modo,
-            editando,
-            move |tex, modo_elegido| {
-                aceptar.aplicar_ecuacion(&md, &mh, &tex, editando, modo_elegido);
+            apertura,
+            move |r| match r {
+                Aceptado::Formula(tex, modo_elegido) => {
+                    aceptar.aplicar_ecuacion(&md, &mh, &tex, editando, modo_elegido);
+                }
+                Aceptado::Grafico(fuente) => aceptar.aplicar_grafico(&md, &mh, &fuente, editando),
             },
             move || {
                 let b = &cerrar.0.buffer;
@@ -200,46 +246,8 @@ impl Editor {
                 Modo::EnLinea => {
                     format!("${}$", tex.split_whitespace().collect::<Vec<_>>().join(" "))
                 }
-                Modo::Bloque => {
-                    // `$$` en su propio párrafo: renglones en blanco antes y después si hace falta.
-                    let antes = {
-                        let mut ini = a;
-                        ini.set_line_offset(0);
-                        b.text(&ini, &a, true)
-                    };
-                    let despues = {
-                        let mut fin = z;
-                        if !fin.ends_line() {
-                            fin.forward_to_line_end();
-                        }
-                        b.text(&z, &fin, true)
-                    };
-                    let linea_vacia = |l: i32| {
-                        b.iter_at_line(l).is_none_or(|ini| {
-                            let mut fin = ini;
-                            if !fin.ends_line() {
-                                fin.forward_to_line_end();
-                            }
-                            b.text(&ini, &fin, true).trim().is_empty()
-                        })
-                    };
-                    let pre = if !antes.trim().is_empty() {
-                        "\n\n"
-                    } else if a.line() > 0 && !linea_vacia(a.line() - 1) {
-                        "\n"
-                    } else {
-                        ""
-                    };
-                    let ultima = b.end_iter().line();
-                    let post = if !despues.trim().is_empty() {
-                        "\n\n"
-                    } else if z.line() < ultima && !linea_vacia(z.line() + 1) {
-                        "\n"
-                    } else {
-                        ""
-                    };
-                    format!("{pre}$$\n{tex}\n$${post}")
-                }
+                // `$$` en su propio párrafo: renglones en blanco antes y después si hace falta.
+                Modo::Bloque => en_su_parrafo(b.upcast_ref(), &a, &z, &format!("$$\n{tex}\n$$")),
             }
         };
         let inicio = a.offset();
@@ -250,4 +258,84 @@ impl Editor {
         b.end_user_action();
         b.place_cursor(&b.iter_at_mark(hasta));
     }
+
+    /// Escribe un gráfico (052): los renglones de adentro del bloque que se editaba o un bloque
+    /// `grafico` nuevo en su propio párrafo. Una sola acción de deshacer.
+    fn aplicar_grafico(
+        &self,
+        desde: &gtk::TextMark,
+        hasta: &gtk::TextMark,
+        fuente: &str,
+        editando: bool,
+    ) {
+        let b = &self.0.buffer;
+        let mut a = b.iter_at_mark(desde);
+        let mut z = b.iter_at_mark(hasta);
+        let fuente = fuente.trim_end();
+        let nuevo = if editando {
+            format!("{fuente}\n")
+        } else {
+            let cerca = "`".repeat(3);
+            en_su_parrafo(
+                b.upcast_ref(),
+                &a,
+                &z,
+                &format!("{cerca}grafico\n{fuente}\n{cerca}"),
+            )
+        };
+        let inicio = a.offset();
+        b.begin_user_action();
+        b.delete(&mut a, &mut z);
+        let mut en = b.iter_at_offset(inicio);
+        b.insert(&mut en, &nuevo);
+        b.end_user_action();
+        b.place_cursor(&b.iter_at_mark(hasta));
+    }
+}
+
+/// `cuerpo` como bloque en su propio párrafo entre `a` y `z`: con los renglones en blanco que
+/// falten antes y después.
+fn en_su_parrafo(
+    b: &gtk::TextBuffer,
+    a: &gtk::TextIter,
+    z: &gtk::TextIter,
+    cuerpo: &str,
+) -> String {
+    let antes = {
+        let mut ini = *a;
+        ini.set_line_offset(0);
+        b.text(&ini, a, true)
+    };
+    let despues = {
+        let mut fin = *z;
+        if !fin.ends_line() {
+            fin.forward_to_line_end();
+        }
+        b.text(z, &fin, true)
+    };
+    let linea_vacia = |l: i32| {
+        b.iter_at_line(l).is_none_or(|ini| {
+            let mut fin = ini;
+            if !fin.ends_line() {
+                fin.forward_to_line_end();
+            }
+            b.text(&ini, &fin, true).trim().is_empty()
+        })
+    };
+    let pre = if !antes.trim().is_empty() {
+        "\n\n"
+    } else if a.line() > 0 && !linea_vacia(a.line() - 1) {
+        "\n"
+    } else {
+        ""
+    };
+    let ultima = b.end_iter().line();
+    let post = if !despues.trim().is_empty() {
+        "\n\n"
+    } else if z.line() < ultima && !linea_vacia(z.line() + 1) {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{pre}{cuerpo}{post}")
 }
