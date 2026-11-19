@@ -75,7 +75,7 @@ impl Proyeccion {
         let adentro = [-ce * cg, -ce * sg, -se];
         // La caja (de semidiagonal √3) entra entera en cualquier giro, con lugar para los
         // rótulos.
-        let escala = (ancho / 3.9).min(alto / 3.9) * c.zoom as f32;
+        let escala = (ancho / 4.0).min(alto / 4.3) * c.zoom as f32;
         Proyeccion {
             r: [derecha, arriba, adentro],
             escala,
@@ -280,8 +280,8 @@ pub fn guias3(caja: &Caja, p: &Proyeccion, ejes_visibles: bool) -> Guias3 {
         }
         g.nombres.push(Rotulo {
             texto: ["x", "y", "z"][eje].to_owned(),
-            x: f64::from(medio.0 + dx * 34.0),
-            y: f64::from(medio.1 + dy * 34.0),
+            x: f64::from(medio.0 + dx * 30.0),
+            y: f64::from(medio.1 + dy * 30.0),
             ancla: ancla(dx, dy),
         });
     }

@@ -418,3 +418,147 @@ fn exportar_graficos_3d_en_webkit() {
         window.close();
     });
 }
+
+/// Medición (053): abrir en Lectura una nota con muchos gráficos 3D (`ORBITAL_MEDIR_GRAFICOS=N`,
+/// 12 si no), seis veces en el mismo proceso; después, el cuadro al girar, acercar y mover un
+/// deslizador, y una implícita del primer cuadro a la refinada.
+/// `cargo test --release --bin orbital medir_graficos_3d -- --ignored --nocapture`
+#[test]
+#[ignore = "medición; requiere una sesión gráfica"]
+fn medir_graficos_3d() {
+    use crate::editor::reader::{Prepared, Reader};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    let n: usize = std::env::var("ORBITAL_MEDIR_GRAFICOS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    let corpus = [
+        "z = \\sin(Kx/3) \\cos(y)",
+        "a = 1 (0..3)\nz = a(x^2 - y^2)/K",
+        "(\\cos t, \\sin t, t/K) ; t: 0..6π",
+        "((2 + \\cos v)\\cos u, (2 + \\cos v)\\sin u, \\sin(K v)/2)",
+        "x: -2..2\ny: -2..2\nz: -2..2\nx^2 + y^2 + z^2 = K/4",
+        "datos: nube\n0 0 0\n1 K 2\n2 1 K\n3 2 1",
+    ];
+    let mut text = String::from("# Muchos gráficos 3D\n\n");
+    for k in 0..n {
+        let g = corpus[k % corpus.len()].replace('K', &format!("{}", k % 5 + 2));
+        text.push_str(&format!("Gráfico {k}:\n\n```grafico\n{g}\n```\n\n"));
+    }
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(800)
+        .build();
+    let mediana = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        (v[v.len() / 2], v[v.len() - 1])
+    };
+    let reloj = || {
+        let max = Rc::new(Cell::new(0.0f64));
+        let (m, ultimo) = (max.clone(), Rc::new(Cell::new(Instant::now())));
+        let tic = glib::timeout_add_local(Duration::from_millis(1), move || {
+            let ahora = Instant::now();
+            m.set(m.get().max((ahora - ultimo.get()).as_secs_f64() * 1000.0));
+            ultimo.set(ahora);
+            glib::ControlFlow::Continue
+        });
+        (max, tic)
+    };
+    glib::MainContext::default().block_on(async {
+        for vuelta in 0..6 {
+            let reader = Reader::new();
+            window.set_child(Some(reader.widget()));
+            window.present();
+            let texto = text.clone();
+            let prepared = gtk::gio::spawn_blocking(move || Prepared::new(&texto, &[]))
+                .await
+                .unwrap();
+            let (max, tic) = reloj();
+            let t1 = Instant::now();
+            reader.render(prepared, || None, None);
+            let vista = reader.text_view().clone();
+            let mut visibles = Vec::new();
+            for _ in 0..2000 {
+                visibles = lienzos(vista.upcast_ref());
+                if !visibles.is_empty()
+                    && visibles
+                        .iter()
+                        .all(|l| (l.pintados() > 0 && !l.ocupado()) || !l.is_mapped())
+                {
+                    break;
+                }
+                glib::timeout_future(Duration::from_millis(2)).await;
+            }
+            let listo = t1.elapsed().as_secs_f64() * 1000.0;
+            glib::timeout_future(Duration::from_millis(100)).await;
+            tic.remove();
+            println!(
+                "Apertura {}: {} gráficos anclados, todo pintado (suavizado) en {listo:.1} ms, tramo más largo del hilo de GTK {:.1} ms",
+                vuelta + 1,
+                visibles.len(),
+                max.get()
+            );
+        }
+        // El cuadro de una superficie de 60 × 60 con una curva al girar, acercar y mover el
+        // deslizador.
+        let fuente = "a = 1 (0..3)\nz = a\\sin(x)\\cos(y)\n(\\cos t, \\sin t, 1.5) ; t: 0..2π";
+        let gv = GraficoVista::new(crate::graficos::leer(fuente).unwrap(), fuente, true);
+        window.set_child(Some(gv.widget()));
+        window.set_default_size(900, 600);
+        let l = gv.lienzo().clone();
+        assert!(esperar(|| l.pintados() > 0 && !l.ocupado()).await);
+        let c0 = l.camara().unwrap();
+        for (nombre, accion) in [("girar", 0), ("acercar", 1), ("deslizador", 2)] {
+            let mut cuadro = Vec::new();
+            let mut hilo = Vec::new();
+            let mut pool = Vec::new();
+            let (p0, m0) = (l.pintados(), l.muestreos());
+            let (max, tic) = reloj();
+            for k in 0..60 {
+                let t = Instant::now();
+                match accion {
+                    0 => l.fijar_camara(c0.girar(f64::from(k) * 3.0, f64::from(k % 10))),
+                    1 => l.fijar_camara(c0.acercar(1.0 + f64::from(k % 20) * 0.05)),
+                    _ => gv.deslizadores()[0].set_value(f64::from(k % 20) * 0.15),
+                }
+                hilo.push(t.elapsed().as_secs_f64() * 1000.0);
+                glib::timeout_future(Duration::from_millis(16)).await;
+                cuadro.push(l.medir_cuadro());
+                pool.push(l.ms_pintado());
+            }
+            assert!(esperar(|| !l.ocupado()).await);
+            tic.remove();
+            let (mc, xc) = mediana(cuadro);
+            let (mh, xh) = mediana(hilo);
+            let (mp, xp) = mediana(pool);
+            println!(
+                "{nombre} ({}×{} px): el cambio en el hilo de GTK mediana {mh:.3} ms (máx {xh:.3}); armar el cuadro mediana {mc:.2} ms (máx {xc:.2}); pintar en el pool mediana {mp:.2} ms (máx {xp:.2}); {} cuadros pintados y {} muestreos para 60 cambios; tramo más largo del hilo de GTK {:.1} ms",
+                l.width(),
+                l.height(),
+                l.pintados() - p0,
+                l.muestreos() - m0,
+                max.get()
+            );
+        }
+        // Una implícita difícil: el primer cuadro (grilla gruesa) y la refinada.
+        let fuente = "x: -4..4\ny: -4..4\nz: -4..4\n\\sin x \\cos y + \\sin y \\cos z + \\sin z \\cos x = 0";
+        let (max, tic) = reloj();
+        let t = Instant::now();
+        let gv = GraficoVista::new(crate::graficos::leer(fuente).unwrap(), fuente, true);
+        window.set_child(Some(gv.widget()));
+        let l = gv.lienzo().clone();
+        assert!(esperar(|| l.pintados() > 0).await);
+        let primero = t.elapsed().as_secs_f64() * 1000.0;
+        let nivel = l.resolucion_implicitas();
+        assert!(esperar(|| l.resolucion_implicitas() == 48 && !l.ocupado()).await);
+        tic.remove();
+        println!(
+            "Implícita (giroide): primer cuadro en {primero:.0} ms (grilla de {nivel}); refinada (48) y suavizada en {:.0} ms; tramo más largo del hilo de GTK {:.1} ms",
+            t.elapsed().as_secs_f64() * 1000.0,
+            max.get()
+        );
+    });
+}

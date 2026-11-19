@@ -22,6 +22,34 @@ use super::*;
 
 /// Después del último giro, cuánto esperar para pintar la imagen suavizada.
 const ESPERA_SUAVE: Duration = Duration::from_millis(140);
+/// Trabajos 3D (muestreos y pintados) a la vez, entre todos los gráficos: con los cuatro
+/// núcleos del N5100 ocupados, el hilo de GTK se quedaba sin turno (tramos de 30 ms al abrir una
+/// nota con ocho gráficos 3D).
+const MAX_TRABAJOS: usize = 2;
+
+thread_local! {
+    static OCUPADOS: Cell<usize> = const { Cell::new(0) };
+    static EN_ESPERA: RefCell<VecDeque<Box<dyn FnOnce()>>> = RefCell::new(VecDeque::new());
+}
+
+/// Corre `f` (que lanza un trabajo al pool) si hay turno; si no, cuando se libere uno.
+fn en_turno(f: impl FnOnce() + 'static) {
+    if OCUPADOS.get() < MAX_TRABAJOS {
+        OCUPADOS.set(OCUPADOS.get() + 1);
+        f();
+    } else {
+        EN_ESPERA.with_borrow_mut(|c| c.push_back(Box::new(f)));
+    }
+}
+
+/// Un trabajo terminó: el siguiente en espera toma su turno.
+fn liberar_turno() {
+    match EN_ESPERA.with_borrow_mut(VecDeque::pop_front) {
+        Some(f) => f(),
+        None => OCUPADOS.set(OCUPADOS.get().saturating_sub(1)),
+    }
+}
+
 /// Grados por píxel arrastrado.
 const GRADOS_POR_PX: f64 = 0.45;
 
@@ -54,6 +82,8 @@ pub(super) struct Estado {
     rellenos: Arc<Vec<Relleno>>,
     pub arrastre: Option<Camara>,
     pub pintados: u64,
+    /// Lo que tardó el último pintado en el pool (para las mediciones), en ms.
+    pub ms_pintado: f64,
 }
 
 impl Estado {
@@ -79,6 +109,7 @@ impl Estado {
             rellenos: Arc::new(raster::rellenos(g, Paleta::Oscura)),
             arrastre: None,
             pintados: 0,
+            ms_pintado: 0.0,
         }
     }
 }
@@ -107,6 +138,16 @@ impl Lienzo {
     /// Cuántas imágenes se pintaron (3D, para las pruebas y las mediciones).
     pub fn pintados(&self) -> u64 {
         self.imp().tres.borrow().as_ref().map_or(0, |t| t.pintados)
+    }
+
+    /// Lo que tardó el último pintado (en el pool de `gio`), en ms.
+    #[cfg(test)]
+    pub fn ms_pintado(&self) -> f64 {
+        self.imp()
+            .tres
+            .borrow()
+            .as_ref()
+            .map_or(0.0, |t| t.ms_pintado)
     }
 
     /// La resolución con que se muestrearon las implícitas de lo que se ve (0 si no hay).
@@ -166,58 +207,64 @@ impl Lienzo {
         let params = imp.params.borrow().clone();
         let generacion = imp.generacion.get();
         let weak = self.downgrade();
-        glib::spawn_future_local(async move {
-            let g2 = g.clone();
-            let r = gio::spawn_blocking(move || {
-                Arc::new(espacio::escena(
-                    &g2,
-                    &params,
-                    &espacio::Opciones {
-                        superficies: None,
-                        implicitas,
-                        caja,
-                    },
-                ))
-            })
-            .await;
-            let Some(this) = weak.upgrade() else { return };
-            let imp = this.imp();
-            let pendiente;
-            {
-                let mut t = this.tres();
-                t.muestreando = false;
-                pendiente = std::mem::take(&mut t.muestreo_pendiente);
-                if let Ok(e) = r
-                    && imp.generacion.get() == generacion
-                    && !pendiente
+        en_turno(move || {
+            glib::spawn_future_local(async move {
+                let g2 = g.clone();
+                let r = gio::spawn_blocking(move || {
+                    Arc::new(espacio::escena(
+                        &g2,
+                        &params,
+                        &espacio::Opciones {
+                            superficies: None,
+                            implicitas,
+                            caja,
+                        },
+                    ))
+                })
+                .await;
+                liberar_turno();
+                let Some(this) = weak.upgrade() else { return };
+                let imp = this.imp();
+                let pendiente;
                 {
-                    if t.caja.is_none() {
-                        t.caja = Some(e.caja);
-                    }
-                    if ultimo
-                        && iniciales
-                        && imp.params_iniciales.get()
-                        && let Ok(mut c) = ESCENAS.lock()
+                    let mut t = this.tres();
+                    t.muestreando = false;
+                    pendiente = std::mem::take(&mut t.muestreo_pendiente);
+                    if let Ok(e) = r
+                        && imp.generacion.get() == generacion
+                        && !pendiente
                     {
-                        c.put(fuente, e.clone());
-                    }
-                    t.escena = Some(e);
-                    if !ultimo {
-                        t.nivel = nivel + 1;
+                        if t.caja.is_none() {
+                            t.caja = Some(e.caja);
+                        }
+                        if ultimo
+                            && iniciales
+                            && imp.params_iniciales.get()
+                            && let Ok(mut c) = ESCENAS.lock()
+                        {
+                            c.put(fuente, e.clone());
+                        }
+                        t.escena = Some(e);
+                        if !ultimo {
+                            t.nivel = nivel + 1;
+                        }
                     }
                 }
-            }
-            if pendiente {
-                // Llegó otro pedido (un deslizador): de nuevo desde la grilla gruesa.
-                this.tres().nivel = 0;
-                this.muestrear_3d();
-                return;
-            }
-            imp.muestreos.set(imp.muestreos.get() + 1);
-            this.pedir_cuadro(if ultimo { 2 } else { 1 });
-            if !ultimo {
-                this.muestrear_3d();
-            }
+                if pendiente {
+                    // Llegó otro pedido (un deslizador): de nuevo desde la grilla gruesa.
+                    this.tres().nivel = 0;
+                    this.muestrear_3d();
+                    return;
+                }
+                imp.muestreos.set(imp.muestreos.get() + 1);
+                // La primera imagen ya suavizada; después de un deslizador, rápida y se suaviza al
+                // quedarse quieto.
+                let primera = this.tres().mostrado.is_none();
+                this.pedir_cuadro(if ultimo && primera { 2 } else { 1 });
+                if !ultimo {
+                    this.muestrear_3d();
+                }
+            });
         });
     }
 
@@ -253,46 +300,53 @@ impl Lienzo {
         let proy = Proyeccion::new(&camara, w, h);
         let dispositivo = proy.por(escala);
         let weak = self.downgrade();
-        glib::spawn_future_local(async move {
-            let e2 = escena.clone();
-            let r = gio::spawn_blocking(move || {
-                raster::pintar(&e2, &rellenos, &dispositivo, Paleta::Oscura, factor)
-            })
-            .await;
-            let Some(this) = weak.upgrade() else { return };
-            let pendiente;
-            {
-                let mut t = this.tres();
-                t.pintando = false;
-                pendiente = t.pintar_pendiente.take();
-                if let Ok(cuadro) = r {
-                    let bytes = glib::Bytes::from(&cuadro.bytes[..]);
-                    let textura = gdk::MemoryTexture::new(
-                        cuadro.ancho as i32,
-                        cuadro.alto as i32,
-                        gdk::MemoryFormat::B8g8r8a8Premultiplied,
-                        &bytes,
-                        cuadro.ancho * 4,
-                    );
-                    t.mostrado = Some(Rc::new(Mostrado {
-                        proy,
-                        escala,
-                        textura,
-                        cuadro,
-                        escena,
-                    }));
-                    t.pintados += 1;
+        en_turno(move || {
+            glib::spawn_future_local(async move {
+                let e2 = escena.clone();
+                let r = gio::spawn_blocking(move || {
+                    let t = std::time::Instant::now();
+                    let c = raster::pintar(&e2, &rellenos, &dispositivo, Paleta::Oscura, factor);
+                    (c, t.elapsed().as_secs_f64() * 1000.0)
+                })
+                .await;
+                liberar_turno();
+                let Some(this) = weak.upgrade() else { return };
+                let pendiente;
+                {
+                    let mut t = this.tres();
+                    t.pintando = false;
+                    pendiente = t.pintar_pendiente.take();
+                    if let Ok((mut cuadro, ms)) = r {
+                        t.ms_pintado = ms;
+                        // Sin copiar: la textura se queda con los píxeles.
+                        let bytes = glib::Bytes::from_owned(std::mem::take(&mut cuadro.bytes));
+                        let textura = gdk::MemoryTexture::new(
+                            cuadro.ancho as i32,
+                            cuadro.alto as i32,
+                            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+                            &bytes,
+                            cuadro.ancho * 4,
+                        );
+                        t.mostrado = Some(Rc::new(Mostrado {
+                            proy,
+                            escala,
+                            textura,
+                            cuadro,
+                            escena,
+                        }));
+                        t.pintados += 1;
+                    }
                 }
-            }
-            this.queue_draw();
-            if let Some(f) = this.imp().al_puntero.borrow().as_ref() {
-                f(this.imp().puntero.get());
-            }
-            match pendiente {
-                Some(f) => this.pedir_cuadro(f),
-                None if factor == 1 => this.programar_suavizado(),
-                None => {}
-            }
+                this.queue_draw();
+                if let Some(f) = this.imp().al_puntero.borrow().as_ref() {
+                    f(this.imp().puntero.get());
+                }
+                match pendiente {
+                    Some(f) => this.pedir_cuadro(f),
+                    None if factor == 1 => this.programar_suavizado(),
+                    None => {}
+                }
+            });
         });
     }
 
