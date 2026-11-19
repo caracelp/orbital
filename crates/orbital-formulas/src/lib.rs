@@ -10,6 +10,9 @@
 
 pub mod delimitadores;
 pub mod html;
+pub mod paleta;
+pub mod siunitx;
+pub mod unidades;
 
 use ratex_layout::{LayoutOptions, layout, to_display_list, validate_layout};
 use ratex_types::color::Color;
@@ -88,8 +91,12 @@ fn disponer(tex: &str, modo: Modo, color: Color) -> Result<DisplayList, Error> {
             mensaje: format!("La fórmula es demasiado larga (más de {MAX_BYTES} bytes)"),
         });
     }
-    let ast = ratex_parser::parser::parse(tex).map_err(|e| Error {
-        mensaje: traducir(&e.to_string()),
+    // Las unidades de siunitx (`\qty`, `\SI`, `\unit`…) se cambian por LaTeX que el motor conoce
+    // (051). Si cambió algo, la posición de un error ya no corresponde al texto escrito.
+    let expandida = siunitx::expandir(tex);
+    let movida = matches!(expandida, std::borrow::Cow::Owned(_));
+    let ast = ratex_parser::parser::parse(&expandida).map_err(|e| Error {
+        mensaje: traducir(&e.to_string(), movida),
     })?;
     let estilo = match modo {
         Modo::EnLinea => MathStyle::Text,
@@ -100,7 +107,7 @@ fn disponer(tex: &str, modo: Modo, color: Color) -> Result<DisplayList, Error> {
         .with_color(color);
     let caja = layout(&ast, &opts);
     validate_layout(&caja).map_err(|mensaje| Error {
-        mensaje: traducir(&mensaje),
+        mensaje: traducir(&mensaje, movida),
     })?;
     Ok(to_display_list(&caja))
 }
@@ -187,7 +194,7 @@ pub fn dibujar(tex: &str, modo: Modo, estilo: &Estilo) -> Result<Imagen, Error> 
         device_pixel_ratio: escala,
     };
     let png = ratex_render::render_to_png(&lista, &opts).map_err(|mensaje| Error {
-        mensaje: traducir(&mensaje),
+        mensaje: traducir(&mensaje, false),
     })?;
     let (ancho, alto, rgba) = decodificar(&png).ok_or_else(|| Error {
         mensaje: "No se pudo dibujar la fórmula".into(),
@@ -294,7 +301,7 @@ pub fn lectura(tex: &str) -> String {
 
 /// Los mensajes del motor vienen en inglés: los frecuentes se dicen en español; el resto queda
 /// como está, detrás de una explicación.
-fn traducir(mensaje: &str) -> String {
+fn traducir(mensaje: &str, sin_posicion: bool) -> String {
     let m = mensaje
         .strip_prefix("ParseError: ")
         .unwrap_or(mensaje)
@@ -318,7 +325,7 @@ fn traducir(mensaje: &str) -> String {
     } else {
         m.to_owned()
     };
-    match posicion {
+    match posicion.filter(|_| !sin_posicion) {
         Some(n) => format!("Error en la fórmula (carácter {}): {base}", n + 1),
         None => format!("Error en la fórmula: {base}"),
     }
@@ -421,6 +428,35 @@ mod tests {
         assert!(s.profundidad_em > 0.0 && s.ancho_em > 0.0);
         let rojo = svg(r"\color{red}{x}", Modo::EnLinea).unwrap();
         assert!(rojo.marcado.contains("rgb(255,0,0)"));
+    }
+
+    #[test]
+    fn quimica_y_unidades() {
+        for tex in [
+            r"\ce{2H2 + O2 -> 2H2O}",
+            r"\ce{CO2 + C <=> 2CO}",
+            r"\ce{SO4^2-}",
+            r"\ce{Hg^2+ ->[I-] HgI2 v}",
+            r"\pu{123 kJ/mol}",
+            r"\qty{9.81}{m/s^2}",
+            r"\SI{3e8}{\metre\per\second}",
+            r"\unit{\kilo\ohm}",
+            r"\qty{25}{\degreeCelsius} = \qty{298.15}{K}",
+            r"\qty{3}{\micro\metre}",
+            r"\num{6.022e23}",
+            r"\ang{45}",
+        ] {
+            let img = dibujar(tex, Modo::EnLinea, &ESTILO).unwrap_or_else(|e| panic!("{tex}: {e}"));
+            assert!(img.ancho > 4, "{tex}");
+            svg(tex, Modo::EnLinea).unwrap_or_else(|e| panic!("{tex}: {e}"));
+        }
+        // El espaciado de siunitx: la cantidad es más ancha que el número y la unidad pegados.
+        let ancho = |t: &str| medir(t, Modo::EnLinea, &ESTILO).unwrap().ancho;
+        assert!(ancho(r"\qty{9}{m}") > ancho(r"9\mathrm{m}"));
+        assert_eq!(ancho(r"\qty{9}{m}"), ancho(r"9\,\mathrm{m}"));
+        // Con un error dentro de una expansión, el mensaje no da una posición que no corresponde.
+        let e = validar(r"\qty{1}{m} + \frac{a").unwrap_err();
+        assert!(!e.mensaje.contains("carácter"), "{e}");
     }
 
     #[test]

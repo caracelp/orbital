@@ -7,12 +7,13 @@ description = "Motor de fórmulas LaTeX de Orbital (050): análisis, disposició
 publish = false
 
 # Motor: RaTeX (disposición de KaTeX en Rust, MIT) con las fuentes de KaTeX embebidas (OFL-1.1).
-# Sin la química `\ce` todavía (función `mhchem` de RaTeX, para una spec posterior). La comparación
-# con las otras opciones está en specs/050-formulas-latex/research.md.
+# Con la química `\ce`/`\pu` (función `mhchem` de RaTeX, 051: suma `regex` y `fancy-regex`). La
+# comparación con las otras opciones está en specs/050-formulas-latex/research.md y lo que suma la
+# química, en specs/051-visual-math-editor/research.md.
 [dependencies]
 png = "0.17"
 ratex-layout = { version = "0.1.16", default-features = false }
-ratex-parser = { version = "0.1.16", default-features = false }
+ratex-parser = { version = "0.1.16", default-features = false, features = ["mhchem"] }
 ratex-render = { version = "0.1.16", default-features = false, features = ["embed-fonts"] }
 ratex-svg = { version = "0.1.16", default-features = false, features = ["embed-fonts"] }
 ratex-types = "0.1.16"
