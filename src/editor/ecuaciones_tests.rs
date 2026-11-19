@@ -339,3 +339,88 @@ fn quimica_y_unidades_en_lectura() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// Mide abrir el editor (armarlo y presentarlo, hasta el primer cuadro con la vista previa),
+/// llenar una página de la paleta y el dibujo en vivo. Para el quickstart:
+/// `cargo test --release --bin orbital medir_editor_ecuaciones -- --ignored --nocapture`.
+#[test]
+#[ignore = "medición; requiere una sesión gráfica"]
+fn medir_editor_ecuaciones() {
+    use std::time::Instant;
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    glib::MainContext::default().block_on(async {
+        let (root, vault) = boveda("medir", &[("wiki/nota.md", NOTA)]);
+        let rel = RelPath::new("wiki/nota.md").unwrap();
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .default_width(1000)
+            .default_height(800)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&rel).unwrap());
+        editor.set_view(View::Codigo);
+        editor.0.view.grab_focus();
+        glib::timeout_future(Duration::from_millis(500)).await;
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        for vuelta in 1..=6 {
+            poner(&editor, "x^2$");
+            let t0 = Instant::now();
+            let ed = editor.abrir_ecuacion(false).unwrap();
+            let armar = t0.elapsed();
+            let pintado: std::rc::Rc<std::cell::Cell<Option<Instant>>> = Default::default();
+            let p = pintado.clone();
+            let reloj = loop {
+                if let Some(c) = ed.dialogo().frame_clock() {
+                    break c;
+                }
+                glib::timeout_future(Duration::from_millis(1)).await;
+            };
+            let h = reloj.connect_after_paint(move |_| {
+                if p.get().is_none() {
+                    p.set(Some(Instant::now()));
+                }
+            });
+            while (pintado.get().is_none() || ed.imagen().is_none())
+                && t0.elapsed() < Duration::from_secs(5)
+            {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            reloj.disconnect(h);
+            let cuadro = pintado.get().map(|t| t.saturating_duration_since(t0));
+            let t1 = Instant::now();
+            ed.ir_a("operadores");
+            let pagina = t1.elapsed();
+            // Dibujo en vivo: cada cambio es una fórmula nueva (fuera de la caché), con química y
+            // unidades; desde el cambio hasta que la vista previa tiene la imagen nueva.
+            let mut vivos = Vec::new();
+            for k in 0..10 {
+                let antes = ed.imagen();
+                let t = Instant::now();
+                cambiar(
+                    &ed,
+                    &format!(r"\frac{{{vuelta}}}{{{k}}} + \ce{{H2O}} + \qty{{{k}}}{{km/h}}"),
+                );
+                ed.dibujar_ya();
+                while ed.imagen() == antes && t.elapsed() < Duration::from_secs(2) {
+                    glib::timeout_future(Duration::from_millis(1)).await;
+                }
+                vivos.push(ms(t.elapsed()));
+            }
+            vivos.sort_by(f64::total_cmp);
+            println!(
+                "Vuelta {vuelta}: armar y presentar {:.1} ms; primer cuadro con la vista previa {:.1} ms; \
+                 llenar «Operadores» {:.1} ms; dibujo en vivo (mediana de 10) {:.1} ms",
+                ms(armar),
+                cuadro.map_or(f64::NAN, ms),
+                ms(pagina),
+                vivos[vivos.len() / 2]
+            );
+            ed.dialogo().close();
+            glib::timeout_future(Duration::from_millis(200)).await;
+        }
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

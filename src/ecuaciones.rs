@@ -454,6 +454,12 @@ impl EditorEcuaciones {
         }
     }
 
+    /// La imagen de la vista previa (para medir cuándo cambia).
+    #[cfg(test)]
+    pub fn imagen(&self) -> Option<gtk::gdk::Paintable> {
+        self.0.imagen.paintable()
+    }
+
     /// Lo que se ve: la imagen (si hay) y el error (si hay). Para las pruebas.
     #[cfg(test)]
     pub fn estado(&self) -> (bool, Option<String>) {
