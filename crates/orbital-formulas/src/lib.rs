@@ -356,7 +356,10 @@ mod tests {
             let img = dibujar(tex, Modo::Bloque, &ESTILO).unwrap_or_else(|e| panic!("{tex}: {e}"));
             assert!(img.ancho > 4 && img.alto > 4, "{tex}");
             assert_eq!(img.rgba.len(), (img.ancho * img.alto * 4) as usize);
-            assert!(img.rgba.iter().skip(3).step_by(4).any(|a| *a > 0), "{tex} vacía");
+            assert!(
+                img.rgba.iter().skip(3).step_by(4).any(|a| *a > 0),
+                "{tex} vacía"
+            );
         }
     }
 
