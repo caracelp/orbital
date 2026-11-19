@@ -140,6 +140,12 @@ impl Window {
             simple("cerrar-ramas-libres", Window::cerrar_ramas_libres),
             simple("estructurar-nota", Window::estructurar_nota_tres_partes),
             simple("historial", Window::historial),
+            simple("ecuacion", |w| {
+                w.0.code_editor.abrir_ecuacion(false);
+            }),
+            simple("insertar-ecuacion", |w| {
+                w.0.code_editor.abrir_ecuacion(true);
+            }),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
             simple("importar-md", Window::importar_md),
@@ -219,6 +225,7 @@ impl Window {
         app.set_accels_for_action("win.open", &["<Control>o"]);
         app.set_accels_for_action("win.open-as", &["<Control><Shift>o"]);
         app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
+        app.set_accels_for_action("win.ecuacion", &["<Control>m"]);
     }
 
     pub(super) fn show_shortcuts(&self) {
@@ -295,6 +302,10 @@ impl Window {
         section.add(adw::ShortcutsItem::new(
             "Mover la nota a la papelera",
             "Delete",
+        ));
+        section.add(adw::ShortcutsItem::new(
+            "Editar la ecuación del cursor o insertar una",
+            "<Control>m",
         ));
         section.add(adw::ShortcutsItem::new("Plegar el elemento", "<Control>Up"));
         section.add(adw::ShortcutsItem::new(
@@ -449,6 +460,13 @@ impl Window {
             true,
         ),
         ("Historial de versiones…", "historial", None, true),
+        ("Insertar ecuación", "insertar-ecuacion", None, true),
+        (
+            "Editar o insertar ecuación",
+            "ecuacion",
+            Some("Ctrl+M"),
+            true,
+        ),
         (
             "Renumerar notas al pie",
             "renumerar-notas-al-pie",

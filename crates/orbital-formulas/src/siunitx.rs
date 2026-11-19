@@ -299,9 +299,110 @@ fn agrupar(d: &str, decimal: bool) -> String {
     out
 }
 
+/// Una cantidad escrita con siunitx dentro de una fórmula (para convertirla).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CantidadEn {
+    /// Rango de todo el comando, de la barra a la última llave.
+    pub rango: std::ops::Range<usize>,
+    /// `qty` o `SI`.
+    pub comando: String,
+    pub numero: String,
+    pub unidad: String,
+}
+
+/// Las cantidades (`\qty{…}{…}`, `\SI{…}{…}`) de una fórmula, en orden.
+pub fn cantidades(tex: &str) -> Vec<CantidadEn> {
+    let mut out = Vec::new();
+    let b = tex.as_bytes();
+    let mut i = 0;
+    while let Some(n) = tex[i..].find('\\') {
+        let inicio = i + n;
+        let mut fin = inicio + 1;
+        while fin < b.len() && b[fin].is_ascii_alphabetic() {
+            fin += 1;
+        }
+        let cmd = &tex[inicio + 1..fin];
+        i = fin.max(inicio + 1).min(tex.len());
+        if cmd != "qty" && cmd != "SI" {
+            continue;
+        }
+        let mut j = fin;
+        saltear_opciones(tex, &mut j);
+        let Some(num) = argumento(tex, &mut j) else {
+            continue;
+        };
+        saltear_opciones(tex, &mut j);
+        let Some(uni) = argumento(tex, &mut j) else {
+            continue;
+        };
+        out.push(CantidadEn {
+            rango: inicio..j,
+            comando: cmd.to_owned(),
+            numero: num.trim().to_owned(),
+            unidad: uni.trim().to_owned(),
+        });
+        i = j;
+    }
+    out
+}
+
+/// La cantidad que contiene el byte `offset` (o lo toca), si hay una; si no, la única de la
+/// fórmula.
+pub fn cantidad_en(tex: &str, offset: usize) -> Option<CantidadEn> {
+    let todas = cantidades(tex);
+    if let Some(c) = todas
+        .iter()
+        .find(|c| c.rango.start <= offset && offset <= c.rango.end)
+    {
+        return Some(c.clone());
+    }
+    match todas.as_slice() {
+        [una] => Some(una.clone()),
+        _ => None,
+    }
+}
+
+/// Lee el número de una cantidad para convertirlo: `1,5`, `1.5e3`, `12\,345`, `−4`.
+pub fn leer_numero(s: &str) -> Option<f64> {
+    let limpio: String = s
+        .replace(r"\,", "")
+        .replace(r"\times10^", "e")
+        .replace(r"\times 10^", "e")
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '{' && *c != '}')
+        .map(|c| match c {
+            ',' => '.',
+            '\u{2212}' => '-',
+            'd' | 'D' => 'e',
+            otro => otro,
+        })
+        .collect();
+    limpio.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busca_cantidades() {
+        let t = r"v = \qty{90}{km/h} + \SI[x]{3}{\metre\per\second}";
+        let todas = cantidades(t);
+        assert_eq!(todas.len(), 2);
+        assert_eq!(
+            (todas[0].numero.as_str(), todas[0].unidad.as_str()),
+            ("90", "km/h")
+        );
+        assert_eq!(todas[1].comando, "SI");
+        assert_eq!(&t[todas[1].rango.clone()], r"\SI[x]{3}{\metre\per\second}");
+        assert_eq!(cantidad_en(t, t.find("km").unwrap()).unwrap().numero, "90");
+        assert_eq!(cantidad_en(t, 0), None, "dos y ninguna bajo el cursor");
+        assert_eq!(cantidad_en(r"\qty{1}{m}", 0).unwrap().unidad, "m");
+        assert_eq!(leer_numero("1,5"), Some(1.5));
+        assert_eq!(leer_numero("6.022e23"), Some(6.022e23));
+        assert_eq!(leer_numero(r"12\,345"), Some(12345.0));
+        assert_eq!(leer_numero("1.2+-0.1"), None);
+    }
 
     #[test]
     fn cantidades_y_unidades() {
