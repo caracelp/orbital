@@ -492,7 +492,7 @@ $$
   bloques de código; tampoco cuentan las etiquetas (`#…`) que aparezcan dentro de una fórmula.
 - **Entornos**: `aligned`/`align`/`align*`, `gather`, `cases`, `matrix`, `pmatrix`, `bmatrix`,
   `vmatrix`, `Vmatrix`, `array`, `split` y los demás del modo matemático de KaTeX. La química
-  (`\ce`) todavía no: se ve como fórmula con error.
+  (`\ce`, `\pu`) y las unidades (`\qty`, `\SI`, `\unit`…) también, desde la 051 (abajo).
 - **Ids de bloque** (026): `^id` en el renglón siguiente al `$$` de cierre, como en tablas y código.
 - **Con error**: se ve el fuente (con sus delimitadores) subrayado, y el motivo en el tooltip.
 - **Notas `.html`**: las mismas reglas sobre el texto visible de la página (no en `<code>`, `<pre>`,
@@ -502,6 +502,46 @@ $$
   archivo conserva el texto original. En la tarjeta de una nota `.md` incrustada en una `.html`, las
   fórmulas quedan como su fuente.
 - **Exportar** (007) las dibuja como SVG con nombre accesible, en `.md` y en `.html`.
+
+### Química y unidades (051)
+
+Dentro de una fórmula (`$…$`, `$$…$$`, ` ```math `, también en las `.html`) valen la química de
+mhchem y los comandos de unidades de siunitx. Se dibujan en todos los lugares de la 050 (Lectura,
+Dividida, Visual de las `.html`, globito de Código, exportar y OnStage); el archivo guarda solo lo
+escrito.
+
+```markdown
+Agua: $\ce{2H2 + O2 -> 2H2O}$, el sulfato $\ce{SO4^2-}$ y $\ce{CO2 + C <=> 2CO}$.
+
+$v = \qty{90}{km/h} = \SI{25}{\metre\per\second}$ a $\qty{25}{\degreeCelsius}$.
+
+$$\Delta H = \pu{-285.8 kJ/mol}$$
+```
+
+- **Química**: `\ce{…}` (fórmulas, reacciones `->`, `<=>`, `<-`, condiciones `->[…]`, cargas
+  `^2-`, estados `(aq)`, gas `^`, precipitado `v`, hidratos `.5H2O`, isótopos `^{14}_{6}C`) y
+  `\pu{…}` (números con unidades de mhchem).
+- **Unidades**, con el espaciado de siunitx (un espacio fino entre número y unidad y entre unidades,
+  unidades en redonda):
+  - `\qty{número}{unidad}` y su nombre viejo `\SI{número}{unidad}`; `\unit{unidad}` y `\si{unidad}`
+    (la unidad sola); `\num{número}`; `\ang{grados}`.
+  - La unidad, en la forma literal (`km/h`, `kg.m/s^2`, `m s^-1`, `J/(mol K)`, `°C`, `Ω` u `ohm`)
+    o con comandos (`\kilo\metre\per\hour`, `\metre\per\second\squared`, `\kilo\ohm`,
+    `\degreeCelsius`, `\micro\metre`). La barra literal se dibuja como barra (`km/h`); `\per`, como
+    potencia negativa (`km h⁻¹`).
+  - El número: `1.5e3` se dibuja `1.5 × 10³`, `1.2+-0.1` como `1.2 ± 0.1`, la coma decimal sin
+    espacio detrás, y los dígitos de a tres desde los cinco (`12 345.678`).
+  - Las opciones entre corchetes (`\qty[…]{…}{…}`) se aceptan y no cambian nada. No están
+    `\qtyrange`, `\qtylist` ni `\sisetup`.
+  - Cómo funciona: el motor no conoce siunitx; antes de dibujar, cada comando se cambia por LaTeX
+    que sí conoce (`\qty{90}{km/h}` → `{90\,\mathrm{km}/\mathrm{h}}`). El archivo no cambia.
+- **Editor de ecuaciones**: en Código (o la mitad Código de Dividida) de una nota `.md`, Ctrl+M o
+  «Editar ecuación…» del menú contextual abre la fórmula bajo el cursor en un editor con vista
+  previa y una paleta de símbolos y plantillas; al aceptar, solo se reescribe su LaTeX (los
+  delimitadores y los renglones de `$$` y ` ```math ` quedan como estaban). Sin fórmula bajo el
+  cursor, o con «Insertar ecuación» de la paleta de comandos, se inserta una nueva: en línea
+  (`$…$`) o en bloque (`$$` en su propio párrafo). La página «Convertir unidades» convierte la
+  cantidad bajo el cursor del editor y escribe el resultado como `\qty{…}{…}`.
 
 ## 13. Etiquetas, campos y búsqueda (004)
 
