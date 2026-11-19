@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/orbital-vault", "crates/orbital-formulas"]
+members = ["crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos"]
 # `cargo test`, `cargo clippy` y `cargo build` sin `-p` cubren la app y el núcleo.
-default-members = [".", "crates/orbital-vault", "crates/orbital-formulas"]
+default-members = [".", "crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos"]
 resolver = "3"
 
 [package]
