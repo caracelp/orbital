@@ -718,7 +718,7 @@ impl EditorEcuaciones {
         }
         match crate::graficos::leer(&fuente) {
             Ok(g) => {
-                let alto = (g.alto.unwrap_or(orbital_graficos::ALTO) as i32).min(ALTO_GRAFICO);
+                let alto = (orbital_graficos::alto(&g) as i32).min(ALTO_GRAFICO);
                 let vista = crate::graficos::GraficoVista::new(g, &fuente, true);
                 vista.lienzo().fijar_alto(alto);
                 while let Some(h) = p.vista.first_child() {

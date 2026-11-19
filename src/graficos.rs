@@ -1,5 +1,6 @@
-//! Gráficos 2D y polares en la app (052): el motor es `orbital_graficos` (sin GTK); acá viven el
-//! widget que los dibuja con GSK, la interacción de la Lectura y las cachés.
+//! Gráficos 2D y polares (052) y 3D (053) en la app: el motor es `orbital_graficos` (sin GTK);
+//! acá viven el widget que los dibuja con GSK, la interacción de la Lectura y las cachés. Lo
+//! propio del 3D (muestreo y pintado fuera del hilo de GTK, cámara) está en [`tres`].
 //!
 //! - [`Lienzo`] dibuja la grilla, los ejes, las series, el título y la leyenda con
 //!   `gsk::Path` (sin Cairo ni texturas). Las líneas están en coordenadas del plano: al mover o
@@ -22,6 +23,8 @@ use gtk::{gdk, gio, glib, graphene, gsk, pango, prelude::*, subclass::prelude::*
 use orbital_graficos::{
     Estilo, Grafico, Paleta, Trazo, Vista, bloque, color_de_serie, guias, muestreo,
 };
+
+mod tres;
 
 /// Lo que se muestrea de más alrededor de la vista, por lado (fracción del ancho y del alto).
 const MARGEN: f64 = 0.25;
@@ -169,6 +172,10 @@ mod imp {
         pub al_cambiar_vista: RefCell<Option<AlCambiarVista>>,
         /// Muestreos terminados (para las pruebas y las mediciones).
         pub muestreos: Cell<u64>,
+        /// Un gráfico 3D (053): la cámara, la escena y lo pintado.
+        pub(in crate::graficos) tres: RefCell<Option<Box<super::tres::Estado>>>,
+        /// El último tamaño (3D: pintar de nuevo solo si cambia).
+        pub tamano: Cell<(i32, i32)>,
     }
 
     #[glib::object_subclass]
@@ -217,8 +224,11 @@ impl Lienzo {
     pub fn new(g: Arc<Grafico>, fuente: &str, interactivo: bool) -> Self {
         let l: Self = glib::Object::new();
         let imp = l.imp();
-        imp.alto
-            .set(g.alto.unwrap_or(orbital_graficos::ALTO) as i32);
+        imp.alto.set(orbital_graficos::alto(&g) as i32);
+        let es_3d = g.es_3d();
+        if es_3d {
+            imp.tres.replace(Some(Box::new(tres::Estado::new(&g))));
+        }
         imp.interactivo.set(interactivo);
         imp.original.set(true);
         imp.params_iniciales.set(true);
@@ -233,9 +243,11 @@ impl Lienzo {
             l.set_can_focus(true);
             l.update_property(&[
                 gtk::accessible::Property::Label(&desc),
-                gtk::accessible::Property::Description(
-                    "Arrastrar o flechas: mover. Rueda o más y menos: acercar y alejar. 0: volver a la vista original.",
-                ),
+                gtk::accessible::Property::Description(if es_3d {
+                    "Arrastrar o flechas: girar. Rueda o más y menos: acercar y alejar. 0: volver a la vista original."
+                } else {
+                    "Arrastrar o flechas: mover. Rueda o más y menos: acercar y alejar. 0: volver a la vista original."
+                }),
             ]);
             l.instalar_controles();
         } else {
@@ -267,7 +279,7 @@ impl Lienzo {
 
     /// ¿Hay un muestreo en curso?
     pub fn ocupado(&self) -> bool {
-        self.imp().ocupado.get() || self.imp().pendiente.get()
+        self.imp().ocupado.get() || self.imp().pendiente.get() || self.ocupado_3d()
     }
 
     pub fn set_al_puntero(&self, f: impl Fn(Option<(f64, f64)>) + 'static) {
@@ -292,12 +304,23 @@ impl Lienzo {
             }
         }
         imp.params_iniciales.set(false);
-        self.pedir();
+        if self.es_3d() {
+            self.fijar_parametro_3d();
+        } else {
+            self.pedir();
+        }
     }
 
     fn al_cambiar_tamano(&self, w: f64, h: f64) {
         let imp = self.imp();
         if w < 1.0 || h < 1.0 {
+            return;
+        }
+        if self.es_3d() {
+            let t = (w as i32, h as i32);
+            if imp.tamano.replace(t) != t {
+                self.al_cambiar_tamano_3d();
+            }
             return;
         }
         let Some(g) = self.grafico() else { return };
@@ -324,6 +347,10 @@ impl Lienzo {
 
     /// Vuelve a la vista inicial.
     pub fn restablecer(&self) {
+        if self.es_3d() {
+            self.restablecer_3d();
+            return;
+        }
         let imp = self.imp();
         let Some(g) = self.grafico() else { return };
         let (w, h) = (f64::from(self.width()), f64::from(self.height()));
@@ -435,7 +462,12 @@ impl Lienzo {
             arrastre.connect_drag_begin(move |_, _, _| {
                 if let Some(l) = w.upgrade() {
                     l.grab_focus();
-                    l.imp().arrastre.set(l.imp().vista.get());
+                    if l.es_3d() {
+                        let c = l.camara();
+                        l.tres().arrastre = c;
+                    } else {
+                        l.imp().arrastre.set(l.imp().vista.get());
+                    }
                 }
             });
         }
@@ -443,7 +475,10 @@ impl Lienzo {
             let w = self.downgrade();
             arrastre.connect_drag_update(move |g, dx, dy| {
                 let Some(l) = w.upgrade() else { return };
-                if let Some(v) = l.imp().arrastre.get() {
+                if l.es_3d() {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    l.arrastrar_3d(dx, dy);
+                } else if let Some(v) = l.imp().arrastre.get() {
                     g.set_state(gtk::EventSequenceState::Claimed);
                     l.fijar_vista(v.mover(dx, dy));
                 }
@@ -454,6 +489,9 @@ impl Lienzo {
             arrastre.connect_drag_end(move |_, _, _| {
                 if let Some(l) = w.upgrade() {
                     l.imp().arrastre.set(None);
+                    if l.es_3d() {
+                        l.tres().arrastre = None;
+                    }
                 }
             });
         }
@@ -483,7 +521,11 @@ impl Lienzo {
             movimiento.connect_motion(move |_, x, y| {
                 let Some(l) = w.upgrade() else { return };
                 l.imp().puntero.set(Some((x, y)));
-                if let (Some(v), Some(f)) =
+                if l.es_3d() {
+                    if let Some(f) = l.imp().al_puntero.borrow().as_ref() {
+                        f(Some((x, y)));
+                    }
+                } else if let (Some(v), Some(f)) =
                     (l.imp().vista.get(), l.imp().al_puntero.borrow().as_ref())
                 {
                     f(Some(v.mundo(x, y)));
@@ -539,6 +581,10 @@ impl Lienzo {
 
     /// Acerca (`factor` < 1) o aleja alrededor del píxel (`px`, `py`).
     pub fn acercar(&self, factor: f64, px: f64, py: f64) {
+        if self.es_3d() {
+            self.acercar_3d(factor);
+            return;
+        }
         if let Some(v) = self.imp().vista.get() {
             let z = v.zoom(factor, px, py);
             if z != v {
@@ -549,6 +595,9 @@ impl Lienzo {
 
     /// Una tecla sobre el gráfico enfocado. Devuelve si la usó.
     pub fn tecla(&self, tecla: gdk::Key) -> bool {
+        if self.es_3d() {
+            return self.tecla_3d(tecla);
+        }
         let Some(v) = self.imp().vista.get() else {
             return false;
         };
@@ -582,22 +631,45 @@ impl Lienzo {
 
     fn dibujar(&self, s: &gtk::Snapshot) {
         use crate::style;
-        let imp = self.imp();
         let (w, h) = (self.width() as f32, self.height() as f32);
         if w < 1.0 || h < 1.0 {
             return;
         }
         let Some(g) = self.grafico() else { return };
-        let v = imp
-            .vista
-            .get()
-            .unwrap_or_else(|| Vista::nueva(g.x, g.y, f64::from(w), f64::from(h)));
         let rect = graphene::Rect::new(0.0, 0.0, w, h);
         let redondo = gsk::RoundedRect::from_rect(rect, 10.0);
         s.push_rounded_clip(&redondo);
         s.append_color(&rgba(style::CARD_BG, 1.0), &rect);
+        if self.es_3d() {
+            self.dibujar_3d(s, &g, w, h);
+        } else {
+            self.dibujar_2d(s, &g, w, h);
+        }
+        self.dibujar_titulo_y_leyenda(s, &g, w);
+        s.pop();
+        // Borde y anillo de foco.
+        let (ancho_borde, color_borde) = if self.has_focus() {
+            (2.0, rgba(style::FOCUS_RING, 1.0))
+        } else {
+            (1.0, rgba(style::LINE, 1.0))
+        };
+        s.append_border(
+            &redondo,
+            &[ancho_borde; 4],
+            &[color_borde, color_borde, color_borde, color_borde],
+        );
+    }
 
-        let gu = guias::guias(&g, &v);
+    /// La grilla, los ejes, las series y los rótulos de un gráfico del plano.
+    fn dibujar_2d(&self, s: &gtk::Snapshot, g: &Grafico, w: f32, h: f32) {
+        use crate::style;
+        let imp = self.imp();
+        let v = imp
+            .vista
+            .get()
+            .unwrap_or_else(|| Vista::nueva(g.x, g.y, f64::from(w), f64::from(h)));
+
+        let gu = guias::guias(g, &v);
         let fino = gsk::Stroke::new(1.0);
         if !gu.grilla.is_empty() || !gu.circulos.is_empty() {
             let pb = gsk::PathBuilder::new();
@@ -621,7 +693,7 @@ impl Lienzo {
 
         if let Some((_, trazos)) = imp.trazos.borrow().as_ref() {
             for (k, (serie, t)) in g.series.iter().zip(trazos.iter()).enumerate() {
-                let color = rgba3(color_de_serie(&g, k, Paleta::Oscura));
+                let color = rgba3(color_de_serie(g, k, Paleta::Oscura));
                 if serie.estilo != Estilo::Puntos && !t.lineas.is_empty() {
                     let lineas = muestreo::a_pixeles(&t.lineas, &v);
                     if !lineas.is_empty() {
@@ -681,6 +753,12 @@ impl Lienzo {
             s.append_layout(&layout, &tenue);
             s.restore();
         }
+    }
+
+    fn dibujar_titulo_y_leyenda(&self, s: &gtk::Snapshot, g: &Grafico, w: f32) {
+        use crate::style;
+        let mut fd = self.pango_context().font_description().unwrap_or_default();
+        fd.set_size(9 * pango::SCALE);
         if let Some(t) = &g.titulo {
             let mut fdt = fd.clone();
             fdt.set_size(11 * pango::SCALE);
@@ -703,25 +781,18 @@ impl Lienzo {
                 s.translate(&graphene::Point::new(x, y));
                 s.append_layout(&layout, &rgba(style::TEXT_FG, 0.9));
                 s.restore();
-                s.append_color(
-                    &rgba3(color_de_serie(&g, k, Paleta::Oscura)),
-                    &graphene::Rect::new(w - 24.0, y + lh as f32 / 2.0 - 1.5, 14.0, 3.0),
-                );
+                let my = y + lh as f32 / 2.0 - 1.5;
+                if self.es_3d() {
+                    self.muestra_3d(s, g, k, w - 24.0, my);
+                } else {
+                    s.append_color(
+                        &rgba3(color_de_serie(g, k, Paleta::Oscura)),
+                        &graphene::Rect::new(w - 24.0, my, 14.0, 3.0),
+                    );
+                }
                 y += lh as f32 + 2.0;
             }
         }
-        s.pop();
-        // Borde y anillo de foco.
-        let (ancho_borde, color_borde) = if self.has_focus() {
-            (2.0, rgba(style::FOCUS_RING, 1.0))
-        } else {
-            (1.0, rgba(style::LINE, 1.0))
-        };
-        s.append_border(
-            &redondo,
-            &[ancho_borde; 4],
-            &[color_borde, color_borde, color_borde, color_borde],
-        );
     }
 }
 
@@ -764,7 +835,15 @@ impl GraficoVista {
             barra.append(&coords);
             barra.append(&volver);
             raiz.append(&barra);
-            {
+            if g.es_3d() {
+                let coords = coords.clone();
+                let l = lienzo.downgrade();
+                lienzo.set_al_puntero(move |p| {
+                    if let Some(l) = l.upgrade() {
+                        coords.set_label(&l.texto_puntero_3d(p));
+                    }
+                });
+            } else {
                 let coords = coords.clone();
                 let polar = g.grilla == orbital_graficos::Grilla::Polar;
                 lienzo.set_al_puntero(move |p| match p {
