@@ -562,7 +562,7 @@ impl Reader {
             Embed::Archivo { abs, tipo, .. } => {
                 let mut tags = _base.to_vec();
                 tags.extend(table.lookup("medio"));
-                self.medio(s, end, abs, *tipo, t.anchor.as_deref());
+                self.medio(s, end, abs, *tipo, t.anchor.as_deref(), false);
                 buf.insert_with_tags(end, "\n", &tags.iter().collect::<Vec<_>>());
                 return;
             }
@@ -1189,7 +1189,7 @@ impl Reader {
                 .map(|d| d.join(&*ruta))
                 .filter(|p| p.is_file())
             {
-                Some(path) => self.medio(s, end, &path, tipo, fragmento),
+                Some(path) => self.medio(s, end, &path, tipo, fragmento, true),
                 None => self.archivo_inexistente(s, end, &ruta, tags),
             }
             return;
@@ -1227,6 +1227,7 @@ impl Reader {
         path: &Path,
         tipo: orbital_vault::medios::Tipo,
         fragmento: Option<&str>,
+        en_linea: bool,
     ) {
         let ancho = self.0.width.get();
         let w = match tipo {
@@ -1237,12 +1238,18 @@ impl Reader {
                     .unwrap_or_default();
                 picture(path, &alt, ancho)
             }
-            _ => crate::medios::reproductor(
-                path,
-                tipo,
-                fragmento.and_then(orbital_vault::medios::inicio),
-                ancho,
-            ),
+            _ => {
+                let w = crate::medios::reproductor(
+                    path,
+                    tipo,
+                    fragmento.and_then(orbital_vault::medios::inicio),
+                    en_linea,
+                );
+                if !en_linea {
+                    self.track_wide(&w);
+                }
+                w
+            }
         };
         self.anchor(s, end, w);
     }

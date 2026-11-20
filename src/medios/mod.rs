@@ -23,11 +23,16 @@ fn alto_169(ancho: i32) -> i32 {
     ancho * 9 / 16
 }
 
+/// Ancho del video escrito en medio de un párrafo (`![](clip.mp4)`).
+const ANCHO_EN_LINEA: i32 = 480;
+
 /// El reproductor de un archivo de audio o video que existe. `inicio`: segundos desde donde
-/// empieza (`#t=`). `ancho`: el de la columna de texto (la vista de texto da a los anclados su
-/// tamaño mínimo, así que se pide explícito).
-pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, ancho: i32) -> gtk::Widget {
-    let ancho = ancho.clamp(240, 760);
+/// empieza (`#t=`). `en_linea`: escrito en medio de un párrafo; si no, ocupa la columna (quien
+/// lo ancla le fija el ancho, y el alto del video lo sigue).
+///
+/// Antes de reproducir es un renglón: «Reproducir», el nombre y «Abrir con otra aplicación»
+/// (más la pantalla negra del video). Al reproducir aparecen debajo los controles de GTK.
+pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, en_linea: bool) -> gtk::Widget {
     let nombre = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -39,16 +44,26 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, ancho: i32) -> 
         .spacing(6)
         .css_classes(["orbital-medio"])
         .build();
-    raiz.set_size_request(ancho, -1);
+    raiz.set_accessible_role(gtk::AccessibleRole::Group);
     raiz.update_property(&[gtk::accessible::Property::Label(&format!(
         "{clase}: {nombre}"
     ))]);
 
-    // Encabezado: ícono, nombre (con el inicio si lo hay) y abrir con otra aplicación.
+    // Renglón: reproducir, ícono, nombre (con el inicio si lo hay) y abrir afuera.
     let cabecera = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
         .build();
+    let reproducir = gtk::Button::builder()
+        .icon_name("media-playback-start-symbolic")
+        .tooltip_text("Reproducir")
+        .valign(gtk::Align::Center)
+        .css_classes(["circular", "suggested-action"])
+        .build();
+    reproducir.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Reproducir {}: {nombre}",
+        clase.to_lowercase()
+    ))]);
     let icono = gtk::Image::from_icon_name(if es_video {
         "video-x-generic-symbolic"
     } else {
@@ -62,42 +77,53 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, ancho: i32) -> 
     let etiqueta = gtk::Label::builder()
         .label(&rotulo)
         .xalign(0.0)
-        .hexpand(true)
+        .hexpand(!en_linea)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .max_width_chars(if en_linea { 32 } else { -1 })
+        // La vista de texto da a los anclados su ancho mínimo: en un párrafo, el del nombre.
+        .width_chars(if en_linea {
+            rotulo.chars().count().min(32) as i32
+        } else {
+            -1
+        })
         .css_classes(["orbital-medio-nombre"])
         .build();
     let afuera = boton_abrir_afuera(path, &nombre);
+    cabecera.append(&reproducir);
     cabecera.append(&icono);
     cabecera.append(&etiqueta);
     cabecera.append(&afuera);
     raiz.append(&cabecera);
 
-    // La pantalla del video (vacía hasta reproducir) y la zona de los controles.
+    // La pantalla del video (vacía hasta reproducir); su alto sigue al ancho de la columna.
     let pantalla = es_video.then(|| {
         let p = gtk::Picture::builder()
             .can_shrink(true)
             .content_fit(gtk::ContentFit::Contain)
             .css_classes(["orbital-medio-pantalla"])
             .build();
-        p.set_size_request(ancho, alto_169(ancho));
         p.set_alternative_text(Some(&format!("Video: {nombre}")));
         p
     });
     if let Some(p) = &pantalla {
+        if en_linea {
+            p.set_size_request(ANCHO_EN_LINEA, alto_169(ANCHO_EN_LINEA));
+        } else {
+            let p = p.downgrade();
+            raiz.connect_width_request_notify(move |r| {
+                if let Some(p) = p.upgrade() {
+                    let w = r.width_request();
+                    p.set_size_request(-1, alto_169(w.max(0)));
+                }
+            });
+        }
         raiz.append(p);
     }
-    let zona = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    let reproducir = gtk::Button::builder()
-        .icon_name("media-playback-start-symbolic")
-        .tooltip_text("Reproducir")
-        .halign(gtk::Align::Start)
-        .css_classes(["circular", "suggested-action"])
+    // Los controles, al reproducir.
+    let zona = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .visible(false)
         .build();
-    reproducir.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Reproducir {}: {nombre}",
-        clase.to_lowercase()
-    ))]);
-    zona.append(&reproducir);
     raiz.append(&zona);
 
     let flujo: Rc<RefCell<Option<Flujo>>> = Rc::default();
@@ -107,8 +133,11 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, ancho: i32) -> 
         let zona = zona.clone();
         let pantalla = pantalla.clone();
         reproducir.connect_clicked(move |b| {
-            let media = cargar(&ruta, inicio, &zona, pantalla.as_ref(), ancho);
-            zona.remove(b);
+            let media = cargar(&ruta, inicio, &zona, pantalla.as_ref());
+            zona.set_visible(true);
+            if let Some(c) = b.parent().and_downcast::<gtk::Box>() {
+                c.remove(b);
+            }
             *flujo.borrow_mut() = Some(media);
         });
     }
@@ -143,31 +172,23 @@ fn cargar(
     inicio: Option<f64>,
     zona: &gtk::Box,
     pantalla: Option<&gtk::Picture>,
-    ancho: i32,
 ) -> Flujo {
     let media = Flujo::abrir(ruta, pantalla, inicio, true);
     let controles = gtk::MediaControls::new(Some(&media));
     controles.set_hexpand(true);
+    // En un párrafo, lugar para la barra de tiempo.
+    controles.set_size_request(320, -1);
     zona.append(&controles);
     let pantalla = pantalla.map(|p| p.downgrade());
     media.connect_prepared_notify(move |m| {
         if !m.is_prepared() {
             return;
         }
-        // El alto del video según sus medidas (sin pasar de un cuadrado).
-        if let Some(p) = pantalla.as_ref().and_then(|p| p.upgrade()) {
-            if !m.has_video() {
-                // Un «video» sin imagen (solo sonido): sin pantalla negra.
-                p.set_visible(false);
-                return;
-            }
-            let medidas = p
-                .paintable()
-                .map(|i| (i.intrinsic_width(), i.intrinsic_height()));
-            if let Some((w, h)) = medidas.filter(|(w, h)| *w > 0 && *h > 0) {
-                let ancho = w.min(ancho);
-                p.set_size_request(ancho, (h * ancho / w).min(ancho));
-            }
+        // Un «video» sin imagen (solo sonido): sin pantalla negra.
+        if let Some(p) = pantalla.as_ref().and_then(|p| p.upgrade())
+            && !m.has_video()
+        {
+            p.set_visible(false);
         }
     });
     let zona_d = zona.downgrade();
@@ -199,7 +220,7 @@ fn cargar(
 /// reproduce el formato).
 fn boton_abrir_afuera(path: &Path, nombre: &str) -> gtk::Button {
     let b = gtk::Button::builder()
-        .icon_name("external-link-symbolic")
+        .icon_name("send-to-symbolic")
         .tooltip_text("Abrir con otra aplicación")
         .css_classes(["flat"])
         .valign(gtk::Align::Center)

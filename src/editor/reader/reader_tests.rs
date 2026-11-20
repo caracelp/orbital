@@ -1568,3 +1568,54 @@ fn medios_en_lectura() {
     });
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// Capturas de los medios en Lectura (057), de una nota de una bóveda dada: sin reproducir
+/// (`057-lectura.png`) y con todo sonando (`057-reproduciendo.png`). `ORBITAL_CAPTURA_DIR`,
+/// `ORBITAL_CAPTURA_BOVEDA` y `ORBITAL_CAPTURA_NOTA` (relativa a la bóveda).
+#[test]
+#[ignore = "captura de desarrollo (057)"]
+fn captura_medios() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    adw::init().expect("libadwaita");
+    crate::style::apply();
+    let root = std::path::PathBuf::from(std::env::var_os("ORBITAL_CAPTURA_BOVEDA").unwrap());
+    let nota = std::env::var("ORBITAL_CAPTURA_NOTA").unwrap();
+    let text = std::fs::read_to_string(root.join(&nota)).unwrap();
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new(&nota).unwrap();
+    let prepared = Prepared::with_vault(&text, &vault, &from, &[]);
+    let dir = from.to_path(&root).parent().unwrap().to_path_buf();
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let ventana = gtk::Window::builder()
+            .child(reader.widget())
+            .default_width(900)
+            .default_height(1000)
+            .build();
+        ventana.present();
+        reader.render(prepared, || None, Some(dir));
+        esperar_volcado(&reader).await;
+        glib::timeout_future(Duration::from_millis(800)).await;
+        capturar_lector(&reader, "057-lectura");
+        fn botones(w: &gtk::Widget, out: &mut Vec<gtk::Button>) {
+            if let Some(b) = w.downcast_ref::<gtk::Button>()
+                && b.tooltip_text().as_deref() == Some("Reproducir")
+            {
+                out.push(b.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                botones(&h, out);
+                c = h.next_sibling();
+            }
+        }
+        let mut b = Vec::new();
+        botones(reader.widget().upcast_ref(), &mut b);
+        for x in b {
+            x.emit_clicked();
+        }
+        glib::timeout_future(Duration::from_millis(2500)).await;
+        capturar_lector(&reader, "057-reproduciendo");
+        ventana.destroy();
+    });
+}

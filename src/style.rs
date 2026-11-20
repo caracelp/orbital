@@ -194,7 +194,9 @@ fn css() -> String {
          .orbital-reader, .orbital-reader text { background: transparent; }\n\
          a.orbital-link-missing, .orbital-link-missing { color: var(--link-missing-fg); text-decoration: underline; }\n\
          popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
-         listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n",
+         listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n\
+         .orbital-medio { background: var(--card-bg-color); border-radius: 10px; padding: 8px 10px; }\n\
+         .orbital-medio-pantalla { background: #000000; border-radius: 6px; }\n",
     );
     out.push_str(&props_css());
     out.push_str(&v13_css());

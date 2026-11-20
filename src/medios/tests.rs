@@ -220,7 +220,7 @@ fn reproductor_carga_al_pedirlo() {
     std::fs::write(&wav, wav_de_prueba(3.0)).unwrap();
     let ctx = glib::MainContext::default();
     ctx.block_on(async {
-        let w = reproductor(&wav, Tipo::Audio, Some(1.5), 500);
+        let w = reproductor(&wav, Tipo::Audio, Some(1.5), false);
         let ventana = gtk::Window::builder().child(&w).build();
         ventana.present();
         let botones = botones(&w);
@@ -276,7 +276,7 @@ fn reproductor_con_archivo_ilegible_avisa() {
     std::fs::write(&roto, b"esto no es un video").unwrap();
     let ctx = glib::MainContext::default();
     ctx.block_on(async {
-        let w = reproductor(&roto, Tipo::Video, None, 500);
+        let w = reproductor(&roto, Tipo::Video, None, false);
         let ventana = gtk::Window::builder().child(&w).build();
         ventana.present();
         let play = botones(&w)
