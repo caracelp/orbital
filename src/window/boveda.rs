@@ -72,8 +72,12 @@ impl Window {
     /// Abre `path` con «Abrir»: no escribe nada en la bóveda.
     pub async fn open_path(&self, path: PathBuf) {
         let for_thread = path.clone();
-        let result =
-            gio::spawn_blocking(move || orbital_vault::open(&for_thread).map(prepare)).await;
+        let result = gio::spawn_blocking(move || {
+            let r = orbital_vault::open(&for_thread).map(prepare);
+            crate::medir_arranque::marca("bóveda leída (en su hilo)");
+            r
+        })
+        .await;
         match result {
             Ok(Ok((vault, tree, meta))) => {
                 crate::medir_arranque::marca("bóveda leída");
