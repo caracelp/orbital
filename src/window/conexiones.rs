@@ -177,15 +177,14 @@ pub(super) fn conectar(this: &Window, app: &adw::Application) {
             if let Some(i) = weak.upgrade()
                 && i.persist.get()
             {
-                let w = win.width();
-                let h = win.height();
-                let max = win.is_maximized();
+                // El tamaño por defecto de una ventana GTK 4 sigue al de la ventana sin
+                // maximizar (no cambia mientras está maximizada): es el que se guarda (056).
+                let (w, h) = win.default_size();
                 glib::spawn_future_local(async move {
                     let _ = gio::spawn_blocking(move || {
                         let mut s = AppState::load();
                         s.window_width = Some(w);
                         s.window_height = Some(h);
-                        s.window_maximized = max;
                         s.save()
                     })
                     .await;
