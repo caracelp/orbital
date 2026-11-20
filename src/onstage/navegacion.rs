@@ -9,51 +9,69 @@ impl OnStage {
         let this = self.clone();
         let teclas = gtk::EventControllerKey::new();
         teclas.set_propagation_phase(gtk::PropagationPhase::Capture);
-        teclas.connect_key_pressed(move |_, keyval, _, _| {
-            use gtk::gdk::Key;
-            if keyval == Key::Escape {
-                this.0.window.set_visible(false);
-                return glib::Propagation::Stop;
-            }
-            if keyval == Key::F11 {
-                this.alternar_calm();
-                return glib::Propagation::Stop;
-            }
-            // Con el índice visible, las teclas van a sus botones (teclado nativo).
-            if this
-                .0
-                .stack
-                .visible_child_name()
-                .is_some_and(|n| n == "indice")
-            {
-                return glib::Propagation::Proceed;
-            }
-            match keyval {
-                Key::Right
-                | Key::Down
-                | Key::Page_Down
-                | Key::Return
-                | Key::KP_Enter
-                | Key::space => {
-                    this.avanzar();
-                    glib::Propagation::Stop
-                }
-                Key::Left | Key::Up | Key::Page_Up | Key::BackSpace => {
-                    this.retroceder();
-                    glib::Propagation::Stop
-                }
-                Key::Home => {
-                    this.ir_a(0);
-                    glib::Propagation::Stop
-                }
-                Key::End => {
-                    this.ir_a(usize::MAX);
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
-            }
-        });
+        teclas.connect_key_pressed(move |_, keyval, _, _| this.tecla(keyval));
         self.0.window.add_controller(teclas);
+    }
+
+    /// Qué hace una tecla en la ventana de OnStage (fase de captura: antes que el widget con el
+    /// foco).
+    pub(super) fn tecla(&self, keyval: gtk::gdk::Key) -> glib::Propagation {
+        use gtk::gdk::Key;
+        if keyval == Key::Escape {
+            self.0.window.set_visible(false);
+            return glib::Propagation::Stop;
+        }
+        if keyval == Key::F11 {
+            self.alternar_calm();
+            return glib::Propagation::Stop;
+        }
+        // Con el índice visible, las teclas van a sus botones (teclado nativo).
+        if self
+            .0
+            .stack
+            .visible_child_name()
+            .is_some_and(|n| n == "indice")
+        {
+            return glib::Propagation::Proceed;
+        }
+        // Con el foco en un reproductor (057), Espacio y Enter lo accionan y las flechas,
+        // Inicio y Fin mueven su barra de tiempo o su volumen; Re Pág y Av Pág siguen pasando
+        // de diapositiva.
+        if crate::medios::tiene_foco(&self.0.window)
+            && matches!(
+                keyval,
+                Key::space
+                    | Key::Return
+                    | Key::KP_Enter
+                    | Key::Left
+                    | Key::Right
+                    | Key::Up
+                    | Key::Down
+                    | Key::Home
+                    | Key::End
+            )
+        {
+            return glib::Propagation::Proceed;
+        }
+        match keyval {
+            Key::Right | Key::Down | Key::Page_Down | Key::Return | Key::KP_Enter | Key::space => {
+                self.avanzar();
+                glib::Propagation::Stop
+            }
+            Key::Left | Key::Up | Key::Page_Up | Key::BackSpace => {
+                self.retroceder();
+                glib::Propagation::Stop
+            }
+            Key::Home => {
+                self.ir_a(0);
+                glib::Propagation::Stop
+            }
+            Key::End => {
+                self.ir_a(usize::MAX);
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
     }
 
     pub(super) fn conectar_toggles(&self) {

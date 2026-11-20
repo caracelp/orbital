@@ -254,6 +254,18 @@ fn boton_abrir_afuera(path: &Path, nombre: &str) -> gtk::Button {
     b
 }
 
+/// Si el foco de la ventana está dentro de un reproductor (para que sus teclas no las tome otro).
+pub fn tiene_foco(ventana: &gtk::Window) -> bool {
+    let mut w = gtk::prelude::GtkWindowExt::focus(ventana);
+    while let Some(x) = w {
+        if x.has_css_class("orbital-medio") {
+            return true;
+        }
+        w = x.parent();
+    }
+    false
+}
+
 /// Abre un archivo con la aplicación predeterminada del sistema.
 pub fn abrir_afuera(desde: &impl IsA<gtk::Widget>, path: &Path) {
     let ventana = desde.root().and_downcast::<gtk::Window>();
