@@ -16,6 +16,39 @@ use webkit6::prelude::*;
 
 pub type LinkHandler = Rc<dyn Fn(&str)>;
 
+thread_local! {
+    /// Ya se creó una vista del contexto por defecto: su proceso web arrancó y no se le pueden
+    /// agregar carpetas al sandbox.
+    static SANDBOX_CERRADO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Antes de crear una vista web del contexto por defecto (057): la primera vez, si la bóveda
+/// está fuera de la carpeta personal (`/tmp`, otro disco), se monta de solo lectura en el sandbox
+/// del proceso web; si no, ese proceso no ve sus imágenes ni sus medios. WebKit solo lo permite
+/// antes de arrancar el primer proceso web (después es un error fatal): una bóveda de afuera que
+/// se abra más tarde no se agrega. Sin vistas web (bóvedas sin `.html`) no corre nunca.
+pub fn preparar_sandbox(raiz: Option<&std::path::Path>) {
+    if SANDBOX_CERRADO.with(|c| c.replace(true)) {
+        return;
+    }
+    if let Some(r) = raiz.filter(|r| hace_falta_montar(r))
+        && let Some(c) = webkit6::WebContext::default()
+    {
+        c.add_path_to_sandbox(r, true);
+    }
+}
+
+/// Si el proceso web no ve la carpeta por su cuenta y se la puede agregar: la carpeta personal
+/// ya se ve (y WebKit no deja agregarla entera); `/`, `/sys`, `/proc` y `/dev` no se aceptan.
+fn hace_falta_montar(r: &std::path::Path) -> bool {
+    let casa = gtk::glib::home_dir();
+    r.is_absolute()
+        && r.parent().is_some()
+        && !r.starts_with(&casa)
+        && !["/sys", "/proc", "/dev"].iter().any(|p| r.starts_with(p))
+        && r.is_dir()
+}
+
 /// Política de contenido que se inserta al principio del `<head>`.
 const CSP: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
 img-src file: data:; media-src file: data:; style-src 'unsafe-inline' file:; font-src file: data:\">";
@@ -116,6 +149,19 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_solo_para_bovedas_de_afuera() {
+        use std::path::Path;
+        let casa = gtk::glib::home_dir();
+        assert!(!hace_falta_montar(&casa));
+        assert!(!hace_falta_montar(&casa.join("Documentos")));
+        assert!(!hace_falta_montar(Path::new("/")));
+        assert!(!hace_falta_montar(Path::new("/proc/self")));
+        assert!(!hace_falta_montar(Path::new("relativa")));
+        assert!(!hace_falta_montar(Path::new("/no-existe-orbital-057")));
+        assert!(hace_falta_montar(&std::env::temp_dir()));
+    }
 
     #[test]
     fn csp_goes_inside_head() {

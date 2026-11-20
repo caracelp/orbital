@@ -9,6 +9,7 @@ impl Window {
         if let Some(web) = i.url_web.borrow().as_ref() {
             return web.clone();
         }
+        crate::html_view::preparar_sandbox(i.vault.borrow().as_ref().map(|v| v.root()));
         let session = webkit6::NetworkSession::new_ephemeral();
         let web = webkit6::WebView::builder()
             .network_session(&session)
@@ -199,14 +200,7 @@ impl Window {
                 glib::spawn_future_local(async move {
                     match formato {
                         crate::export::Formato::Html => {
-                            let es_html = text.trim_start().starts_with("<!doctype html>")
-                                || text.trim_start().starts_with("<!DOCTYPE html>")
-                                || text.trim_start().starts_with("<html");
-                            let out = if es_html {
-                                crate::export::html_passthrough(&text)
-                            } else {
-                                crate::export::html_md(&text, &destino.to_string_lossy())
-                            };
+                            let out = this.exportar_html(&text, &destino, true);
                             let out_clon = out.clone();
                             let destino_clon = destino.clone();
                             let escritura = gio::spawn_blocking(move || {
@@ -227,18 +221,44 @@ impl Window {
         );
     }
 
+    /// El HTML exportado de la nota abierta. Los medios (057) se resuelven como en la Lectura:
+    /// `![[clip.mp3]]` desde la nota y `![](clip.mp4)` desde su carpeta; con `reproducibles`
+    /// (HTML) van con controles, si no (PDF), estáticos.
+    fn exportar_html(&self, text: &str, destino: &std::path::Path, reproducibles: bool) -> String {
+        let vault = self.0.vault.borrow().clone();
+        let ruta = self.0.code_editor.current_path();
+        let carpeta = vault
+            .as_ref()
+            .zip(ruta.as_ref())
+            .and_then(|(v, r)| r.to_path(v.root()).parent().map(std::path::PathBuf::from));
+        let adjunto = |escrito: &str| -> Option<std::path::PathBuf> {
+            let (v, r) = vault.as_ref().zip(ruta.as_ref())?;
+            match v.resolve_attachment(r, escrito) {
+                orbital_vault::Resolution::Found(p) => Some(p.to_path(v.root())),
+                _ => None,
+            }
+        };
+        let medios = crate::export::Medios {
+            carpeta,
+            adjunto: Some(&adjunto),
+            reproducibles,
+        };
+        let es_html = text.trim_start().starts_with("<!doctype html>")
+            || text.trim_start().starts_with("<!DOCTYPE html>")
+            || text.trim_start().starts_with("<html");
+        if es_html {
+            crate::export::html_passthrough_con(text, &medios)
+        } else {
+            crate::export::html_md_con(text, &destino.to_string_lossy(), &medios)
+        }
+    }
+
     /// PDF vía impresión de WebKit del mismo HTML autónomo: el diálogo de impresión aparece
     /// preconfigurado con «Salida a archivo» y el destino elegido (WebKit no permite exportación
     /// silenciosa). La vista vive en `exports_pendientes` hasta que la impresión termina.
     pub(super) fn exportar_pdf(&self, text: &str, destino: &std::path::Path) {
-        let es_html = text.trim_start().starts_with("<!doctype html>")
-            || text.trim_start().starts_with("<!DOCTYPE html>")
-            || text.trim_start().starts_with("<html");
-        let html = if es_html {
-            crate::export::html_passthrough(text)
-        } else {
-            crate::export::html_md(text, &destino.to_string_lossy())
-        };
+        let html = self.exportar_html(text, destino, false);
+        crate::html_view::preparar_sandbox(self.0.vault.borrow().as_ref().map(|v| v.root()));
         let web = webkit6::WebView::new();
         web.load_html(&html, None);
         let destino = destino.to_path_buf();

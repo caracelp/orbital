@@ -26,6 +26,7 @@ pub mod link_graph;
 pub mod links;
 pub mod listas;
 pub mod markers;
+pub mod medios;
 pub mod note;
 pub mod note_ids;
 pub mod okf_files;

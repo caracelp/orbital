@@ -251,6 +251,7 @@ impl Visual {
         if let Some(w) = self.0.web.borrow().as_ref() {
             return w.clone();
         }
+        crate::html_view::preparar_sandbox(self.0.dirs.borrow().as_ref().map(|(_, r)| r.as_path()));
         let content = webkit6::UserContentManager::new();
         content.add_script(&webkit6::UserScript::for_world(
             &SCRIPT.replace("__RULES__", &rules()),

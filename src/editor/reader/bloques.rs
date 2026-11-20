@@ -304,6 +304,28 @@ impl Reader {
             BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth, b.source.start),
             BlockKind::Math { tex } => self.formula_bloque(s, end, tex, &base),
         }
+        self.vaciar_medios(s, end, &base);
+    }
+
+    /// Los medios que quedaron de los párrafos del bloque, cada uno en su renglón (057).
+    fn vaciar_medios(&self, s: &RenderState, end: &mut gtk::TextIter, base: &[gtk::TextTag]) {
+        if s.medios_en_linea.borrow().is_empty() {
+            return;
+        }
+        let medios = std::mem::take(&mut *s.medios_en_linea.borrow_mut());
+        let mut tags = base.to_vec();
+        tags.extend(s.buffer.tag_table().lookup("medio"));
+        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+        for (path, tipo, fragmento) in medios {
+            self.medio(s, end, &path, tipo, fragmento.as_deref());
+            // La etiqueta del renglón (aire arriba y abajo) también sobre el ancla.
+            let mut a = *end;
+            a.backward_char();
+            for t in &tags {
+                s.buffer.apply_tag(t, &a, end);
+            }
+            s.buffer.insert_with_tags(end, "\n", &refs);
+        }
     }
 
     /// Una parte especial de la nota (041) como estructura propia, igual que un callout: el texto
@@ -557,6 +579,22 @@ impl Reader {
         use orbital_vault::render::Embed;
         let buf = &s.buffer;
         let table = buf.tag_table();
+        // Imágenes, audio y video (057): el archivo en el lugar, sin tarjeta.
+        match &t.content {
+            Embed::Archivo { abs, tipo, .. } => {
+                let mut tags = _base.to_vec();
+                tags.extend(table.lookup("medio"));
+                self.medio(s, end, abs, *tipo, t.anchor.as_deref());
+                buf.insert_with_tags(end, "\n", &tags.iter().collect::<Vec<_>>());
+                return;
+            }
+            Embed::Missing if orbital_vault::medios::tipo_de(&t.target).is_some() => {
+                self.archivo_inexistente(s, end, &t.target, _base);
+                buf.insert(end, "\n");
+                return;
+            }
+            _ => {}
+        }
         let nivel = s.embedded.get() as i32;
         let inicio = buf.create_mark(None, end, true);
         let start = end.offset();
@@ -672,6 +710,8 @@ impl Reader {
             Embed::Pending => {
                 text(end, &dim, &format!("![[{}]]\n", t.target));
             }
+            // Ya se mostró arriba, sin tarjeta.
+            Embed::Archivo { .. } => {}
         }
         // Relleno de abajo (dentro del borde) y el margen derecho de este nivel. Sin contenido
         // (un aviso), el relleno es el del propio renglón: queda centrado en el recuadro.
@@ -1156,6 +1196,30 @@ impl Reader {
         tags: &[gtk::TextTag],
     ) {
         let buf = &s.buffer;
+        // Audio y video con la sintaxis de imagen (`![](clip.mp4#t=30)`, 057).
+        if let Some(tipo) = orbital_vault::medios::tipo_de(url)
+            .filter(|t| *t != orbital_vault::medios::Tipo::Imagen)
+            && !url.contains("://")
+        {
+            let (ruta, fragmento) = url
+                .split_once('#')
+                .map_or((url, None), |(r, f)| (r, Some(f)));
+            let ruta = orbital_vault::links::percent_decode(ruta);
+            match s
+                .base_dir
+                .as_ref()
+                .map(|d| d.join(&*ruta))
+                .filter(|p| p.is_file())
+            {
+                Some(path) => {
+                    s.medios_en_linea
+                        .borrow_mut()
+                        .push((path, tipo, fragmento.map(str::to_owned)))
+                }
+                None => self.archivo_inexistente(s, end, &ruta, tags),
+            }
+            return;
+        }
         let local = (!url.contains("://"))
             .then(|| s.base_dir.as_ref().map(|d| d.join(url)))
             .flatten()
@@ -1176,6 +1240,57 @@ impl Reader {
                 buf.insert_with_tags(end, &format!("🖼 {label}"), &refs);
             }
         }
+    }
+}
+
+impl Reader {
+    /// Un archivo incrustado que existe (057): la imagen, o el reproductor de audio o video
+    /// (que no abre nada hasta que se pide reproducir). `fragmento`: el `t=` de inicio.
+    pub(super) fn medio(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        path: &Path,
+        tipo: orbital_vault::medios::Tipo,
+        fragmento: Option<&str>,
+    ) {
+        let ancho = self.0.width.get();
+        let w = match tipo {
+            orbital_vault::medios::Tipo::Imagen => {
+                let alt = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                picture(path, &alt, ancho)
+            }
+            _ => {
+                let w = crate::medios::reproductor(
+                    path,
+                    tipo,
+                    fragmento.and_then(orbital_vault::medios::inicio),
+                );
+                self.track_wide(&w);
+                w
+            }
+        };
+        self.anchor(s, end, w);
+    }
+
+    /// «Archivo inexistente: «nombre»», tenue (057).
+    pub(super) fn archivo_inexistente(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        nombre: &str,
+        tags: &[gtk::TextTag],
+    ) {
+        let mut dim = tags.to_vec();
+        dim.extend(s.buffer.tag_table().lookup("dim"));
+        s.buffer.insert_with_tags(
+            end,
+            &format!("Archivo inexistente: «{nombre}»"),
+            &dim.iter().collect::<Vec<_>>(),
+        );
     }
 }
 
@@ -1379,4 +1494,8 @@ pub(super) struct RenderState {
     pub(super) codigo: RefCell<Vec<(String, String)>>,
     /// Bloques de primer nivel con código por resaltar (055).
     pub(super) resaltar: RefCell<Vec<super::resaltar::Pendiente>>,
+    /// Medios escritos en medio de un párrafo (`![](clip.mp4)`, 057): van en su propio renglón
+    /// al terminar el bloque, como los `![[…]]`.
+    pub(super) medios_en_linea:
+        RefCell<Vec<(PathBuf, orbital_vault::medios::Tipo, Option<String>)>>,
 }

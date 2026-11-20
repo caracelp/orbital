@@ -212,3 +212,80 @@ fn us1_ventana_portada_navegacion_e_indice() {
     });
     let _ = std::fs::remove_dir_all(&raiz);
 }
+
+/// 057: con el foco en un reproductor, Espacio, Enter y las flechas son del reproductor (no pasan
+/// de diapositiva); con el foco en otro lado, Espacio pasa de diapositiva como siempre.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn espacio_en_el_reproductor_no_pasa_de_diapositiva() {
+    use gtk::gdk::Key;
+    gtk::init().expect("se necesita acceso GTK");
+    let raiz = std::env::temp_dir().join(format!("orbital-onstage-057-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&raiz);
+    std::fs::create_dir_all(raiz.join("wiki")).unwrap();
+    std::fs::write(
+        raiz.join("wiki/tono.wav"),
+        crate::medios::tests::wav_de_prueba(2.0),
+    )
+    .unwrap();
+    let nota = "# Uno\n\n![[tono.wav]]\n\n# Dos\n\nTexto dos.\n";
+    std::fs::write(raiz.join("wiki/a.md"), nota).unwrap();
+    let vault = Arc::new(orbital_vault::open(&raiz).unwrap());
+    let ruta = orbital_vault::RelPath::new("wiki/a.md").unwrap();
+    let principal = gtk::Window::new();
+    principal.present();
+    let onstage = OnStage::new(&principal);
+    onstage.set_proveedor(move || {
+        Some(Fuente {
+            texto: nota.to_owned(),
+            ruta: ruta.clone(),
+            vault: Some(vault.clone()),
+        })
+    });
+    onstage.presentar();
+    glib::MainContext::default().block_on(async {
+        fn boton(w: &gtk::Widget) -> Option<gtk::Button> {
+            if let Some(b) = w.downcast_ref::<gtk::Button>()
+                && b.tooltip_text().as_deref() == Some("Reproducir")
+            {
+                return Some(b.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if let Some(b) = boton(&h) {
+                    return Some(b);
+                }
+                c = h.next_sibling();
+            }
+            None
+        }
+        let mut play = None;
+        for _ in 0..200 {
+            play = boton(onstage.0.reader.widget().upcast_ref());
+            if play.is_some() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        let play = play.expect("el reproductor en la diapositiva");
+        let contador = onstage.0.contador_barra.label().to_string();
+        assert!(play.grab_focus(), "el botón no tomó el foco");
+        assert!(crate::medios::tiene_foco(&onstage.0.window));
+        for k in [Key::space, Key::Return, Key::Right, Key::Left] {
+            assert_eq!(onstage.tecla(k), glib::Propagation::Proceed, "{k:?}");
+        }
+        assert_eq!(onstage.0.contador_barra.label().as_str(), contador);
+        // Re Pág sigue navegando aunque el foco esté en el reproductor.
+        assert_eq!(onstage.tecla(Key::Page_Down), glib::Propagation::Stop);
+        assert_ne!(onstage.0.contador_barra.label().as_str(), contador);
+        onstage.0.atras.emit_clicked();
+        // Con el foco fuera del reproductor, Espacio pasa de diapositiva.
+        onstage.0.adelante.grab_focus();
+        assert!(!crate::medios::tiene_foco(&onstage.0.window));
+        let antes = onstage.0.contador_barra.label().to_string();
+        assert_eq!(onstage.tecla(Key::space), glib::Propagation::Stop);
+        assert_ne!(onstage.0.contador_barra.label().as_str(), antes);
+    });
+    onstage.0.window.close();
+    let _ = std::fs::remove_dir_all(&raiz);
+}

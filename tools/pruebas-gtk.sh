@@ -19,11 +19,13 @@ excluir=(
     "sc1_cursor_latency"      # medición de multi-cursor
     "command_filter_latency"  # medición de la paleta
     "captura_modos_panel"     # captura de desarrollo
+    "captura_medios"          # captura de desarrollo (057)
     "medir_lectura"           # medición del volcado en Lectura
     "medir_editor_ecuaciones" # medición del editor de ecuaciones (051)
     "medir_lectura_graficos"  # medición de los gráficos (052; también la cubre medir_lectura)
     "medir_graficos_3d"       # medición de los gráficos 3D (053)
     "medir_lectura_codigo"    # medición del resaltado de código (055; también la cubre medir_lectura)
+    "medir_medios"            # medición de los reproductores (057)
     "us4_webkit"              # maneja la barra de formato por AT-SPI (tools/verificar-us4.sh)
 )
 

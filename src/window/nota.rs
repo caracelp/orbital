@@ -569,6 +569,7 @@ impl Window {
             .web
             .borrow_mut()
             .get_or_insert_with(|| {
+                html_view::preparar_sandbox(Some(vault.root()));
                 let weak_link = Rc::downgrade(i);
                 let v = html_view::new_view(Some(Rc::new(move |url| {
                     if let Some(inner) = weak_link.upgrade() {

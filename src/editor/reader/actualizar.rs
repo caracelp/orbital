@@ -154,6 +154,7 @@ impl Reader {
             estilo_formulas: Cell::new(self.estilo_formulas()),
             codigo: RefCell::new(Vec::new()),
             resaltar: RefCell::new(Vec::new()),
+            medios_en_linea: RefCell::new(Vec::new()),
         }
     }
 

@@ -19,6 +19,7 @@ orbital-graficos = { version = "0.1.0", path = "crates/orbital-graficos" }
 orbital-vault = { version = "0.1.0", path = "crates/orbital-vault" }
 sourceview5 = "0.11.2"
 webkit6 = "0.6.1"
+gstreamer = { version = "0.25", default-features = false }
 
 # Máximo rendimiento en las compilaciones de release
 [profile.release]

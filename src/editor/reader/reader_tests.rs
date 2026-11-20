@@ -1450,3 +1450,239 @@ fn medir_lectura_formulas() {
         }
     });
 }
+
+/// Medios en Lectura (057): `![[tono.wav#t=1]]` y `![](medios/tono.wav)` son reproductores
+/// anclados (sin abrir nada: no hay controles hasta reproducir), `![[foto.png]]` es la imagen y
+/// lo que no existe dice «Archivo inexistente», no «Nota inexistente». La bóveda tiene una ruta
+/// con letras no ASCII.
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn medios_en_lectura() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let root = std::env::temp_dir().join(format!(
+        "orbital-057-bóveda-ñ-{}",
+        glib::uuid_string_random()
+    ));
+    std::fs::create_dir_all(root.join("wiki/medios")).unwrap();
+    std::fs::write(
+        root.join("wiki/medios/tono ñ.wav"),
+        crate::medios::tests::wav_de_prueba(2.0),
+    )
+    .unwrap();
+    // Un PNG de 1×1.
+    std::fs::write(
+        root.join("wiki/medios/foto.png"),
+        [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52,
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49,
+            0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0x00, 0x01,
+            0xff, 0x89, 0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
+            0x82,
+        ],
+    )
+    .unwrap();
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new("wiki/Clase.md").unwrap();
+    let text = "# Clase\n\n![[tono ñ.wav#t=1]]\n\nEn línea: ![](medios/tono%20ñ.wav) y sigue.\n\n![[foto.png]]\n\n![[falta.mp3]]\n\n![](medios/nada.webm)\n";
+    let prepared = Prepared::with_vault(text, &vault, &from, &[]);
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let ventana = gtk::Window::builder()
+            .child(reader.widget())
+            .default_width(900)
+            .default_height(700)
+            .build();
+        ventana.present();
+        reader.render(prepared, || None, Some(root.join("wiki")));
+        esperar_volcado(&reader).await;
+        for _ in 0..200 {
+            if reader.0.pending.borrow().is_empty() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        assert!(
+            visible.contains("Archivo inexistente: «falta.mp3»"),
+            "{visible:?}"
+        );
+        assert!(
+            visible.contains("Archivo inexistente: «medios/nada.webm»"),
+            "{visible:?}"
+        );
+        assert!(!visible.contains("Nota inexistente"), "{visible:?}");
+        assert!(visible.contains("En línea: "), "{visible:?}");
+        let mut it = buf.start_iter();
+        let mut anclados = Vec::new();
+        loop {
+            if let Some(a) = it.child_anchor() {
+                anclados.extend(a.widgets());
+            }
+            if !it.forward_char() {
+                break;
+            }
+        }
+        let reproductores: Vec<_> = anclados
+            .iter()
+            .filter(|w| w.has_css_class("orbital-medio"))
+            .collect();
+        assert_eq!(reproductores.len(), 2, "{anclados:?}");
+        assert_eq!(
+            anclados.iter().filter(|w| w.is::<gtk::Picture>()).count(),
+            1,
+            "la imagen de ![[foto.png]]"
+        );
+        // Nada se abrió: ningún control de medio todavía.
+        fn hay_controles(w: &gtk::Widget) -> bool {
+            if w.is::<gtk::MediaControls>() {
+                return true;
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if hay_controles(&h) {
+                    return true;
+                }
+                c = h.next_sibling();
+            }
+            false
+        }
+        assert!(reproductores.iter().all(|w| !hay_controles(w)));
+        // El primero muestra desde dónde empieza.
+        fn rotulos(w: &gtk::Widget, out: &mut Vec<String>) {
+            if let Some(l) = w.downcast_ref::<gtk::Label>() {
+                out.push(l.label().to_string());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                rotulos(&h, out);
+                c = h.next_sibling();
+            }
+        }
+        let mut r = Vec::new();
+        rotulos(reproductores[0], &mut r);
+        assert!(r.iter().any(|l| l == "tono ñ.wav  ·  desde 0:01"), "{r:?}");
+        // Dividida: editar otro bloque no rearma el reproductor, que sigue sonando.
+        fn buscar_boton(w: &gtk::Widget) -> Option<gtk::Button> {
+            if let Some(b) = w.downcast_ref::<gtk::Button>()
+                && b.tooltip_text().as_deref() == Some("Reproducir")
+            {
+                return Some(b.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if let Some(b) = buscar_boton(&h) {
+                    return Some(b);
+                }
+                c = h.next_sibling();
+            }
+            None
+        }
+        fn controles(w: &gtk::Widget) -> Option<gtk::MediaControls> {
+            if let Some(c) = w.downcast_ref::<gtk::MediaControls>() {
+                return Some(c.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if let Some(x) = controles(&h) {
+                    return Some(x);
+                }
+                c = h.next_sibling();
+            }
+            None
+        }
+        buscar_boton(reproductores[0]).unwrap().emit_clicked();
+        let m = controles(reproductores[0])
+            .and_then(|c| c.media_stream())
+            .expect("controles");
+        for _ in 0..300 {
+            if m.is_playing() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        assert!(m.is_playing());
+        let editado = text.replace("En línea:", "Editado en línea:");
+        reader.render(
+            Prepared::with_vault(&editado, &vault, &from, &[]),
+            || None,
+            Some(root.join("wiki")),
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let visible = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        assert!(visible.contains("Editado en línea:"), "{visible}");
+        assert!(m.is_playing(), "editar otro bloque cortó el audio");
+        // Mucho texto debajo y desplazarse hasta el fondo: el reproductor sale de la pantalla
+        // pero sigue sonando (la vista sigue a la vista).
+        let largo = format!(
+            "{editado}{}",
+            "Un renglón de relleno bastante largo para ocupar lugar.\n\n".repeat(40)
+        );
+        reader.render(
+            Prepared::with_vault(&largo, &vault, &from, &[]),
+            || None,
+            Some(root.join("wiki")),
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let adj = reader.widget().vadjustment();
+        adj.set_value(adj.upper());
+        glib::timeout_future(Duration::from_millis(300)).await;
+        assert!(adj.value() > 300.0, "no se desplazó: {}", adj.value());
+        assert!(m.is_playing(), "desplazarse cortó el audio");
+        ventana.destroy();
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Capturas de los medios en Lectura (057), de una nota de una bóveda dada: sin reproducir
+/// (`057-lectura.png`) y con todo sonando (`057-reproduciendo.png`). `ORBITAL_CAPTURA_DIR`,
+/// `ORBITAL_CAPTURA_BOVEDA` y `ORBITAL_CAPTURA_NOTA` (relativa a la bóveda).
+#[test]
+#[ignore = "captura de desarrollo (057)"]
+fn captura_medios() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    adw::init().expect("libadwaita");
+    crate::style::apply();
+    let root = std::path::PathBuf::from(std::env::var_os("ORBITAL_CAPTURA_BOVEDA").unwrap());
+    let nota = std::env::var("ORBITAL_CAPTURA_NOTA").unwrap();
+    let text = std::fs::read_to_string(root.join(&nota)).unwrap();
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new(&nota).unwrap();
+    let prepared = Prepared::with_vault(&text, &vault, &from, &[]);
+    let dir = from.to_path(&root).parent().unwrap().to_path_buf();
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let ventana = gtk::Window::builder()
+            .child(reader.widget())
+            .default_width(900)
+            .default_height(1000)
+            .build();
+        ventana.present();
+        reader.render(prepared, || None, Some(dir));
+        esperar_volcado(&reader).await;
+        glib::timeout_future(Duration::from_millis(800)).await;
+        capturar_lector(&reader, "057-lectura");
+        fn botones(w: &gtk::Widget, out: &mut Vec<gtk::Button>) {
+            if let Some(b) = w.downcast_ref::<gtk::Button>()
+                && b.tooltip_text().as_deref() == Some("Reproducir")
+            {
+                out.push(b.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                botones(&h, out);
+                c = h.next_sibling();
+            }
+        }
+        let mut b = Vec::new();
+        botones(reader.widget().upcast_ref(), &mut b);
+        for x in b {
+            x.emit_clicked();
+        }
+        glib::timeout_future(Duration::from_millis(2500)).await;
+        capturar_lector(&reader, "057-reproduciendo");
+        ventana.destroy();
+    });
+}
