@@ -695,3 +695,79 @@ Con error: $x^^2$.
         window.close();
     });
 }
+
+/// 057: en la Visual de una nota `.html`, `![[tono.wav]]` es un `<audio>` con controles, sin
+/// precargar, con el nombre debajo; suena (desde `#t=`) y no se guarda en el archivo. Lo que
+/// falta dice «Archivo inexistente». La bóveda va en `~/.cache` porque el proceso web de WebKit
+/// no ve `/tmp`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn medios_en_visual_html() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    let context = glib::MainContext::default();
+    context.block_on(async {
+        let root = glib::user_cache_dir().join(format!(
+            "orbital-057-visual-ñ-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("wiki/medios")).unwrap();
+        fs::write(
+            root.join("wiki/medios/tono ñ.wav"),
+            crate::medios::tests::wav_de_prueba(3.0),
+        )
+        .unwrap();
+        let source = "<!doctype html><html><head></head><body><p>Oíd:</p><p>![[tono ñ.wav#t=1]]</p><p>![[falta.mp3]]</p></body></html>";
+        fs::write(root.join("wiki/s.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/s.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let audio = "document.querySelector('figure[data-orbital-embed] audio')";
+        for _ in 0..50 {
+            if eval(&web, &format!("!!{audio}")).await == "true" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(eval(&web, &format!("{audio}.preload")).await, "none");
+        assert_eq!(eval(&web, &format!("String({audio}.controls)")).await, "true");
+        assert!(
+            eval(&web, "document.querySelector('figure[data-orbital-embed] figcaption').textContent")
+                .await
+                .contains("tono ñ.wav")
+        );
+        assert!(
+            eval(&web, "document.body.textContent").await.contains("Archivo inexistente: «falta.mp3»")
+        );
+        eval(&web, &format!("{audio}.play(); 'ok'")).await;
+        let mut t = String::new();
+        for _ in 0..60 {
+            t = eval(&web, &format!("String({audio}.currentTime)")).await;
+            if t.parse::<f64>().unwrap_or(0.0) > 1.2 {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert!(t.parse::<f64>().unwrap_or(0.0) > 1.2, "no sonó desde #t=1: {t}");
+        println!("OK: el audio suena en la Visual (va en {t} s)");
+        eval(&web, &format!("{audio}.pause(); 'ok'")).await;
+        eval(&web, "const p = document.querySelectorAll('body > p')[0]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'Oíd, editado:')").await;
+        glib::timeout_future(Duration::from_millis(500)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/s.html")).unwrap();
+        assert!(saved.contains("Oíd, editado:"), "{saved}");
+        assert!(saved.contains("![[tono ñ.wav#t=1]]"), "{saved}");
+        assert!(!saved.contains("<audio"), "{saved}");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

@@ -1564,6 +1564,56 @@ fn medios_en_lectura() {
         let mut r = Vec::new();
         rotulos(reproductores[0], &mut r);
         assert!(r.iter().any(|l| l == "tono ñ.wav  ·  desde 0:01"), "{r:?}");
+        // Dividida: editar otro bloque no rearma el reproductor, que sigue sonando.
+        fn buscar_boton(w: &gtk::Widget) -> Option<gtk::Button> {
+            if let Some(b) = w.downcast_ref::<gtk::Button>()
+                && b.tooltip_text().as_deref() == Some("Reproducir")
+            {
+                return Some(b.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if let Some(b) = buscar_boton(&h) {
+                    return Some(b);
+                }
+                c = h.next_sibling();
+            }
+            None
+        }
+        fn controles(w: &gtk::Widget) -> Option<gtk::MediaControls> {
+            if let Some(c) = w.downcast_ref::<gtk::MediaControls>() {
+                return Some(c.clone());
+            }
+            let mut c = w.first_child();
+            while let Some(h) = c {
+                if let Some(x) = controles(&h) {
+                    return Some(x);
+                }
+                c = h.next_sibling();
+            }
+            None
+        }
+        buscar_boton(reproductores[0]).unwrap().emit_clicked();
+        let m = controles(reproductores[0])
+            .and_then(|c| c.media_stream())
+            .expect("controles");
+        for _ in 0..300 {
+            if m.is_playing() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        assert!(m.is_playing());
+        let editado = text.replace("En línea:", "Editado en línea:");
+        reader.render(
+            Prepared::with_vault(&editado, &vault, &from, &[]),
+            || None,
+            Some(root.join("wiki")),
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let visible = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        assert!(visible.contains("Editado en línea:"), "{visible}");
+        assert!(m.is_playing(), "editar otro bloque cortó el audio");
         ventana.destroy();
     });
     std::fs::remove_dir_all(&root).ok();
