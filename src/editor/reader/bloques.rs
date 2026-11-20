@@ -557,6 +557,22 @@ impl Reader {
         use orbital_vault::render::Embed;
         let buf = &s.buffer;
         let table = buf.tag_table();
+        // Imágenes, audio y video (057): el archivo en el lugar, sin tarjeta.
+        match &t.content {
+            Embed::Archivo { abs, tipo, .. } => {
+                let mut tags = _base.to_vec();
+                tags.extend(table.lookup("medio"));
+                self.medio(s, end, abs, *tipo, t.anchor.as_deref());
+                buf.insert_with_tags(end, "\n", &tags.iter().collect::<Vec<_>>());
+                return;
+            }
+            Embed::Missing if orbital_vault::medios::tipo_de(&t.target).is_some() => {
+                self.archivo_inexistente(s, end, &t.target, _base);
+                buf.insert(end, "\n");
+                return;
+            }
+            _ => {}
+        }
         let nivel = s.embedded.get() as i32;
         let inicio = buf.create_mark(None, end, true);
         let start = end.offset();
@@ -672,6 +688,8 @@ impl Reader {
             Embed::Pending => {
                 text(end, &dim, &format!("![[{}]]\n", t.target));
             }
+            // Ya se mostró arriba, sin tarjeta.
+            Embed::Archivo { .. } => {}
         }
         // Relleno de abajo (dentro del borde) y el margen derecho de este nivel. Sin contenido
         // (un aviso), el relleno es el del propio renglón: queda centrado en el recuadro.
@@ -1156,6 +1174,26 @@ impl Reader {
         tags: &[gtk::TextTag],
     ) {
         let buf = &s.buffer;
+        // Audio y video con la sintaxis de imagen (`![](clip.mp4#t=30)`, 057).
+        if let Some(tipo) = orbital_vault::medios::tipo_de(url)
+            .filter(|t| *t != orbital_vault::medios::Tipo::Imagen)
+            && !url.contains("://")
+        {
+            let (ruta, fragmento) = url
+                .split_once('#')
+                .map_or((url, None), |(r, f)| (r, Some(f)));
+            let ruta = orbital_vault::links::percent_decode(ruta);
+            match s
+                .base_dir
+                .as_ref()
+                .map(|d| d.join(&*ruta))
+                .filter(|p| p.is_file())
+            {
+                Some(path) => self.medio(s, end, &path, tipo, fragmento),
+                None => self.archivo_inexistente(s, end, &ruta, tags),
+            }
+            return;
+        }
         let local = (!url.contains("://"))
             .then(|| s.base_dir.as_ref().map(|d| d.join(url)))
             .flatten()
@@ -1176,6 +1214,54 @@ impl Reader {
                 buf.insert_with_tags(end, &format!("🖼 {label}"), &refs);
             }
         }
+    }
+}
+
+impl Reader {
+    /// Un archivo incrustado que existe (057): la imagen, o el reproductor de audio o video
+    /// (que no abre nada hasta que se pide reproducir). `fragmento`: el `t=` de inicio.
+    pub(super) fn medio(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        path: &Path,
+        tipo: orbital_vault::medios::Tipo,
+        fragmento: Option<&str>,
+    ) {
+        let ancho = self.0.width.get();
+        let w = match tipo {
+            orbital_vault::medios::Tipo::Imagen => {
+                let alt = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                picture(path, &alt, ancho)
+            }
+            _ => crate::medios::reproductor(
+                path,
+                tipo,
+                fragmento.and_then(orbital_vault::medios::inicio),
+                ancho,
+            ),
+        };
+        self.anchor(s, end, w);
+    }
+
+    /// «Archivo inexistente: «nombre»», tenue (057).
+    pub(super) fn archivo_inexistente(
+        &self,
+        s: &RenderState,
+        end: &mut gtk::TextIter,
+        nombre: &str,
+        tags: &[gtk::TextTag],
+    ) {
+        let mut dim = tags.to_vec();
+        dim.extend(s.buffer.tag_table().lookup("dim"));
+        s.buffer.insert_with_tags(
+            end,
+            &format!("Archivo inexistente: «{nombre}»"),
+            &dim.iter().collect::<Vec<_>>(),
+        );
     }
 }
 

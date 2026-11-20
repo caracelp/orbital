@@ -4,6 +4,7 @@
 //! render local.
 
 use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd, html::push_html};
+use std::ops::Range;
 
 /// CSS de la página exportada: papel blanco, tipografía limpia, ancho de lectura.
 const ESTILOS: &str = "body{font-family:sans-serif;line-height:1.5;color:#1a1a1c;background:#ffffff;\
@@ -17,7 +18,10 @@ img{max-width:100%}input[type=checkbox]{margin-right:0.4em}\
 .formula-bloque{display:block;text-align:center;margin:0.6em 0;overflow-x:auto}\
 .formula-error{text-decoration:underline wavy #c2185b}\
 figure.grafico{margin:1em 0}figure.grafico svg{max-width:100%;height:auto}\
-.grafico-aviso{color:#c2185b}";
+.grafico-aviso{color:#c2185b}\
+figure.medio{margin:1em 0}figure.medio video{max-width:100%}figure.medio audio{width:100%}\
+figure.medio figcaption,p.medio{color:#55555c;font-size:0.9em}\
+p.medio{border:1px solid #d0d0d4;border-radius:6px;padding:0.5em 0.8em}";
 
 /// Título de la página: el título de la nota (frontmatter) o el nombre del archivo.
 fn titulo(texto: &str, defecto: &str) -> String {
@@ -33,7 +37,89 @@ fn titulo(texto: &str, defecto: &str) -> String {
 
 /// HTML autónomo de una nota `.md`: cuerpo renderizado sin frontmatter (FR-3), con las mismas
 /// extensiones que Lectura (tablas, tachado, casillas).
+#[cfg(test)]
 pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
+    html_md_con(texto, nombre_archivo, &Medios::default())
+}
+
+/// Resuelve lo escrito en `![[…]]` a la ruta del archivo.
+pub type Resolver<'a> = dyn Fn(&str) -> Option<std::path::PathBuf> + 'a;
+
+/// Cómo exportar los medios incrustados (057).
+#[derive(Default)]
+pub struct Medios<'a> {
+    /// Carpeta de la nota, para `![](clip.mp4)`.
+    pub carpeta: Option<std::path::PathBuf>,
+    /// Resuelve `![[clip.mp3]]` a la ruta del archivo (la misma resolución que la Lectura).
+    pub adjunto: Option<&'a Resolver<'a>>,
+    /// HTML: `<audio>`/`<video>` con controles; PDF (`false`): el nombre y la ruta, estáticos.
+    pub reproducibles: bool,
+}
+
+impl Medios<'_> {
+    /// La ruta de un medio escrito como imagen (`![](…)`), relativa a la nota.
+    fn de_imagen(&self, url: &str) -> Option<std::path::PathBuf> {
+        let ruta = orbital_vault::links::percent_decode(url.split('#').next().unwrap_or(url));
+        self.carpeta
+            .as_ref()
+            .map(|d| d.join(ruta))
+            .filter(|p| p.is_file())
+    }
+}
+
+/// Un medio exportado (057). Existe: con controles (HTML) o estático (PDF), con el nombre y un
+/// enlace al archivo como respaldo si el lector no lo reproduce. No existe: el aviso.
+fn medio_html(
+    escrito: &str,
+    ruta: Option<&std::path::Path>,
+    tipo: orbital_vault::medios::Tipo,
+    fragmento: Option<&str>,
+    reproducible: bool,
+) -> String {
+    use orbital_formulas::html::escapar_atributo as esc;
+    use orbital_vault::medios::Tipo;
+    let nombre = escrito.rsplit('/').next().unwrap_or(escrito);
+    let Some(ruta) = ruta else {
+        return format!(
+            "<p class=\"medio medio-falta\">Archivo inexistente: «{}»</p>",
+            esc(nombre)
+        );
+    };
+    use gtk::gio::prelude::FileExt;
+    let uri = gtk::gio::File::for_path(ruta).uri().to_string();
+    if tipo == Tipo::Imagen {
+        return format!("<img src=\"{}\" alt=\"{}\">", esc(&uri), esc(nombre));
+    }
+    let inicio = fragmento.and_then(orbital_vault::medios::inicio);
+    let (clase, etiqueta) = match tipo {
+        Tipo::Video => ("Video", "video"),
+        _ => ("Audio", "audio"),
+    };
+    let desde = inicio
+        .filter(|t| *t > 0.0)
+        .map(|t| format!(" (desde {})", crate::medios::tiempo(t)))
+        .unwrap_or_default();
+    let enlace = format!(
+        "{clase}: <a href=\"{}\">{}</a>{desde}",
+        esc(&uri),
+        esc(nombre)
+    );
+    if !reproducible {
+        return format!("<p class=\"medio\">{enlace}</p>");
+    }
+    let src = match inicio {
+        Some(t) if t > 0.0 => format!("{uri}#t={t}"),
+        _ => uri,
+    };
+    format!(
+        "<figure class=\"medio\"><{etiqueta} controls preload=\"none\" src=\"{}\" aria-label=\"{clase}: {}\">{enlace}</{etiqueta}><figcaption>{enlace}</figcaption></figure>",
+        esc(&src),
+        esc(nombre)
+    )
+}
+
+/// Como [`html_md`], con los medios incrustados (057) según `medios`.
+pub fn html_md_con(texto: &str, nombre_archivo: &str, medios: &Medios) -> String {
     // Los ids de bloque (`^id`, 026) no se exportan.
     let cuerpo = orbital_vault::bloques::sin_ids(cuerpo_sin_frontmatter(texto));
     let cuerpo = cuerpo.as_ref();
@@ -45,18 +131,103 @@ pub fn html_md(texto: &str, nombre_archivo: &str) -> String {
     let mut body = String::with_capacity(cuerpo.len() * 2);
     push_html(
         &mut body,
-        con_formulas(cuerpo, Parser::new_ext(cuerpo, opts)),
+        con_formulas(
+            cuerpo,
+            con_medios(
+                cuerpo,
+                Parser::new_ext(cuerpo, opts).into_offset_iter(),
+                medios,
+            ),
+        ),
     );
     pagina(&body, &titulo(texto, nombre_archivo))
+}
+
+/// Los medios (057): un párrafo que es solo `![[clip.mp3]]` y las imágenes `![](clip.mp4)` que
+/// son audio o video.
+fn con_medios<'a>(
+    cuerpo: &'a str,
+    eventos: impl Iterator<Item = (Event<'a>, Range<usize>)> + 'a,
+    medios: &'a Medios<'a>,
+) -> impl Iterator<Item = (Event<'a>, Range<usize>)> + 'a {
+    // Lo que se saltea hasta el cierre: un párrafo o una imagen ya reemplazados.
+    let mut saltar: Option<TagEnd> = None;
+    eventos.filter_map(move |(ev, rango)| {
+        if let Some(fin) = &saltar {
+            if matches!(&ev, Event::End(t) if t == fin) {
+                saltar = None;
+            }
+            return None;
+        }
+        let (html, fin) = match &ev {
+            Event::Start(Tag::Paragraph) => (
+                medio_de_parrafo(&cuerpo[rango.clone()], medios),
+                TagEnd::Paragraph,
+            ),
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                (medio_de_imagen(dest_url, medios), TagEnd::Image)
+            }
+            _ => (None, TagEnd::Paragraph),
+        };
+        match html {
+            Some(h) => {
+                saltar = Some(fin);
+                let ev = if fin == TagEnd::Image {
+                    Event::InlineHtml(h.into())
+                } else {
+                    Event::Html((h + "\n").into())
+                };
+                Some((ev, rango))
+            }
+            None => Some((ev, rango)),
+        }
+    })
+}
+
+/// `![[clip.mp3]]` solo en su párrafo.
+fn medio_de_parrafo(fuente: &str, medios: &Medios) -> Option<String> {
+    let adjunto = medios.adjunto?;
+    let (escrito, ancla) = orbital_vault::medios::incrustacion(fuente)?;
+    let tipo = orbital_vault::medios::tipo_de(&escrito)?;
+    let ruta = adjunto(&escrito);
+    Some(medio_html(
+        &escrito,
+        ruta.as_deref(),
+        tipo,
+        ancla.as_deref(),
+        medios.reproducibles,
+    ))
+}
+
+/// `![](clip.mp4#t=30)`: audio o video local escrito como imagen.
+fn medio_de_imagen(url: &str, medios: &Medios) -> Option<String> {
+    if url.contains("://") || !orbital_vault::medios::es_reproducible(url) {
+        return None;
+    }
+    let tipo = orbital_vault::medios::tipo_de(url)?;
+    let (ruta, fragmento) = url
+        .split_once('#')
+        .map_or((url, None), |(r, f)| (r, Some(f)));
+    let escrito = orbital_vault::links::percent_decode(ruta);
+    Some(medio_html(
+        &escrito,
+        medios.de_imagen(url).as_deref(),
+        tipo,
+        fragmento,
+        medios.reproducibles,
+    ))
 }
 
 /// Las fórmulas (050) como SVG del mismo motor que la Lectura: `$…$`, `$$…$$` y ` ```math `. Un
 /// `$` de cierre seguido de un dígito no cierra (dinero), igual que en Lectura. Los gráficos
 /// (052, ` ```grafico `), como SVG estático para papel. Los bloques de código con lenguaje
 /// conocido, resaltados con los colores de Código pasados a papel (055).
-fn con_formulas<'a>(cuerpo: &'a str, parser: Parser<'a>) -> impl Iterator<Item = Event<'a>> + 'a {
+fn con_formulas<'a>(
+    cuerpo: &'a str,
+    eventos: impl Iterator<Item = (Event<'a>, Range<usize>)> + 'a,
+) -> impl Iterator<Item = Event<'a>> + 'a {
     let mut en_bloque: Option<(String, Cercado)> = None;
-    parser.into_offset_iter().filter_map(move |(ev, rango)| {
+    eventos.filter_map(move |(ev, rango)| {
         if let Some((texto, _)) = &mut en_bloque {
             return match ev {
                 Event::Text(t) => {
@@ -197,6 +368,40 @@ fn cuerpo_sin_frontmatter(texto: &str) -> &str {
     &texto[base..]
 }
 
+/// Las transclusiones de medios `![[clip.mp3]]` del cuerpo de una nota `.html`, reemplazadas
+/// por el medio (057). `None` si no hay ninguna.
+fn medios_en_html(texto: &str, medios: &Medios) -> Option<String> {
+    medios.adjunto?;
+    let cuerpo = orbital_vault::html_edit::body_range(texto)?;
+    let mut cambios: Vec<(Range<usize>, String)> = Vec::new();
+    for occ in orbital_vault::links::extract_links(&texto[cuerpo.clone()], true) {
+        if occ.kind != orbital_vault::links::LinkKind::Transclusion {
+            continue;
+        }
+        let Some(tipo) = orbital_vault::medios::tipo_de(&occ.target.path) else {
+            continue;
+        };
+        let ruta = medios.adjunto.and_then(|f| f(&occ.target.path));
+        let html = medio_html(
+            &occ.target.path,
+            ruta.as_deref(),
+            tipo,
+            occ.target.anchor.as_deref(),
+            medios.reproducibles,
+        );
+        let r = occ.byte_range;
+        cambios.push((cuerpo.start + r.start..cuerpo.start + r.end, html));
+    }
+    if cambios.is_empty() {
+        return None;
+    }
+    let mut out = texto.to_owned();
+    for (r, h) in cambios.into_iter().rev() {
+        out.replace_range(r, &h);
+    }
+    Some(out)
+}
+
 /// Página completa con los estilos embebidos (FR-2).
 pub fn pagina(body: &str, titulo: &str) -> String {
     format!(
@@ -214,7 +419,15 @@ pub fn pagina(body: &str, titulo: &str) -> String {
 
 /// HTML de una nota `.html`: el contenido tal cual (FR-3), con las fórmulas (050) dibujadas como
 /// SVG en el texto visible. Sin fórmulas, una copia exacta.
+#[cfg(test)]
 pub fn html_passthrough(texto: &str) -> String {
+    html_passthrough_con(texto, &Medios::default())
+}
+
+/// Como [`html_passthrough`], con cada `![[clip.mp3]]` del cuerpo como el medio (057).
+pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
+    let con_medios = medios_en_html(texto, medios);
+    let texto = con_medios.as_deref().unwrap_or(texto);
     let con_formulas = orbital_formulas::html::reemplazar(texto, |tex, modo| {
         formula_html(tex, modo == orbital_formulas::Modo::Bloque, false)
     });
@@ -298,6 +511,70 @@ mod tests {
     fn nota_html_pasa_tal_cual() {
         let nota = "<!doctype html><html><body><p>hola</p></body></html>";
         assert_eq!(html_passthrough(nota), nota);
+    }
+
+    #[test]
+    fn exporta_medios() {
+        let dir = std::env::temp_dir().join(format!("orbital-057-exp-ñ-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("clip ñ.mp4"), b"x").unwrap();
+        std::fs::write(dir.join("voz.mp3"), b"x").unwrap();
+        let adjunto = |e: &str| (e == "voz.mp3").then(|| dir.join("voz.mp3"));
+        let nota = "# M\n\n![[voz.mp3#t=1:30]]\n\nTexto ![video](clip%20ñ.mp4#t=5) fin.\n\n![[falta.ogg]]\n\n![](no.webm)\n\n```\n![[voz.mp3]]\n```\n";
+        let html = |reproducibles| {
+            let m = Medios {
+                carpeta: Some(dir.clone()),
+                adjunto: Some(&adjunto),
+                reproducibles,
+            };
+            html_md_con(nota, "m.md", &m)
+        };
+        let out = html(true);
+        assert!(
+            out.contains("<audio controls preload=\"none\" src=\"file://"),
+            "{out}"
+        );
+        assert!(out.contains("voz.mp3#t=90\""), "{out}");
+        assert!(out.contains("Audio: <a href=\"file://"), "{out}");
+        assert!(out.contains("(desde 1:30)"), "{out}");
+        assert!(out.contains("<video controls"), "{out}");
+        assert!(out.contains("aria-label=\"Video: clip ñ.mp4\""), "{out}");
+        assert!(out.contains("Archivo inexistente: «falta.ogg»"), "{out}");
+        assert!(out.contains("Archivo inexistente: «no.webm»"), "{out}");
+        // En un bloque de código queda como texto.
+        assert!(out.contains("<code>![[voz.mp3]]"), "{out}");
+        assert!(!out.contains("<img"), "{out}");
+        let foto = |e: &str| (e == "foto.png").then(|| dir.join("foto.png"));
+        let m = Medios {
+            carpeta: None,
+            adjunto: Some(&foto),
+            reproducibles: true,
+        };
+        let out = html_md_con("![[foto.png]]\n", "f.md", &m);
+        assert!(out.contains("<img src=\"file://"), "{out}");
+        // PDF: nada que reproducir, el nombre y la ruta.
+        let pdf = html(false);
+        assert!(!pdf.contains("<audio") && !pdf.contains("<video"), "{pdf}");
+        assert!(
+            pdf.contains("<p class=\"medio\">Audio: <a href=\"file://"),
+            "{pdf}"
+        );
+        // Sin medios, lo de siempre.
+        assert_eq!(
+            html_md("# A\n", "a.md"),
+            html_md_con("# A\n", "a.md", &Medios::default())
+        );
+        // Una nota `.html` con `![[voz.mp3]]` en el cuerpo.
+        let h = "<html><head></head><body><p>Oí:</p><p>![[voz.mp3]]</p></body></html>";
+        let m = Medios {
+            carpeta: Some(dir.clone()),
+            adjunto: Some(&adjunto),
+            reproducibles: true,
+        };
+        let out = html_passthrough_con(h, &m);
+        assert!(out.contains("<p><figure class=\"medio\"><audio"), "{out}");
+        assert_eq!(html_passthrough(h), h);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

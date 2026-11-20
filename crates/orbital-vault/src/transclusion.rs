@@ -472,9 +472,9 @@ pub fn card_html(
 }
 
 /// Un medio incrustado en una nota `.html` (057), marcado con `data-orbital-embed` como las
-/// tarjetas: `<audio>`/`<video>` con controles y sin cargar nada hasta que se reproduce (o, el
-/// video, solo sus metadatos), o la imagen. Con `#t=` empieza en ese segundo (fragmento de medio
-/// del propio WebView).
+/// tarjetas: `<audio>`/`<video>` con controles, sin cargar nada hasta que se reproduce
+/// (`preload="none"`), y debajo el nombre del archivo (lo que queda si el WebView no lo
+/// reproduce); o la imagen. Con `#t=` empieza en ese segundo (fragmento de medio del WebView).
 pub fn medio_html(
     path: &RelPath,
     tipo: crate::medios::Tipo,
@@ -483,23 +483,26 @@ pub fn medio_html(
 ) -> String {
     use crate::medios::Tipo;
     let mut src = href(path);
-    if let Some(t) = anchor.and_then(crate::medios::inicio) {
+    if let Some(t) = anchor.and_then(crate::medios::inicio).filter(|t| *t > 0.0) {
         src.push_str(&format!("#t={t}"));
     }
     let src = escape(&src);
     let nombre = escape(path.file_name());
     let marca = "data-orbital-embed=\"\" contenteditable=\"false\"";
-    match tipo {
-        Tipo::Audio => format!(
-            "<audio class=\"orbital-medio\" {marca} controls preload=\"none\" src=\"{src}\" aria-label=\"Audio: {nombre}\" title=\"{nombre}\"></audio>"
-        ),
-        Tipo::Video => format!(
-            "<video class=\"orbital-medio\" {marca} controls preload=\"metadata\" src=\"{src}\" aria-label=\"Video: {nombre}\" title=\"{nombre}\" style=\"max-width:100%\"></video>"
-        ),
-        Tipo::Imagen => format!(
-            "<img class=\"orbital-medio\" {marca} src=\"{src}\" alt=\"{nombre}\" style=\"max-width:100%\">"
-        ),
-    }
+    let (clase, etiqueta) = match tipo {
+        Tipo::Imagen => {
+            return format!(
+                "<img class=\"orbital-medio\" {marca} src=\"{src}\" alt=\"{nombre}\" style=\"max-width:100%\">"
+            );
+        }
+        Tipo::Audio => ("Audio", "audio"),
+        Tipo::Video => ("Video", "video"),
+    };
+    format!(
+        "<figure class=\"orbital-medio\" {marca} style=\"margin:0.75em 0\">\
+<{etiqueta} controls preload=\"none\" src=\"{src}\" aria-label=\"{clase}: {nombre}\" style=\"max-width:100%;width:100%\">{clase}: {nombre}</{etiqueta}>\
+<figcaption style=\"opacity:0.75;font-size:0.9em\">{clase}: {nombre}</figcaption></figure>"
+    )
 }
 
 fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> String) {

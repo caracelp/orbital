@@ -184,6 +184,12 @@ impl Reader {
             .name("embed-solo")
             .pixels_below_lines(super::capas::CALLOUT_SEPARACION + 7)
             .build());
+        // Un medio incrustado solo en su renglón (057): aire arriba y abajo.
+        add(gtk::TextTag::builder()
+            .name("medio")
+            .pixels_above_lines(6)
+            .pixels_below_lines(6)
+            .build());
         // Tarjetas de estudio (024).
         add(gtk::TextTag::builder()
             .name("tarjeta-rotulo")

@@ -34,7 +34,7 @@ pub fn tipo_de(nombre: &str) -> Option<Tipo> {
     }
     let mut buf = [0u8; 4];
     let ext = &mut buf[..ext.len()];
-    ext.copy_from_slice(archivo[archivo.len() - ext.len()..].as_bytes());
+    ext.copy_from_slice(&archivo.as_bytes()[archivo.len() - ext.len()..]);
     ext.make_ascii_lowercase();
     let ext = std::str::from_utf8(ext).ok()?;
     if AUDIO.contains(&ext) {
