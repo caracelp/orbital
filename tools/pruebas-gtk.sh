@@ -23,6 +23,7 @@ excluir=(
     "medir_editor_ecuaciones" # medición del editor de ecuaciones (051)
     "medir_lectura_graficos"  # medición de los gráficos (052; también la cubre medir_lectura)
     "medir_graficos_3d"       # medición de los gráficos 3D (053)
+    "medir_lectura_codigo"    # medición del resaltado de código (055; también la cubre medir_lectura)
     "us4_webkit"              # maneja la barra de formato por AT-SPI (tools/verificar-us4.sh)
 )
 

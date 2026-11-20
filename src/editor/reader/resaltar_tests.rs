@@ -71,7 +71,7 @@ async fn pausa(ms: u64) {
 
 /// Espera a que la vista termine de volcar y de resaltar.
 async fn esperar_resaltado(reader: &Reader) {
-    for _ in 0..500 {
+    for _ in 0..5000 {
         let i = &reader.0;
         if !i.blocks.borrow().is_empty()
             && i.resaltar.borrow().is_empty()
@@ -79,7 +79,7 @@ async fn esperar_resaltado(reader: &Reader) {
         {
             return;
         }
-        pausa(5).await;
+        pausa(1).await;
     }
     panic!("el resaltado no terminó");
 }
@@ -327,5 +327,137 @@ fn codigo_resaltado_al_exportar() {
             println!("Captura: {}", png.display());
         }
         window.close();
+    });
+}
+
+/// Una nota con `n` bloques de código de varios lenguajes (15–18 renglones cada uno) entre
+/// párrafos. Con `sin_lenguaje`, los mismos bloques sin lenguaje (lo que hacía `main`).
+pub(crate) fn nota_con_codigo(n: usize, sin_lenguaje: bool) -> String {
+    let corpus = [
+        (
+            "rust",
+            "fn calcular_K(x: u32) -> u32 {\n    // suma y multiplica\n    let y = x * K + 1;\n    if y > 100 { return y; }\n    y\n}\n",
+        ),
+        (
+            "py",
+            "def calcular_K(x):\n    # suma y multiplica\n    y = x * K + 1\n    if y > 100:\n        return \"grande\"\n    return y\n",
+        ),
+        (
+            "js",
+            "function calcularK(x) {\n  // suma y multiplica\n  const y = x * K + 1;\n  return y > 100 ? \"grande\" : y;\n}\n",
+        ),
+        (
+            "sh",
+            "for f in *.md; do\n  # cuenta renglones\n  echo \"$f: $(wc -l < \"$f\") K\"\ndone\n",
+        ),
+        (
+            "yaml",
+            "clave_K: \"valor\"\nlista:\n  - uno # comentario\n  - dos\nnumero: K\n",
+        ),
+        (
+            "c",
+            "int calcular_K(int x) {\n    /* suma y multiplica */\n    int y = x * K + 1;\n    return y > 100 ? y : 0;\n}\n",
+        ),
+    ];
+    let mut text = String::from("# Mucho código\n\n");
+    for k in 0..n {
+        let (lang, cuerpo) = corpus[k % corpus.len()];
+        let cuerpo = cuerpo.replace('K', &k.to_string());
+        let lang = if sin_lenguaje { "" } else { lang };
+        text.push_str(&format!(
+            "Párrafo {k} antes del bloque.\n\n```{lang}\n{}```\n\n",
+            cuerpo.repeat(3)
+        ));
+    }
+    text
+}
+
+/// Abrir en Lectura una nota con muchos bloques de código: el volcado, cuándo termina el
+/// resaltado y el tramo más largo del hilo de GTK, la primera vez (carga los lenguajes) y al
+/// reabrir (de la caché). `ORBITAL_MEDIR_BLOQUES=N` (60 por defecto);
+/// `ORBITAL_MEDIR_SIN_LENGUAJE=1`, los mismos bloques sin lenguaje (lo que hacía `main`).
+/// `cargo test --release --bin orbital medir_lectura_codigo -- --ignored --nocapture`
+#[test]
+#[ignore = "medición; requiere una sesión gráfica"]
+fn medir_lectura_codigo() {
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    let n: usize = std::env::var("ORBITAL_MEDIR_BLOQUES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    let sin = std::env::var_os("ORBITAL_MEDIR_SIN_LENGUAJE").is_some();
+    let text = nota_con_codigo(n, sin);
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(800)
+        .build();
+    glib::MainContext::default().block_on(async {
+        for vuelta in 0..6 {
+            let reader = Reader::new();
+            window.set_child(Some(reader.widget()));
+            window.present();
+            let texto = text.clone();
+            let prepared = gtk::gio::spawn_blocking(move || Prepared::new(&texto, &[]))
+                .await
+                .unwrap();
+            let max = Rc::new(Cell::new(0.0f64));
+            let (m, ultimo) = (max.clone(), Rc::new(Cell::new(Instant::now())));
+            let tic = glib::timeout_add_local(Duration::from_millis(1), move || {
+                let ahora = Instant::now();
+                m.set(m.get().max((ahora - ultimo.get()).as_secs_f64() * 1000.0));
+                ultimo.set(ahora);
+                glib::ControlFlow::Continue
+            });
+            let t1 = Instant::now();
+            reader.render(prepared, || None, None);
+            while reader.0.blocks.borrow().is_empty() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            let volcado = t1.elapsed().as_secs_f64() * 1000.0;
+            let max_volcado = max.replace(0.0);
+            let pendientes = reader.0.resaltar.borrow().len();
+            esperar_resaltado(&reader).await;
+            let resaltado = t1.elapsed().as_secs_f64() * 1000.0;
+            glib::timeout_future(Duration::from_millis(50)).await;
+            tic.remove();
+            println!(
+                "Apertura {}: volcado {volcado:.1} ms (tramo más largo {max_volcado:.1} ms), \
+                 resaltado completo a los {resaltado:.1} ms ({pendientes} bloques por resaltar \
+                 al volcar; tramo más largo después del volcado {:.1} ms)",
+                vuelta + 1,
+                max.get()
+            );
+        }
+        // Dividida: escribir dentro de un bloque del medio. Cada actualización vuelve a volcar
+        // ese bloque en el sitio (con lenguaje, resaltado en el acto: texto nuevo, sin caché).
+        let reader = Reader::new();
+        window.set_child(Some(reader.widget()));
+        reader.render(Prepared::new(&text, &[]), || None, None);
+        esperar_resaltado(&reader).await;
+        let marca = format!("let y = x * {} + 1;", n / 2);
+        let marca = if text.contains(&marca) {
+            marca
+        } else {
+            format!("y = x * {} + 1", n / 2)
+        };
+        let mut tiempos = Vec::new();
+        let mut editado = text.clone();
+        for k in 0..40 {
+            let pos = editado.find(&marca).expect("bloque del medio") + marca.len();
+            editado.insert(pos, if k % 10 == 9 { '\n' } else { 'a' });
+            let p = Prepared::new(&editado, &[]);
+            let t = Instant::now();
+            reader.render(p, || None, None);
+            tiempos.push(t.elapsed().as_secs_f64() * 1000.0);
+            glib::timeout_future(Duration::from_millis(5)).await;
+        }
+        assert!(reader.0.resaltar.borrow().is_empty() || sin);
+        tiempos.sort_by(f64::total_cmp);
+        println!(
+            "Dividida, actualizar al escribir en un bloque: mediana {:.2} ms, máx {:.2} ms",
+            tiempos[tiempos.len() / 2],
+            tiempos[tiempos.len() - 1]
+        );
     });
 }

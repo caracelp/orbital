@@ -1319,17 +1319,25 @@ pub(super) fn pintar_codigo(
     tramos: &[crate::resaltado::Tramo],
 ) {
     let table = buf.tag_table();
+    // Cada etiqueta se busca por nombre una vez por bloque.
+    let mut etiquetas: [Option<Option<gtk::TextTag>>; 20] = Default::default();
     let mut a = buf.iter_at_offset(inicio);
     let mut b = a;
     for t in tramos {
-        let Some(tag) = table.lookup(&super::etiquetas::nombre_sintaxis(
-            t.rol, t.negrita, t.cursiva,
-        )) else {
+        let n = t.rol as usize * 4 + usize::from(t.negrita) + 2 * usize::from(t.cursiva);
+        let Some(tag) = etiquetas[n]
+            .get_or_insert_with(|| {
+                table.lookup(&super::etiquetas::nombre_sintaxis(
+                    t.rol, t.negrita, t.cursiva,
+                ))
+            })
+            .as_ref()
+        else {
             continue;
         };
         a.set_offset(inicio + t.inicio as i32);
         b.set_offset(inicio + t.fin as i32);
-        buf.apply_tag(&tag, &a, &b);
+        buf.apply_tag(tag, &a, &b);
     }
 }
 
