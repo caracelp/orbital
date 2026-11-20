@@ -237,4 +237,4 @@ mod flujo;
 pub use flujo::Flujo;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
