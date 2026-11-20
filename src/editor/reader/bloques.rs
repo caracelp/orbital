@@ -304,6 +304,28 @@ impl Reader {
             BlockKind::Flashcard(f) => self.flashcard(s, end, f, depth, b.source.start),
             BlockKind::Math { tex } => self.formula_bloque(s, end, tex, &base),
         }
+        self.vaciar_medios(s, end, &base);
+    }
+
+    /// Los medios que quedaron de los párrafos del bloque, cada uno en su renglón (057).
+    fn vaciar_medios(&self, s: &RenderState, end: &mut gtk::TextIter, base: &[gtk::TextTag]) {
+        if s.medios_en_linea.borrow().is_empty() {
+            return;
+        }
+        let medios = std::mem::take(&mut *s.medios_en_linea.borrow_mut());
+        let mut tags = base.to_vec();
+        tags.extend(s.buffer.tag_table().lookup("medio"));
+        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+        for (path, tipo, fragmento) in medios {
+            self.medio(s, end, &path, tipo, fragmento.as_deref());
+            // La etiqueta del renglón (aire arriba y abajo) también sobre el ancla.
+            let mut a = *end;
+            a.backward_char();
+            for t in &tags {
+                s.buffer.apply_tag(t, &a, end);
+            }
+            s.buffer.insert_with_tags(end, "\n", &refs);
+        }
     }
 
     /// Una parte especial de la nota (041) como estructura propia, igual que un callout: el texto
@@ -562,7 +584,7 @@ impl Reader {
             Embed::Archivo { abs, tipo, .. } => {
                 let mut tags = _base.to_vec();
                 tags.extend(table.lookup("medio"));
-                self.medio(s, end, abs, *tipo, t.anchor.as_deref(), false);
+                self.medio(s, end, abs, *tipo, t.anchor.as_deref());
                 buf.insert_with_tags(end, "\n", &tags.iter().collect::<Vec<_>>());
                 return;
             }
@@ -1189,7 +1211,11 @@ impl Reader {
                 .map(|d| d.join(&*ruta))
                 .filter(|p| p.is_file())
             {
-                Some(path) => self.medio(s, end, &path, tipo, fragmento, true),
+                Some(path) => {
+                    s.medios_en_linea
+                        .borrow_mut()
+                        .push((path, tipo, fragmento.map(str::to_owned)))
+                }
                 None => self.archivo_inexistente(s, end, &ruta, tags),
             }
             return;
@@ -1227,7 +1253,6 @@ impl Reader {
         path: &Path,
         tipo: orbital_vault::medios::Tipo,
         fragmento: Option<&str>,
-        en_linea: bool,
     ) {
         let ancho = self.0.width.get();
         let w = match tipo {
@@ -1243,11 +1268,8 @@ impl Reader {
                     path,
                     tipo,
                     fragmento.and_then(orbital_vault::medios::inicio),
-                    en_linea,
                 );
-                if !en_linea {
-                    self.track_wide(&w);
-                }
+                self.track_wide(&w);
                 w
             }
         };
@@ -1472,4 +1494,8 @@ pub(super) struct RenderState {
     pub(super) codigo: RefCell<Vec<(String, String)>>,
     /// Bloques de primer nivel con código por resaltar (055).
     pub(super) resaltar: RefCell<Vec<super::resaltar::Pendiente>>,
+    /// Medios escritos en medio de un párrafo (`![](clip.mp4)`, 057): van en su propio renglón
+    /// al terminar el bloque, como los `![[…]]`.
+    pub(super) medios_en_linea:
+        RefCell<Vec<(PathBuf, orbital_vault::medios::Tipo, Option<String>)>>,
 }

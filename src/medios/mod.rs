@@ -23,16 +23,13 @@ fn alto_169(ancho: i32) -> i32 {
     ancho * 9 / 16
 }
 
-/// Ancho del video escrito en medio de un párrafo (`![](clip.mp4)`).
-const ANCHO_EN_LINEA: i32 = 480;
-
 /// El reproductor de un archivo de audio o video que existe. `inicio`: segundos desde donde
-/// empieza (`#t=`). `en_linea`: escrito en medio de un párrafo; si no, ocupa la columna (quien
-/// lo ancla le fija el ancho, y el alto del video lo sigue).
+/// empieza (`#t=`). Ocupa la columna: quien lo ancla le fija el ancho y el alto del video lo
+/// sigue. (Uno escrito en medio de un párrafo va en su renglón, debajo del párrafo.)
 ///
 /// Antes de reproducir es un renglón: «Reproducir», el nombre y «Abrir con otra aplicación»
 /// (más la pantalla negra del video). Al reproducir aparecen debajo los controles de GTK.
-pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, en_linea: bool) -> gtk::Widget {
+pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>) -> gtk::Widget {
     let nombre = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -77,15 +74,8 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, en_linea: bool)
     let etiqueta = gtk::Label::builder()
         .label(&rotulo)
         .xalign(0.0)
-        .hexpand(!en_linea)
+        .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::Middle)
-        .max_width_chars(if en_linea { 32 } else { -1 })
-        // La vista de texto da a los anclados su ancho mínimo: en un párrafo, el del nombre.
-        .width_chars(if en_linea {
-            rotulo.chars().count().min(32) as i32
-        } else {
-            -1
-        })
         .css_classes(["orbital-medio-nombre"])
         .build();
     let afuera = boton_abrir_afuera(path, &nombre);
@@ -106,17 +96,13 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, en_linea: bool)
         p
     });
     if let Some(p) = &pantalla {
-        if en_linea {
-            p.set_size_request(ANCHO_EN_LINEA, alto_169(ANCHO_EN_LINEA));
-        } else {
-            let p = p.downgrade();
-            raiz.connect_width_request_notify(move |r| {
-                if let Some(p) = p.upgrade() {
-                    let w = r.width_request();
-                    p.set_size_request(-1, alto_169(w.max(0)));
-                }
-            });
-        }
+        let debil = p.downgrade();
+        raiz.connect_width_request_notify(move |r| {
+            if let Some(p) = debil.upgrade() {
+                let w = r.width_request();
+                p.set_size_request(-1, alto_169(w.max(0)));
+            }
+        });
         raiz.append(p);
     }
     // Los controles, al reproducir.
@@ -155,11 +141,48 @@ pub fn reproductor(path: &Path, tipo: Tipo, inicio: Option<f64>, en_linea: bool)
         });
         p.add_controller(clic);
     }
-    // Fuera de la vista: se pausa y se suelta (GStreamer cierra el archivo).
-    raiz.connect_unrealize(move |_| {
-        if let Some(m) = flujo.borrow_mut().take() {
+    // Fuera de la vista se pausa, se suelta el archivo y vuelve el renglón de antes de
+    // reproducir: al sacarlo (cambiar de nota, rearmar el bloque, otra diapositiva) y al ocultar
+    // la vista (pasar a Código, cerrar el panel). Desplazarse no cuenta: ahí la vista con su
+    // barra sigue mapeada.
+    let soltar = {
+        let zona = zona.downgrade();
+        let cabecera = cabecera.downgrade();
+        let pantalla = pantalla.as_ref().map(|p| p.downgrade());
+        let reproducir = reproducir.clone();
+        move || {
+            let Some(m) = flujo.borrow_mut().take() else {
+                return;
+            };
             m.pause();
             m.apagar();
+            if let Some(z) = zona.upgrade() {
+                while let Some(h) = z.first_child() {
+                    z.remove(&h);
+                }
+                z.set_visible(false);
+            }
+            if let Some(p) = pantalla.as_ref().and_then(|p| p.upgrade()) {
+                p.set_paintable(None::<&gtk::gdk::Paintable>);
+                p.set_visible(true);
+            }
+            if let Some(c) = cabecera.upgrade()
+                && reproducir.parent().is_none()
+            {
+                c.prepend(&reproducir);
+            }
+        }
+    };
+    let soltar = Rc::new(soltar);
+    {
+        let soltar = soltar.clone();
+        raiz.connect_unrealize(move |_| soltar());
+    }
+    raiz.connect_unmap(move |r| {
+        // Si la vista que lo contiene sigue a la vista, es solo un desplazamiento.
+        let vista = r.ancestor(gtk::ScrolledWindow::static_type());
+        if vista.is_none_or(|v| !v.is_mapped()) {
+            soltar();
         }
     });
     raiz.upcast()
@@ -176,8 +199,6 @@ fn cargar(
     let media = Flujo::abrir(ruta, pantalla, inicio, true);
     let controles = gtk::MediaControls::new(Some(&media));
     controles.set_hexpand(true);
-    // En un párrafo, lugar para la barra de tiempo.
-    controles.set_size_request(320, -1);
     zona.append(&controles);
     let pantalla = pantalla.map(|p| p.downgrade());
     media.connect_prepared_notify(move |m| {

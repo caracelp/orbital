@@ -1614,6 +1614,23 @@ fn medios_en_lectura() {
         let visible = buf.text(&buf.start_iter(), &buf.end_iter(), false);
         assert!(visible.contains("Editado en línea:"), "{visible}");
         assert!(m.is_playing(), "editar otro bloque cortó el audio");
+        // Mucho texto debajo y desplazarse hasta el fondo: el reproductor sale de la pantalla
+        // pero sigue sonando (la vista sigue a la vista).
+        let largo = format!(
+            "{editado}{}",
+            "Un renglón de relleno bastante largo para ocupar lugar.\n\n".repeat(40)
+        );
+        reader.render(
+            Prepared::with_vault(&largo, &vault, &from, &[]),
+            || None,
+            Some(root.join("wiki")),
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let adj = reader.widget().vadjustment();
+        adj.set_value(adj.upper());
+        glib::timeout_future(Duration::from_millis(300)).await;
+        assert!(adj.value() > 300.0, "no se desplazó: {}", adj.value());
+        assert!(m.is_playing(), "desplazarse cortó el audio");
         ventana.destroy();
     });
     std::fs::remove_dir_all(&root).ok();

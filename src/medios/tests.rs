@@ -220,7 +220,7 @@ fn reproductor_carga_al_pedirlo() {
     std::fs::write(&wav, wav_de_prueba(3.0)).unwrap();
     let ctx = glib::MainContext::default();
     ctx.block_on(async {
-        let w = reproductor(&wav, Tipo::Audio, Some(1.5), false);
+        let w = reproductor(&wav, Tipo::Audio, Some(1.5));
         let ventana = gtk::Window::builder().child(&w).build();
         ventana.present();
         let botones = botones(&w);
@@ -276,7 +276,7 @@ fn reproductor_con_archivo_ilegible_avisa() {
     std::fs::write(&roto, b"esto no es un video").unwrap();
     let ctx = glib::MainContext::default();
     ctx.block_on(async {
-        let w = reproductor(&roto, Tipo::Video, None, false);
+        let w = reproductor(&roto, Tipo::Video, None);
         let ventana = gtk::Window::builder().child(&w).build();
         ventana.present();
         let play = botones(&w)
@@ -354,4 +354,71 @@ pub(crate) fn wav_de_prueba(segundos: f64) -> Vec<u8> {
         out.extend_from_slice(&(v as i16).to_le_bytes());
     }
     out
+}
+
+/// Ocultar la vista (pasar de Lectura a Código, cerrar el panel) pausa, suelta el archivo y
+/// vuelve el botón «Reproducir»; desplazarse no.
+#[test]
+#[ignore = "requiere una sesión GTK (tools/pruebas-gtk.sh)"]
+fn reproductor_se_suelta_al_ocultar_la_vista() {
+    gtk::init().expect("se necesita una sesión GTK");
+    let dir = std::env::temp_dir().join(format!("orbital-057-ocultar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("tono.wav");
+    std::fs::write(&wav, wav_de_prueba(5.0)).unwrap();
+    let ctx = glib::MainContext::default();
+    ctx.block_on(async {
+        let w = reproductor(&wav, Tipo::Audio, None);
+        let caja = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        caja.append(&w);
+        let relleno = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        relleno.set_size_request(10, 4000);
+        caja.append(&relleno);
+        let vista = gtk::ScrolledWindow::builder().child(&caja).build();
+        let pila = gtk::Stack::new();
+        pila.add_named(&vista, Some("lectura"));
+        pila.add_named(&gtk::Label::new(Some("código")), Some("codigo"));
+        let ventana = gtk::Window::builder()
+            .child(&pila)
+            .default_width(500)
+            .default_height(300)
+            .build();
+        ventana.present();
+        glib::timeout_future(Duration::from_millis(200)).await;
+        let play = || {
+            botones(&w)
+                .into_iter()
+                .find(|b| b.tooltip_text().as_deref() == Some("Reproducir"))
+        };
+        play().expect("botón Reproducir").emit_clicked();
+        let m = controles(&w).unwrap().media_stream().unwrap();
+        for _ in 0..300 {
+            if m.is_playing() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        assert!(m.is_playing());
+        // Desplazarse hasta el fondo: sigue sonando.
+        let adj = vista.vadjustment();
+        adj.set_value(adj.upper());
+        glib::timeout_future(Duration::from_millis(200)).await;
+        assert!(m.is_playing(), "desplazarse cortó el audio");
+        // Pasar a Código: se pausa, se suelta y vuelve «Reproducir».
+        pila.set_visible_child_name("codigo");
+        glib::timeout_future(Duration::from_millis(100)).await;
+        assert!(!m.is_playing(), "sigue sonando con la vista oculta");
+        assert!(
+            controles(&w).is_none(),
+            "quedaron los controles de un medio suelto"
+        );
+        assert!(play().is_some(), "no volvió el botón Reproducir");
+        // Volver y reproducir de nuevo.
+        pila.set_visible_child_name("lectura");
+        glib::timeout_future(Duration::from_millis(100)).await;
+        play().unwrap().emit_clicked();
+        assert!(controles(&w).is_some());
+        ventana.destroy();
+    });
+    std::fs::remove_dir_all(&dir).ok();
 }
