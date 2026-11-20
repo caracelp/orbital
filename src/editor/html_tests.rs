@@ -698,8 +698,8 @@ Con error: $x^^2$.
 
 /// 057: en la Visual de una nota `.html`, `![[tono.wav]]` es un `<audio>` con controles, sin
 /// precargar, con el nombre debajo; suena (desde `#t=`) y no se guarda en el archivo. Lo que
-/// falta dice «Archivo inexistente». La bóveda va en `~/.cache` porque el proceso web de WebKit
-/// no ve `/tmp`.
+/// falta dice «Archivo inexistente». La bóveda va en `/tmp`, que el proceso web de WebKit no ve
+/// por su cuenta: la vista la monta en su sandbox (`html_view::preparar_sandbox`).
 #[test]
 #[ignore = "requiere una sesión gráfica"]
 fn medios_en_visual_html() {
@@ -707,7 +707,7 @@ fn medios_en_visual_html() {
     adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
     let context = glib::MainContext::default();
     context.block_on(async {
-        let root = glib::user_cache_dir().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "orbital-057-visual-ñ-{}",
             std::process::id()
         ));

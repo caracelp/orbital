@@ -9,6 +9,7 @@ impl Window {
         if let Some(web) = i.url_web.borrow().as_ref() {
             return web.clone();
         }
+        crate::html_view::preparar_sandbox(i.vault.borrow().as_ref().map(|v| v.root()));
         let session = webkit6::NetworkSession::new_ephemeral();
         let web = webkit6::WebView::builder()
             .network_session(&session)
@@ -257,6 +258,7 @@ impl Window {
     /// silenciosa). La vista vive en `exports_pendientes` hasta que la impresión termina.
     pub(super) fn exportar_pdf(&self, text: &str, destino: &std::path::Path) {
         let html = self.exportar_html(text, destino, false);
+        crate::html_view::preparar_sandbox(self.0.vault.borrow().as_ref().map(|v| v.root()));
         let web = webkit6::WebView::new();
         web.load_html(&html, None);
         let destino = destino.to_path_buf();
