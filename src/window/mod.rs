@@ -266,22 +266,19 @@ impl Window {
         let state = AppState::load();
         // Números de línea en Código (054): en todas las vistas de nota, también las ya armadas.
         editor::code::set_line_numbers(!state.hide_line_numbers);
-        let default_w = state.window_width.unwrap_or(1100).max(640);
-        let default_h = state.window_height.unwrap_or(720).max(450);
+        // El tamaño por defecto es el de la ventana sin maximizar (056): la app abre maximizada
+        // (`Window::maximize`, antes de `present`) y vuelve a este tamaño si se desmaximiza.
+        let (default_w, default_h) = state.restore_size();
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Orbital")
             .default_width(default_w)
             .default_height(default_h)
-            .width_request(640)
-            .height_request(450)
+            .width_request(crate::state::MIN_WIDTH)
+            .height_request(crate::state::MIN_HEIGHT)
             .content(&toasts)
             .build();
-
-        if state.window_maximized {
-            window.maximize();
-        }
 
         // Anchos de la maqueta: 260/280 px y, en ventanas más chicas, 220/220 y 190/170. La
         // maqueta lo hace a 900 y 680 px; acá el centro tiene un ancho mínimo real (la columna del
@@ -421,6 +418,13 @@ impl Window {
 
     pub fn present(&self) {
         self.0.window.present();
+    }
+
+    /// Orbital abre siempre maximizada (056). Se llama antes de `present`: así el primer cuadro
+    /// ya sale con el tamaño final, sin un cuadro chico y un cambio de tamaño después. Las
+    /// pruebas y las capturas con `ORBITAL_CAPTURA_TAMANO` no la llaman.
+    pub fn maximize(&self) {
+        self.0.window.maximize();
     }
 
     /// Medición del arranque (desarrollo): fases del próximo cuadro.

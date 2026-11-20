@@ -132,6 +132,7 @@ fn main() -> glib::ExitCode {
                 return;
             }
             let w = Window::new(app);
+            w.maximize();
             w.present();
             *main_window.borrow_mut() = Some(w.clone());
             reopen_last(w);
@@ -144,6 +145,7 @@ fn main() -> glib::ExitCode {
         let existing = main_window.borrow().clone();
         let w = existing.unwrap_or_else(|| {
             let w = Window::new(app);
+            w.maximize();
             *main_window.borrow_mut() = Some(w.clone());
             w
         });
@@ -174,6 +176,10 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
     medir_arranque::marca("activate");
     let window = Window::new(app);
     medir_arranque::marca("Window::new");
+    // Maximizada como en el uso normal (056), salvo que la captura pida un tamaño fijo.
+    if capture.is_none() || std::env::var_os("ORBITAL_CAPTURA_TAMANO").is_none() {
+        window.maximize();
+    }
     window.present();
     medir_arranque::marca("present");
     if let Some(cap) = capture {

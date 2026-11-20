@@ -2083,3 +2083,65 @@ mod tipo_e_ids_tests {
         });
     }
 }
+
+mod ventana_tests {
+    //! 056: Orbital abre maximizada y, al desmaximizar, vuelve al tamaño guardado.
+    use super::super::*;
+    use super::listas_tests::{app, esperar};
+
+    /// Con un `estado.yaml` de antes (900×600, `window_maximized: false`), la ventana abre
+    /// maximizada; su tamaño por defecto sigue siendo el guardado mientras está maximizada; al
+    /// desmaximizar vuelve a 900×600; al cerrar maximizada se guarda 900×600 (no el tamaño
+    /// maximizado) y ya no se escribe `window_maximized`.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn abre_maximizada_y_vuelve_al_tamano_guardado() {
+        let config =
+            std::env::temp_dir().join(format!("orbital-056-{}", glib::uuid_string_random()));
+        let estado = config.join("orbital/estado.yaml");
+        std::fs::create_dir_all(estado.parent().unwrap()).unwrap();
+        std::fs::write(
+            &estado,
+            "recent: []\nwindow_width: 900\nwindow_height: 600\nwindow_maximized: false\n",
+        )
+        .unwrap();
+        // Antes de iniciar GTK: glib lee la carpeta de configuración una sola vez por proceso.
+        // SAFETY: todavía no corre ningún otro hilo de esta prueba que lea el entorno.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config) };
+        assert_eq!(glib::user_config_dir(), config);
+        let app = app("Ventana");
+        glib::MainContext::default().block_on(async {
+            let w = Window::new(&app);
+            assert_eq!(w.0.window.default_size(), (900, 600));
+            w.maximize();
+            w.present();
+            let win = w.0.window.clone();
+            esperar("abre maximizada", || {
+                win.is_maximized() && win.width() > 900 && win.height() > 600
+            })
+            .await;
+            assert_eq!(win.default_size(), (900, 600), "maximizada no lo pisa");
+
+            win.unmaximize();
+            esperar("vuelve a 900×600", || {
+                !win.is_maximized() && win.width() == 900 && win.height() == 600
+            })
+            .await;
+
+            win.maximize();
+            esperar("se maximiza otra vez", || {
+                win.is_maximized() && win.width() > 900
+            })
+            .await;
+            assert_eq!(win.default_size(), (900, 600));
+            win.close();
+            esperar("guarda el tamaño sin maximizar", || {
+                std::fs::read_to_string(&estado).is_ok_and(|t| !t.contains("window_maximized"))
+            })
+            .await;
+            let s = AppState::load();
+            assert_eq!(s.restore_size(), (900, 600));
+        });
+        std::fs::remove_dir_all(config).unwrap();
+    }
+}

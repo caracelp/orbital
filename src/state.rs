@@ -14,6 +14,11 @@ use orbital_vault::write::atomic_write;
 
 const MAX_RECENT: usize = 10;
 const MAX_RECENT_NOTES_PER_VAULT: usize = 20;
+/// Tamaño de la ventana sin maximizar la primera vez, y el mínimo (056).
+const DEFAULT_WIDTH: i32 = 1100;
+const DEFAULT_HEIGHT: i32 = 720;
+pub const MIN_WIDTH: i32 = 640;
+pub const MIN_HEIGHT: i32 = 450;
 
 /// Bóvedas recientes y la última abierta.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -28,12 +33,10 @@ pub struct AppState {
     pub html_view: Option<String>,
     /// Si la búsqueda incluye archivos de `raw/` (T017 de la 004).
     pub search_raw: bool,
-    /// Ancho guardado de la ventana.
+    /// Ancho de la ventana sin maximizar (al que vuelve si se desmaximiza; 056).
     pub window_width: Option<i32>,
-    /// Alto guardado de la ventana.
+    /// Alto de la ventana sin maximizar.
     pub window_height: Option<i32>,
-    /// Si la ventana estaba maximizada.
-    pub window_maximized: bool,
     /// Números de línea apagados en la vista Código (054; por defecto se ven).
     pub hide_line_numbers: bool,
 }
@@ -104,13 +107,6 @@ impl AppState {
             PropValue::Number(s) | PropValue::Text(s) => s.parse().ok(),
             _ => None,
         });
-        let window_maximized = find(&entries, "window_maximized")
-            .and_then(|e| match &e.value {
-                PropValue::Bool(b) => Some(*b),
-                PropValue::Text(s) => Some(s == "true"),
-                _ => None,
-            })
-            .unwrap_or(false);
         let hide_line_numbers = find(&entries, "line_numbers").is_some_and(|e| match &e.value {
             PropValue::Bool(b) => !*b,
             PropValue::Text(s) => s == "false",
@@ -125,9 +121,18 @@ impl AppState {
             search_raw,
             window_width,
             window_height,
-            window_maximized,
             hide_line_numbers,
         }
+    }
+
+    /// Tamaño de la ventana sin maximizar (056): el guardado, o 1100×720 la primera vez, nunca
+    /// menos que el mínimo de la ventana (640×450). La ventana abre siempre maximizada; este es
+    /// el tamaño al que vuelve si se desmaximiza.
+    pub fn restore_size(&self) -> (i32, i32) {
+        (
+            self.window_width.unwrap_or(DEFAULT_WIDTH).max(MIN_WIDTH),
+            self.window_height.unwrap_or(DEFAULT_HEIGHT).max(MIN_HEIGHT),
+        )
     }
 
     /// Registra que se abrió `vault`.
@@ -199,9 +204,6 @@ impl AppState {
         if let Some(h) = self.window_height {
             entries.push(("window_height", PropValue::Number(h.to_string())));
         }
-        if self.window_maximized {
-            entries.push(("window_maximized", PropValue::Bool(true)));
-        }
         if self.hide_line_numbers {
             entries.push(("line_numbers", PropValue::Bool(false)));
         }
@@ -223,7 +225,6 @@ mod tests {
         s.opened(Path::new("/tmp/a"));
         s.window_width = Some(1200);
         s.window_height = Some(800);
-        s.window_maximized = true;
         s.hide_line_numbers = true;
         assert_eq!(
             s.recent,
@@ -253,6 +254,39 @@ mod tests {
         assert!(AppState::load_from(&file).hide_line_numbers);
         fs::write(&file, "line_numbers: true\n").unwrap();
         assert!(!AppState::load_from(&file).hide_line_numbers);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// 056: un `estado.yaml` de antes (con `window_maximized`) sigue cargando; la clave ya no se
+    /// lee ni se escribe, y el tamaño guardado queda como tamaño sin maximizar.
+    #[test]
+    fn old_state_loads_and_restore_size() {
+        let dir = std::env::temp_dir().join(format!("orbital-ventana-{}", std::process::id()));
+        let file = dir.join("estado.yaml");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &file,
+            "last_vault: /tmp/a\nrecent:\n  - /tmp/a\nwindow_width: 1200\nwindow_height: 800\n\
+             window_maximized: true\nline_numbers: false\n",
+        )
+        .unwrap();
+        let s = AppState::load_from(&file);
+        assert_eq!(s.last_vault.as_deref(), Some(Path::new("/tmp/a")));
+        assert!(s.hide_line_numbers);
+        assert_eq!(s.restore_size(), (1200, 800));
+        s.save_to(&file).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("window_maximized"), "{text}");
+        assert_eq!(AppState::load_from(&file), s);
+
+        // Sin estado: 1100×720; un tamaño menor que el mínimo sube al mínimo.
+        assert_eq!(AppState::default().restore_size(), (1100, 720));
+        let chico = AppState {
+            window_width: Some(100),
+            window_height: Some(-1),
+            ..AppState::default()
+        };
+        assert_eq!(chico.restore_size(), (MIN_WIDTH, MIN_HEIGHT));
         let _ = fs::remove_dir_all(dir);
     }
 
