@@ -205,6 +205,20 @@ impl Vault {
         if target.to_ascii_lowercase().ends_with(".base") {
             return self.embed_base(target, anchor, deps);
         }
+        // Imágenes, audio y video (057): el archivo, resuelto desde la nota que lo incrusta.
+        if let Some(tipo) = crate::medios::tipo_de(target) {
+            let Some(from) = visited.last() else {
+                return Embed::Missing;
+            };
+            return match self.resolve_attachment(from, target) {
+                Resolution::Found(path) => Embed::Archivo {
+                    abs: path.to_path(self.root()),
+                    path,
+                    tipo,
+                },
+                _ => Embed::Missing,
+            };
+        }
         let path = match self.resolve_wikilink(target) {
             Resolution::Found(p) => p,
             Resolution::Missing => return Embed::Missing,
@@ -399,6 +413,10 @@ pub fn card_html(
         out.push_str(&escape(text));
         out.push_str("</a>");
     };
+    // Un medio (057) va sin tarjeta: el elemento del WebView con sus controles.
+    if let Embed::Archivo { path, tipo, .. } = embed {
+        return medio_html(path, *tipo, anchor, href);
+    }
     out.push_str("<div class=\"orbital-embed-title\">↪ ");
     match embed {
         Embed::Note { path, blocks, .. } => {
@@ -429,6 +447,11 @@ pub fn card_html(
             title(&mut out, path, &shown);
             out.push_str("</div>");
         }
+        Embed::Archivo { .. } => out.push_str("</div>"),
+        Embed::Missing if crate::medios::tipo_de(target).is_some() => out.push_str(&format!(
+            "<span class=\"orbital-embed-note\">Archivo inexistente: «{}»</span></div>",
+            escape(target)
+        )),
         Embed::Missing => out.push_str(&format!(
             "<span class=\"orbital-embed-note\">Nota inexistente: «{}»</span></div>",
             escape(&shown)
@@ -446,6 +469,37 @@ pub fn card_html(
     }
     out.push_str("</div>");
     out
+}
+
+/// Un medio incrustado en una nota `.html` (057), marcado con `data-orbital-embed` como las
+/// tarjetas: `<audio>`/`<video>` con controles y sin cargar nada hasta que se reproduce (o, el
+/// video, solo sus metadatos), o la imagen. Con `#t=` empieza en ese segundo (fragmento de medio
+/// del propio WebView).
+pub fn medio_html(
+    path: &RelPath,
+    tipo: crate::medios::Tipo,
+    anchor: Option<&str>,
+    href: &dyn Fn(&RelPath) -> String,
+) -> String {
+    use crate::medios::Tipo;
+    let mut src = href(path);
+    if let Some(t) = anchor.and_then(crate::medios::inicio) {
+        src.push_str(&format!("#t={t}"));
+    }
+    let src = escape(&src);
+    let nombre = escape(path.file_name());
+    let marca = "data-orbital-embed=\"\" contenteditable=\"false\"";
+    match tipo {
+        Tipo::Audio => format!(
+            "<audio class=\"orbital-medio\" {marca} controls preload=\"none\" src=\"{src}\" aria-label=\"Audio: {nombre}\" title=\"{nombre}\"></audio>"
+        ),
+        Tipo::Video => format!(
+            "<video class=\"orbital-medio\" {marca} controls preload=\"metadata\" src=\"{src}\" aria-label=\"Video: {nombre}\" title=\"{nombre}\" style=\"max-width:100%\"></video>"
+        ),
+        Tipo::Imagen => format!(
+            "<img class=\"orbital-medio\" {marca} src=\"{src}\" alt=\"{nombre}\" style=\"max-width:100%\">"
+        ),
+    }
 }
 
 fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> String) {
@@ -615,6 +669,17 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
                     inlines_html(out, children);
                     out.push_str("</a>");
                 }
+            }
+            Inline::Image { url, alt } if crate::medios::es_reproducible(url) => {
+                let etiqueta = match crate::medios::tipo_de(url) {
+                    Some(crate::medios::Tipo::Video) => "video",
+                    _ => "audio",
+                };
+                out.push_str(&format!(
+                    "<{etiqueta} controls preload=\"none\" src=\"{}\" aria-label=\"{}\"></{etiqueta}>",
+                    escape(url),
+                    escape(if alt.is_empty() { url } else { alt })
+                ));
             }
             Inline::Image { url, alt } => {
                 out.push_str("<img src=\"");

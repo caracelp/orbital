@@ -210,6 +210,13 @@ pub enum Embed {
     Html {
         path: crate::RelPath,
     },
+    /// Un archivo que no es nota (imagen, audio o video, 057): la vista lo muestra en el lugar.
+    /// `abs`: la ruta absoluta en disco.
+    Archivo {
+        path: crate::RelPath,
+        abs: std::path::PathBuf,
+        tipo: crate::medios::Tipo,
+    },
     /// No existe: se puede crear (OKF §6.1).
     Missing,
     Ambiguous(Vec<crate::RelPath>),
