@@ -170,7 +170,7 @@ impl Flujo {
                     tubo.set_property("video-sink", &sink);
                 }
                 Err(_) => {
-                    self.fallar("falta la salida de video para GTK de GStreamer (gst-plugin-gtk4)");
+                    self.fallar("falta el componente «gtk4paintablesink» de GStreamer");
                     return;
                 }
             }
