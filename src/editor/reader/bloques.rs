@@ -28,6 +28,13 @@ impl Reader {
             s.plegadas.borrow_mut().clone_from(&firma.plegadas);
             self.block(s, end, block, 0);
             s.foco.set(None);
+            let codigo = std::mem::take(&mut *s.codigo.borrow_mut());
+            if !codigo.is_empty() {
+                s.resaltar.borrow_mut().push(super::resaltar::Pendiente {
+                    fuente: fuente.clone(),
+                    codigo,
+                });
+            }
         }
         let (heading, nivel) = match &block.kind {
             BlockKind::Heading { inlines, level } => (
@@ -205,12 +212,26 @@ impl Reader {
             BlockKind::Code { lang, text } if lang == "grafico" => {
                 self.grafico(s, end, text, &base)
             }
-            BlockKind::Code { text, .. } => {
+            BlockKind::Code { lang, text } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));
                 let refs: Vec<&gtk::TextTag> = tags.iter().collect();
                 let body = text.strip_suffix('\n').unwrap_or(text);
+                let inicio = end.offset();
                 buf.insert_with_tags(end, body, &refs);
+                // Los colores de Código (055) van como etiquetas sobre el texto ya puesto: copiar
+                // y buscar siguen viendo el mismo texto plano. Si el bloque no está en la caché,
+                // se resalta después, en reposo (`resaltar`).
+                let hecho = if s.provisorio.get() {
+                    crate::resaltado::en_el_acto(lang, body)
+                } else {
+                    crate::resaltado::en_cache(lang, body)
+                };
+                match hecho {
+                    Some(Some(tramos)) => pintar_codigo(buf, inicio, &tramos),
+                    Some(None) => {}
+                    None => s.codigo.borrow_mut().push((lang.clone(), body.to_owned())),
+                }
                 buf.insert(end, "\n");
             }
             // Hasta que la vista complete el contenido (T015/T019), el bloque generado se ve
@@ -1290,6 +1311,36 @@ pub(super) fn picture(path: &Path, alt: &str, max_width: i32) -> gtk::Widget {
     pic.upcast()
 }
 
+/// Pone las etiquetas de resaltado (055) sobre el texto de un bloque de código que empieza en el
+/// carácter `inicio` del buffer.
+pub(super) fn pintar_codigo(
+    buf: &gtk::TextBuffer,
+    inicio: i32,
+    tramos: &[crate::resaltado::Tramo],
+) {
+    let table = buf.tag_table();
+    // Cada etiqueta se busca por nombre una vez por bloque.
+    let mut etiquetas: [Option<Option<gtk::TextTag>>; 20] = Default::default();
+    let mut a = buf.iter_at_offset(inicio);
+    let mut b = a;
+    for t in tramos {
+        let n = t.rol as usize * 4 + usize::from(t.negrita) + 2 * usize::from(t.cursiva);
+        let Some(tag) = etiquetas[n]
+            .get_or_insert_with(|| {
+                table.lookup(&super::etiquetas::nombre_sintaxis(
+                    t.rol, t.negrita, t.cursiva,
+                ))
+            })
+            .as_ref()
+        else {
+            continue;
+        };
+        a.set_offset(inicio + t.inicio as i32);
+        b.set_offset(inicio + t.fin as i32);
+        buf.apply_tag(tag, &a, &b);
+    }
+}
+
 pub(super) struct RenderState {
     pub(super) buffer: gtk::TextBuffer,
     /// En el sitio (el buffer ya está en la vista) los widgets se anclan enseguida.
@@ -1324,4 +1375,8 @@ pub(super) struct RenderState {
     pub(super) pintables: RefCell<Vec<(gtk::gdk::Paintable, i32)>>,
     /// Letra, color y escala de las fórmulas de la vista (050).
     pub(super) estilo_formulas: Cell<crate::formulas::Estilo>,
+    /// Bloques de código del bloque de primer nivel en curso que faltan resaltar (055).
+    pub(super) codigo: RefCell<Vec<(String, String)>>,
+    /// Bloques de primer nivel con código por resaltar (055).
+    pub(super) resaltar: RefCell<Vec<super::resaltar::Pendiente>>,
 }

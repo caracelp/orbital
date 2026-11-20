@@ -932,7 +932,7 @@ fn boveda_cuaderno(capitulos: usize) -> (std::path::PathBuf, String) {
 }
 
 /// Guarda la vista del lector en `<ORBITAL_CAPTURA_DIR>/<nombre>.png` (si está la variable).
-fn capturar_lector(reader: &Reader, nombre: &str) {
+pub(super) fn capturar_lector(reader: &Reader, nombre: &str) {
     use gtk::prelude::*;
     let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {
         return;

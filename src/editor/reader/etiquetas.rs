@@ -97,6 +97,23 @@ impl Reader {
             .background(crate::style::ACCENT_BG.hex())
             .foreground(crate::style::ACCENT_FG.hex())
             .build());
+        // Resaltado de los bloques de código (055), con los colores de Código. Antes que las de
+        // la búsqueda, así una coincidencia se sigue viendo con sus colores.
+        for rol in crate::resaltado::ROLES {
+            for (negrita, cursiva) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut tag = gtk::TextTag::builder().name(nombre_sintaxis(rol, negrita, cursiva));
+                if rol != crate::resaltado::Rol::Texto {
+                    tag = tag.foreground(rol.color().hex());
+                }
+                if negrita {
+                    tag = tag.weight(700);
+                }
+                if cursiva {
+                    tag = tag.style(pango::Style::Italic);
+                }
+                add(tag.build());
+            }
+        }
         add(gtk::TextTag::builder()
             .name("find-highlight")
             .background(crate::style::SEARCH_MATCH_BG.hex())
@@ -337,4 +354,14 @@ impl Reader {
         s.tags.borrow_mut().push(tag.clone());
         tag
     }
+}
+
+/// Nombre de la etiqueta de resaltado de un tramo (055).
+pub(super) fn nombre_sintaxis(rol: crate::resaltado::Rol, negrita: bool, cursiva: bool) -> String {
+    format!(
+        "sintaxis-{}{}{}",
+        rol.clase(),
+        if negrita { "-b" } else { "" },
+        if cursiva { "-i" } else { "" }
+    )
 }

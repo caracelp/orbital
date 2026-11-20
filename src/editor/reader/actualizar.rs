@@ -152,6 +152,8 @@ impl Reader {
             lugares: RefCell::new(Vec::new()),
             pintables: RefCell::new(Vec::new()),
             estilo_formulas: Cell::new(self.estilo_formulas()),
+            codigo: RefCell::new(Vec::new()),
+            resaltar: RefCell::new(Vec::new()),
         }
     }
 
@@ -235,6 +237,8 @@ impl Reader {
         *i.plegables.borrow_mut() = s.plegables.clone();
         *i.base_dir.borrow_mut() = s.base_dir.clone();
         i.header.set(Some(header_hash));
+        *i.resaltar.borrow_mut() = std::mem::take(&mut *s.resaltar.borrow_mut());
+        self.programar_resaltado();
         // Si el plegado cambió mientras se armaba, se vuelca lo que haga falta (028/046).
         self.aplicar_plegado();
         // La disposición todavía no está calculada: se ancla lo visible en el próximo reposo.
@@ -483,5 +487,9 @@ impl Reader {
             .extend(state.links.borrow_mut().drain(..));
         blocks.splice(rango.start..rango.start, middle);
         self.schedule_attach();
+        i.resaltar
+            .borrow_mut()
+            .append(&mut state.resaltar.borrow_mut());
+        self.programar_resaltado();
     }
 }
