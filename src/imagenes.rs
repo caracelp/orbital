@@ -52,23 +52,6 @@ struct Pixeles {
     alfa: bool,
 }
 
-/// La orientación EXIF de un JPEG (1 a 8; 1 si no tiene). Lee solo la cabecera.
-pub fn orientacion(path: &Path) -> u16 {
-    let es_jpeg = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"));
-    if !es_jpeg {
-        return 1;
-    }
-    let mut buf = Vec::with_capacity(64 << 10);
-    let leido = std::fs::File::open(path).and_then(|f| f.take(64 << 10).read_to_end(&mut buf));
-    if leido.is_err() {
-        return 1;
-    }
-    orientacion_exif(&buf).unwrap_or(1)
-}
-
 /// La orientación del primer bloque EXIF de los bytes de un JPEG.
 fn orientacion_exif(b: &[u8]) -> Option<u16> {
     if b.get(..2)? != [0xFF, 0xD8] {
@@ -132,17 +115,90 @@ fn gira(o: u16) -> bool {
 }
 
 /// Ancho y alto con que se ve la imagen (la orientación de la cámara aplicada), sin
-/// decodificarla: lee la cabecera. Para el hilo de fondo.
+/// decodificarla: PNG, JPEG, GIF, WebP y BMP desde los primeros 64 KiB (la cabecera); el resto,
+/// con `gdk-pixbuf` (más lento: ≈ 25 ms por PNG grande en el equipo de referencia). Para el hilo
+/// de fondo.
 pub fn medida_de_archivo(path: &Path) -> Option<(i32, i32)> {
-    let (_, w, h) = gtk::gdk_pixbuf::Pixbuf::file_info(path)?;
-    if w <= 0 || h <= 0 {
-        return None;
+    let ((w, h), o) = cabecera(path)?;
+    Some(if gira(o) { (h, w) } else { (w, h) })
+}
+
+/// Las medidas guardadas en el archivo (sin girar) y su orientación EXIF.
+fn cabecera(path: &Path) -> Option<((i32, i32), u16)> {
+    let mut buf = Vec::with_capacity(64 << 10);
+    std::fs::File::open(path)
+        .and_then(|f| f.take(64 << 10).read_to_end(&mut buf))
+        .ok()?;
+    let (w, h) = match medida_de_cabecera(&buf) {
+        Some(m) => m,
+        None => {
+            let (_, w, h) = gtk::gdk_pixbuf::Pixbuf::file_info(path)?;
+            (w, h)
+        }
+    };
+    (w > 0 && h > 0).then(|| ((w, h), orientacion_exif(&buf).unwrap_or(1)))
+}
+
+/// Ancho y alto de la cabecera de una imagen PNG, JPEG, GIF, WebP o BMP.
+fn medida_de_cabecera(b: &[u8]) -> Option<(i32, i32)> {
+    let be32 =
+        |o: usize| -> Option<u32> { Some(u32::from_be_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
+    let be16 =
+        |o: usize| -> Option<u16> { Some(u16::from_be_bytes(b.get(o..o + 2)?.try_into().ok()?)) };
+    let le16 =
+        |o: usize| -> Option<u16> { Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?)) };
+    let le32 =
+        |o: usize| -> Option<u32> { Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?)) };
+    let a_i32 = |w: u32, h: u32| Some((i32::try_from(w).ok()?, i32::try_from(h).ok()?));
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") && b.get(12..16)? == b"IHDR" {
+        return a_i32(be32(16)?, be32(20)?);
     }
-    Some(if gira(orientacion(path)) {
-        (h, w)
-    } else {
-        (w, h)
-    })
+    if b.starts_with(b"GIF8") {
+        return a_i32(u32::from(le16(6)?), u32::from(le16(8)?));
+    }
+    if b.starts_with(b"BM") {
+        let w = le32(18)? as i32;
+        let h = le32(22)? as i32;
+        return Some((w.abs(), h.abs()));
+    }
+    if b.starts_with(b"RIFF") && b.get(8..12)? == b"WEBP" {
+        return match b.get(12..16)? {
+            b"VP8 " => a_i32(u32::from(le16(26)? & 0x3fff), u32::from(le16(28)? & 0x3fff)),
+            b"VP8L" => {
+                let v = le32(21)?;
+                a_i32((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1)
+            }
+            b"VP8X" => {
+                let w = u32::from_le_bytes([*b.get(24)?, *b.get(25)?, *b.get(26)?, 0]) + 1;
+                let h = u32::from_le_bytes([*b.get(27)?, *b.get(28)?, *b.get(29)?, 0]) + 1;
+                a_i32(w, h)
+            }
+            _ => None,
+        };
+    }
+    if b.starts_with(&[0xFF, 0xD8]) {
+        let mut k = 2;
+        while k + 9 < b.len() {
+            if b[k] != 0xFF {
+                return None;
+            }
+            let marca = b[k + 1];
+            if marca == 0xFF {
+                k += 1;
+                continue;
+            }
+            let largo = usize::from(be16(k + 2)?);
+            // SOF0–SOF15 menos DHT (C4), JPG (C8) y DAC (CC).
+            if (0xC0..=0xCF).contains(&marca) && !matches!(marca, 0xC4 | 0xC8 | 0xCC) {
+                return a_i32(u32::from(be16(k + 7)?), u32::from(be16(k + 5)?));
+            }
+            if marca == 0xDA || largo < 2 {
+                return None;
+            }
+            k += 2 + largo;
+        }
+    }
+    None
 }
 
 /// Las medidas de varios archivos ([`medida_de_archivo`]), en el pool de `gio`.
@@ -155,9 +211,9 @@ pub async fn medidas(paths: Vec<PathBuf>) -> Vec<Option<(i32, i32)>> {
 
 fn decodificar(path: &Path, ancho: i32, alto: i32, ajuste: Ajuste) -> Option<Pixeles> {
     use gtk::gdk_pixbuf::Pixbuf;
-    let (_, w, h) = Pixbuf::file_info(path)?;
+    let ((w, h), o) = cabecera(path).unwrap_or(((0, 0), 1));
     // El rectángulo en la orientación del archivo (la de la cámara se aplica al final).
-    let (ancho, alto) = if gira(orientacion(path)) {
+    let (ancho, alto) = if gira(o) {
         (alto, ancho)
     } else {
         (ancho, alto)
@@ -355,5 +411,22 @@ mod tests {
         assert_eq!(orientacion_exif(b"\x89PNG"), None);
         assert_eq!(orientacion_exif(&[0xFF, 0xD8, 0xFF]), None);
         assert!(gira(6) && gira(8) && !gira(1) && !gira(3));
+    }
+
+    #[test]
+    fn medidas_de_la_cabecera() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend_from_slice(&1600u32.to_be_bytes());
+        png.extend_from_slice(&1000u32.to_be_bytes());
+        assert_eq!(medida_de_cabecera(&png), Some((1600, 1000)));
+        let gif = b"GIF89a\x40\x01\xf0\x00";
+        assert_eq!(medida_de_cabecera(gif), Some((320, 240)));
+        // Un JPEG: SOI, APP0 vacío, SOF0 con 480 de alto y 640 de ancho.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x02, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0xE0, 0x02,
+            0x80, 0x03, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(medida_de_cabecera(&jpeg), Some((640, 480)));
+        assert_eq!(medida_de_cabecera(b"nada"), None);
     }
 }

@@ -666,11 +666,18 @@ fn medir_lectura_galeria() {
             hueco.set(Duration::ZERO);
             let adj = sw.vadjustment();
             let t1 = Instant::now();
-            while adj.value() + adj.page_size() < adj.upper() - 1.0 {
-                adj.set_value(adj.value() + adj.page_size());
+            let ultima = format!("foto-{:04}.png", n - 1);
+            // La grilla puede seguir creciendo (proporciones que llegan): se baja hasta ver la última.
+            for _ in 0..2000 {
+                if celdas(&g)
+                    .iter()
+                    .any(|c| c.tooltip_text().as_deref() == Some(&ultima))
+                {
+                    break;
+                }
+                adj.set_value((adj.value() + adj.page_size()).min(adj.upper()));
                 glib::timeout_future(Duration::from_millis(16)).await;
             }
-            let ultima = format!("foto-{:04}.png", n - 1);
             assert!(
                 esperar(|| celdas(&g)
                     .iter()
