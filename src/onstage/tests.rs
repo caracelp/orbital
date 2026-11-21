@@ -358,7 +358,7 @@ fn diagrama_en_diapositiva() {
             w.root()
                 .and_then(|r| r.renderer())
                 .unwrap()
-                .render_texture(&snap.to_node().unwrap(), None)
+                .render_texture(snap.to_node().unwrap(), None)
                 .save_to_png(&png)
                 .unwrap();
             println!("Captura: {}", png.display());
