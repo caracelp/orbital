@@ -215,6 +215,7 @@ impl Reader {
             BlockKind::Code { lang, text } if lang == "mermaid" => {
                 self.diagrama(s, end, text, &base)
             }
+            BlockKind::Carrusel(c) => self.carrusel(s, end, c, &base),
             BlockKind::Code { lang, text } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));

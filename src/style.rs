@@ -196,7 +196,15 @@ fn css() -> String {
          popover.orbital-completion-popover > contents { padding: 4px; border-radius: 8px; }\n\
          listview.orbital-completion-list, list.orbital-completion-list { background: transparent; }\n\
          .orbital-medio { background: var(--card-bg-color); border-radius: 10px; padding: 8px 10px; }\n\
-         .orbital-medio-pantalla { background: #000000; border-radius: 6px; }\n",
+         .orbital-medio-pantalla { background: #000000; border-radius: 6px; }\n\
+         .orbital-carrusel { background: var(--card-bg-color); border-radius: 10px; padding: 8px; }\n\
+         .orbital-carrusel:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }\n\
+         .orbital-carrusel-escenario { background: #000000; border-radius: 6px; }\n\
+         .orbital-carrusel-completo { background: #000000; border-radius: 0; padding: 12px; }\n\
+         .orbital-carrusel-leyenda { padding: 4px 10px; border-radius: 6px; }\n\
+         .orbital-carrusel-miniatura { padding: 2px; border-radius: 6px; border: 2px solid transparent; }\n\
+         .orbital-carrusel-miniatura:checked { border-color: var(--accent-color); background: transparent; }\n\
+         .orbital-carrusel-marcador { background: alpha(currentColor, 0.08); border-radius: 4px; }\n",
     );
     out.push_str(&props_css());
     out.push_str(&v13_css());

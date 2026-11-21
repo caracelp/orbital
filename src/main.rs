@@ -1,4 +1,5 @@
 mod bases;
+mod carrusel;
 mod diagramas;
 mod ecuaciones;
 mod editor;

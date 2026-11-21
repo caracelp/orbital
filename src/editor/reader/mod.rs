@@ -476,6 +476,7 @@ impl Reader {
 mod actualizar;
 mod bloques;
 mod capas;
+mod carrusel;
 mod consulta;
 mod diagramas;
 mod enlaces;

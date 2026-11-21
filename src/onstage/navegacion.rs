@@ -37,7 +37,9 @@ impl OnStage {
         // Con el foco en un reproductor (057), Espacio y Enter lo accionan y las flechas,
         // Inicio y Fin mueven su barra de tiempo o su volumen; Re Pág y Av Pág siguen pasando
         // de diapositiva.
-        if crate::medios::tiene_foco(&self.0.window)
+        // Lo mismo con el foco en un carrusel (032): sus flechas, Inicio y Fin.
+        if (crate::medios::tiene_foco(&self.0.window)
+            || crate::carrusel::tiene_foco(&self.0.window))
             && matches!(
                 keyval,
                 Key::space
