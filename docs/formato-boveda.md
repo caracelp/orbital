@@ -722,6 +722,75 @@ flowchart TD
   de Markdown convertido a HTML). En Visual se ve el SVG; un clic muestra el fuente para editarlo;
   al guardar, el archivo conserva el `pre` tal cual.
 
+### Carrusel de medios (032)
+
+Un codeblock ` ```carrusel ` (o ` ```media-slider `, el nombre heredado, que Orbital acepta como
+propio) junta varios medios de la bóveda en un carrusel: en Lectura, Dividida y OnStage se ven de a
+uno, con flechas, contador y leyenda. El archivo guarda el bloque tal cual; mirarlo, navegarlo o
+copiar un embed no cambia la nota.
+
+````markdown
+```carrusel
+---
+miniaturas: true
+posicionMiniaturas: abajo
+vistaAmpliada: true
+---
+![[figura-1.png|Corte sagital]]
+![[clip.mp4#t=30|Entrevista]]
+![Plano](planos/plano.jpg)
+![[informe.pdf#page=2]]
+```
+````
+
+- **Medios**: uno por renglón, como `![[archivo|leyenda]]` (también `[[archivo]]`, `![leyenda](ruta)`
+  o la ruta suelta). Se resuelven igual que un `![[…]]`: relativo a la nota, a la raíz o por nombre.
+  Un `|300` (un ancho) no es una leyenda. Imágenes (también GIF y SVG; el GIF muestra su primer
+  cuadro), audio y video (el reproductor de la Lectura, que no abre el archivo hasta reproducir),
+  PDF (un botón lo abre en el visor de PDF, con su `#page=`) y cualquier otro archivo (se abre con
+  otra aplicación). Un archivo que no está se ve como «Archivo inexistente». Las direcciones
+  externas (`https://…`) no se cargan: quedan como aviso.
+- **Opciones**: `clave: valor`, entre dos renglones `---` o sueltas. Valen el nombre en español y el
+  heredado:
+
+  | Opción | Heredada | Valores | Por defecto |
+  |---|---|---|---|
+  | `miniaturas` | `carouselShowThumbnails` | `true`/`false` (`sí`/`no`) | `false` |
+  | `posicionMiniaturas` | `thumbnailPosition` | `arriba`/`abajo`/`izquierda`/`derecha` (`top`/`bottom`/`left`/`right`) | `abajo` |
+  | `leyenda` | `captionMode` | `encima`/`debajo` (`overlay`/`below`) | `encima` |
+  | `vistaAmpliada` | `enhancedView` | botones de pantalla completa y «Copiar embed» | `false` |
+  | `paseAutomatico` | `autoplay` | avanza solo | `false` |
+  | `velocidad` | `slideshowSpeed` | segundos por diapositiva (1–3600) | `5` |
+  | `carpeta` | `folder` | carpeta de la bóveda (ver abajo) | — |
+  | `tipos` | `fileTypes` | extensiones: `[png, jpg]` o una por renglón con `-` | imágenes, audio, video y PDF |
+  | `recursivo` | `recursive` | también las subcarpetas | `false` |
+  | `maximo` | `maxSlides` | medios por carpeta como máximo (hasta 1000) | `100` |
+  | `id` | `sliderId` | un nombre para el carrusel | — |
+
+  Una opción desconocida o un valor inválido se ignora con un aviso tenue debajo del carrusel
+  («⚠ Opción desconocida ignorada: «color»»). Las opciones heredadas de funciones que Orbital
+  todavía no tiene (transiciones, comparación, zoom, notas, dibujo, visualizador) se aceptan sin
+  aviso y no hacen nada.
+- **Fuente por carpeta**: `carpeta: imagenes/tesis` (o un renglón `[[imagenes/tesis/]]`, que pone
+  los medios en ese lugar de la lista) suma los archivos de esa carpeta (relativa a la raíz, a la
+  carpeta de la nota o a `wiki/`), en orden alfabético sin distinguir mayúsculas, después de lo
+  escrito a mano y sin repetirlo. Sale del índice de la bóveda: un archivo nuevo o borrado se nota
+  cuando Orbital relee la bóveda. Si hay más que `maximo`, entran los primeros y un aviso dice
+  cuántos había y cuáles quedaron fuera.
+- **Teclado**: con el foco en el carrusel, ← y → pasan de diapositiva, Inicio y Fin van al
+  principio y al final, F abre la pantalla completa (con `vistaAmpliada`) y Esc la cierra. Las
+  miniaturas se eligen con clic, Enter o Espacio.
+- **Pase automático**: avanza cada `velocidad` segundos y vuelve al principio al final. Se detiene
+  al interactuar (un clic, una tecla, reproducir un video) hasta apretar «Reanudar», y no corre
+  mientras el carrusel está fuera de la vista o la nota está cerrada.
+- **Copiar embed**: pone en el portapapeles `![[archivo#fragmento|leyenda]]` de la diapositiva
+  vigente, tal como está escrito (los medios de una carpeta, con su ruta en la bóveda).
+- **Notas `.html`**: un `<pre><code class="language-carrusel">…</code></pre>` (o
+  `language-media-slider`). En Visual se ve como una grilla estática con cada medio y su leyenda; un
+  clic muestra el fuente; al guardar, el archivo conserva el `pre` tal cual.
+- **Exportar**: la grilla estática (HTML con audio y video reproducibles; PDF con su nombre y un
+  enlace).
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas
