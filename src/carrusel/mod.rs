@@ -144,6 +144,9 @@ impl Vista {
             ),
         ]);
         if modo == Modo::PantallaCompleta {
+            raiz.update_property(&[gtk::accessible::Property::Description(
+                "Flechas para pasar de foto; Inicio y Fin; más, menos y cero para el zoom; I para la información; P para el pase automático; Escape para salir",
+            )]);
             raiz.add_css_class("orbital-carrusel-completo");
             raiz.set_vexpand(true);
         }
