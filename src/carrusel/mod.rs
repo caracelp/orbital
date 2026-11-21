@@ -18,8 +18,6 @@ use gtk::{gdk, glib};
 use orbital_vault::carrusel::{Carrusel, Clase, Diapositiva, Leyenda, Posicion};
 
 pub mod imagenes;
-#[cfg(test)]
-pub(crate) mod tests;
 
 /// Abrir un enlace (un PDF en su visor), relativo a la nota del carrusel.
 pub type AbrirFn = Rc<dyn Fn(&str)>;
@@ -42,7 +40,8 @@ struct Inner {
     modo: Modo,
     abrir: AbrirFn,
     indice: Cell<usize>,
-    raiz: gtk::Box,
+    /// Débil: el widget es dueño del carrusel (lo guarda en sus datos), no al revés.
+    raiz: glib::WeakRef<gtk::Box>,
     escenario: gtk::Stack,
     anterior: gtk::Button,
     siguiente: gtk::Button,
@@ -64,6 +63,12 @@ struct Inner {
     miniaturas_pedidas: Cell<bool>,
 }
 
+impl Inner {
+    fn raiz(&self) -> gtk::Box {
+        self.raiz.upgrade().unwrap_or_default()
+    }
+}
+
 struct Miniaturas {
     scroller: gtk::ScrolledWindow,
     botones: Vec<gtk::ToggleButton>,
@@ -76,11 +81,7 @@ pub struct Vista(Rc<Inner>);
 
 /// El carrusel de la nota, del ancho de la columna `ancho`.
 pub fn widget(c: Rc<Carrusel>, ancho: i32, abrir: AbrirFn) -> gtk::Widget {
-    Vista::nueva(c, Modo::EnLinea, abrir, 0, ancho)
-        .0
-        .raiz
-        .clone()
-        .upcast()
+    Vista::nueva(c, Modo::EnLinea, abrir, 0, ancho).1.upcast()
 }
 
 /// Alto del escenario en la nota para un ancho de columna.
@@ -101,7 +102,14 @@ pub fn tiene_foco(ventana: &gtk::Window) -> bool {
 }
 
 impl Vista {
-    fn nueva(c: Rc<Carrusel>, modo: Modo, abrir: AbrirFn, indice: usize, ancho: i32) -> Self {
+    /// El carrusel y su widget (el widget es el dueño: hay que guardarlo).
+    fn nueva(
+        c: Rc<Carrusel>,
+        modo: Modo,
+        abrir: AbrirFn,
+        indice: usize,
+        ancho: i32,
+    ) -> (Self, gtk::Box) {
         let n = c.diapositivas.len();
         let o = &c.opciones;
         let raiz = gtk::Box::builder()
@@ -264,7 +272,7 @@ impl Vista {
             modo,
             abrir,
             indice: Cell::new(indice.min(n.saturating_sub(1))),
-            raiz,
+            raiz: raiz.downgrade(),
             escenario,
             anterior,
             siguiente,
@@ -286,7 +294,10 @@ impl Vista {
             this.0.escenario.set_size_request(-1, this.0.alto.get());
         }
         this.conectar(&copiar, &completa);
-        this
+        // El widget es dueño del carrusel: se libera con él.
+        // SAFETY: la clave es propia de este módulo y solo se guarda un `Rc<Inner>`.
+        unsafe { raiz.set_data("orbital-carrusel", this.0.clone()) };
+        (this, raiz)
     }
 
     fn conectar(&self, copiar: &gtk::Button, completa: &gtk::Button) {
@@ -365,7 +376,7 @@ impl Vista {
                     .map_or(glib::Propagation::Proceed, |i| Vista(i).tecla(k, mods))
             });
         }
-        i.raiz.add_controller(teclas);
+        i.raiz().add_controller(teclas);
         // Cualquier clic adentro cuenta como interactuar (pausa el pase automático), menos el
         // del botón de pausa, que decide solo.
         if i.c.opciones.autoplay {
@@ -386,13 +397,13 @@ impl Vista {
                     Vista(i).interaccion();
                 }
             });
-            i.raiz.add_controller(clic);
+            i.raiz().add_controller(clic);
         }
         // Mostrar la primera diapositiva al aparecer (no antes: el reproductor y la imagen no
         // se piden hasta que el carrusel está en la vista) y seguir si está a la vista.
         {
             let d = debil();
-            i.raiz.connect_map(move |_| {
+            i.raiz().connect_map(move |_| {
                 if let Some(i) = d.upgrade() {
                     let v = Vista(i);
                     if v.0.escenario.visible_child().is_none() {
@@ -405,7 +416,7 @@ impl Vista {
         }
         {
             let d = debil();
-            i.raiz.connect_unmap(move |_| {
+            i.raiz().connect_unmap(move |_| {
                 if let Some(i) = d.upgrade() {
                     let v = Vista(i);
                     v.detener();
@@ -418,7 +429,7 @@ impl Vista {
         // La columna cambió de ancho: el escenario sigue.
         if i.modo == Modo::EnLinea {
             let d = debil();
-            i.raiz.connect_width_request_notify(move |r| {
+            i.raiz().connect_width_request_notify(move |r| {
                 let Some(i) = d.upgrade() else { return };
                 let w = r.width_request();
                 if w <= 0 {
@@ -542,7 +553,7 @@ impl Vista {
         // El foco no se pierde al llegar a un extremo: pasa al carrusel.
         for (b, puede) in [(&i.anterior, n > 0), (&i.siguiente, n + 1 < total)] {
             if !puede && b.has_focus() {
-                i.raiz.grab_focus();
+                i.raiz().grab_focus();
             }
             b.set_sensitive(puede);
         }
@@ -564,7 +575,7 @@ impl Vista {
 
     /// Tamaño en píxeles del dispositivo al que se decodifican las imágenes del escenario.
     fn medida_imagen(&self) -> (i32, i32) {
-        let e = self.0.raiz.scale_factor().max(1);
+        let e = self.0.raiz().scale_factor().max(1);
         if self.0.modo == Modo::PantallaCompleta {
             let (w, h) = self.medida_pantalla();
             return (w * e, h * e);
@@ -574,7 +585,7 @@ impl Vista {
 
     /// El tamaño del monitor de la ventana (o uno razonable si todavía no tiene).
     fn medida_pantalla(&self) -> (i32, i32) {
-        let raiz = &self.0.raiz;
+        let raiz = &self.0.raiz();
         raiz.native()
             .and_then(|n| n.surface())
             .and_then(|s| raiz.display().monitor_at_surface(&s))
@@ -688,7 +699,7 @@ impl Vista {
                     let abrir = i.abrir.clone();
                     // En pantalla completa, primero se vuelve a la ventana: el visor está ahí.
                     if i.modo == Modo::PantallaCompleta
-                        && let Some(w) = i.raiz.root().and_downcast::<gtk::Window>()
+                        && let Some(w) = i.raiz().root().and_downcast::<gtk::Window>()
                     {
                         w.close();
                     }
@@ -716,19 +727,19 @@ impl Vista {
             return;
         };
         let embed = d.embed();
-        i.raiz.clipboard().set_text(&embed);
-        avisar(&i.raiz, &format!("Embed copiado: {embed}"));
+        i.raiz().clipboard().set_text(&embed);
+        avisar(&i.raiz(), &format!("Embed copiado: {embed}"));
     }
 
     fn alternar_pantalla_completa(&self) {
         if self.0.modo == Modo::PantallaCompleta {
-            if let Some(w) = self.0.raiz.root().and_downcast::<gtk::Window>() {
+            if let Some(w) = self.0.raiz().root().and_downcast::<gtk::Window>() {
                 w.close();
             }
             return;
         }
         self.detener();
-        let completa = Vista::nueva(
+        let (completa, raiz_completa) = Vista::nueva(
             self.0.c.clone(),
             Modo::PantallaCompleta,
             self.0.abrir.clone(),
@@ -737,14 +748,14 @@ impl Vista {
         );
         completa.0.pausado.set(self.0.pausado.get());
         let tostadas = adw::ToastOverlay::new();
-        tostadas.set_child(Some(&completa.0.raiz));
+        tostadas.set_child(Some(&raiz_completa));
         let ventana = gtk::Window::builder()
             .title("Carrusel")
             .modal(true)
             .child(&tostadas)
             .css_classes(["orbital-carrusel-ventana"])
             .build();
-        if let Some(madre) = self.0.raiz.root().and_downcast::<gtk::Window>() {
+        if let Some(madre) = self.0.raiz().root().and_downcast::<gtk::Window>() {
             ventana.set_transient_for(Some(&madre));
             ventana.set_application(madre.application().as_ref());
         }
@@ -772,7 +783,7 @@ impl Vista {
                     v.0.pausado.set(c.0.pausado.get());
                     v.mostrar_pausa();
                     v.ir_a(c.indice());
-                    v.0.raiz.grab_focus();
+                    v.0.raiz().grab_focus();
                     v.programar();
                 }
                 c.detener();
@@ -781,7 +792,7 @@ impl Vista {
         }
         ventana.fullscreen();
         ventana.present();
-        completa.0.raiz.grab_focus();
+        completa.0.raiz().grab_focus();
     }
 
     /// La usuaria hizo algo en el carrusel: el pase automático se detiene hasta que lo reanude
@@ -817,7 +828,7 @@ impl Vista {
             && i.c.diapositivas.len() > 1
             && !i.pausado.get()
             && i.en_vista.get()
-            && i.raiz.is_mapped();
+            && i.raiz().is_mapped();
         if !corre {
             self.detener();
             return;
@@ -854,7 +865,7 @@ impl Vista {
             return;
         }
         let Some(sw) = i
-            .raiz
+            .raiz()
             .ancestor(gtk::ScrolledWindow::static_type())
             .and_downcast::<gtk::ScrolledWindow>()
         else {
@@ -884,7 +895,7 @@ impl Vista {
 
     fn revisar_vista(&self, sw: &gtk::ScrolledWindow) {
         let i = &self.0;
-        let visto = i.raiz.compute_bounds(sw).is_some_and(|r| {
+        let visto = i.raiz().compute_bounds(sw).is_some_and(|r| {
             r.y() + r.height() > 0.0 && r.y() < sw.height() as f32 && r.height() > 0.0
         });
         if visto != i.en_vista.get() {
@@ -900,7 +911,7 @@ impl Vista {
         if i.miniaturas_pedidas.replace(true) {
             return;
         }
-        let e = i.raiz.scale_factor().max(1);
+        let e = i.raiz().scale_factor().max(1);
         let n = i.indice.get();
         let mut orden: Vec<usize> = (0..m.imagenes.len()).collect();
         orden.sort_by_key(|k| k.abs_diff(n));

@@ -55,6 +55,8 @@ pub struct Medios<'a> {
     pub adjunto: Option<&'a Resolver<'a>>,
     /// HTML: `<audio>`/`<video>` con controles; PDF (`false`): el nombre y la ruta, estáticos.
     pub reproducibles: bool,
+    /// Resuelve los medios de un carrusel (032) contra la bóveda.
+    pub carrusel: Option<&'a dyn Fn(&mut orbital_vault::carrusel::Carrusel)>,
 }
 
 impl Medios<'_> {
@@ -153,7 +155,28 @@ fn con_medios<'a>(
 ) -> impl Iterator<Item = (Event<'a>, Range<usize>)> + 'a {
     // Lo que se saltea hasta el cierre: un párrafo o una imagen ya reemplazados.
     let mut saltar: Option<TagEnd> = None;
+    // El cuerpo de un carrusel (032) que se está leyendo.
+    let mut carrusel: Option<String> = None;
     eventos.filter_map(move |(ev, rango)| {
+        if let Some(texto) = &mut carrusel {
+            return match ev {
+                Event::Text(t) => {
+                    texto.push_str(&t);
+                    None
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let texto = carrusel.take()?;
+                    Some((Event::Html(carrusel_html(&texto, medios).into()), rango))
+                }
+                _ => None,
+            };
+        }
+        if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = &ev
+            && orbital_vault::carrusel::es_lenguaje(info.split_whitespace().next().unwrap_or(""))
+        {
+            carrusel = Some(String::new());
+            return None;
+        }
         if let Some(fin) = &saltar {
             if matches!(&ev, Event::End(t) if t == fin) {
                 saltar = None;
@@ -183,6 +206,34 @@ fn con_medios<'a>(
             None => Some((ev, rango)),
         }
     })
+}
+
+/// Un carrusel (032) para papel o para el navegador: la grilla estática con cada medio y su
+/// leyenda (las imágenes como `file://`, como las demás).
+fn carrusel_html(cuerpo: &str, medios: &Medios) -> String {
+    use gtk::gio::prelude::FileExt;
+    let mut c = orbital_vault::carrusel::parse(cuerpo);
+    match medios.carrusel {
+        Some(resolver) => resolver(&mut c),
+        None => {
+            // Sin bóveda: lo escrito, relativo a la carpeta de la nota.
+            for d in &mut c.diapositivas {
+                let abs = medios.carpeta.as_ref().map(|dir| dir.join(&d.escrito));
+                if let (Some(abs), Ok(path)) = (abs, orbital_vault::RelPath::new(&d.escrito))
+                    && abs.is_file()
+                {
+                    d.estado = orbital_vault::carrusel::Estado::Encontrado { path, abs };
+                }
+            }
+        }
+    }
+    let src = |d: &orbital_vault::carrusel::Diapositiva| {
+        d.abs()
+            .map(|p| gtk::gio::File::for_path(p).uri().to_string())
+    };
+    let mut html = orbital_vault::carrusel::html(&c, &src, medios.reproducibles);
+    html.push('\n');
+    html
 }
 
 /// `![[clip.mp3]]` solo en su párrafo.
@@ -456,7 +507,18 @@ pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
     // Los gráficos (052): `<pre><code class="language-grafico">`.
     let con_graficos = orbital_graficos::html::reemplazar(&con_formulas, grafico_html);
     // Los diagramas Mermaid (058): `<pre><code class="language-mermaid">`.
-    orbital_graficos::html::reemplazar_bloques(&con_graficos, "mermaid", diagrama_html)
+    let con_diagramas =
+        orbital_graficos::html::reemplazar_bloques(&con_graficos, "mermaid", diagrama_html);
+    // Los carruseles (032), como la grilla estática.
+    let mut out = con_diagramas;
+    for lang in ["carrusel", "media-slider"] {
+        if out.contains(&format!("language-{lang}")) {
+            out = orbital_graficos::html::reemplazar_bloques(&out, lang, |f| {
+                carrusel_html(f, medios)
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -560,6 +622,46 @@ mod tests {
     }
 
     #[test]
+    fn exporta_carrusel_estatico() {
+        let dir =
+            std::env::temp_dir().join(format!("orbital-032-exportar ñ-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.png"), b"x").unwrap();
+        std::fs::write(dir.join("b.mp3"), b"x").unwrap();
+        let nota = "# C\n\n```media-slider\nautoplay: true\n![[a.png|Uno]]\n![[b.mp3]]\n![[falta.png]]\n```\n";
+        let html = |reproducibles| {
+            let m = Medios {
+                carpeta: Some(dir.clone()),
+                adjunto: None,
+                reproducibles,
+                carrusel: None,
+            };
+            html_md_con(nota, "c.md", &m)
+        };
+        let out = html(true);
+        assert!(out.contains("aria-label=\"Carrusel: 3 medios\""), "{out}");
+        assert!(out.contains("<img src=\"file://"), "{out}");
+        assert!(out.contains("<figcaption"), "{out}");
+        assert!(out.contains("<audio controls"), "{out}");
+        assert!(out.contains("Archivo inexistente: «falta.png»"), "{out}");
+        assert!(!out.contains("media-slider"), "{out}");
+        let papel = html(false);
+        assert!(papel.contains("Audio: <a href=\"file://"), "{papel}");
+        // Una nota `.html` con el bloque.
+        let h = "<html><body><pre><code class=\"language-carrusel\">![[a.png]]</code></pre></body></html>";
+        let m = Medios {
+            carpeta: Some(dir.clone()),
+            adjunto: None,
+            reproducibles: true,
+            carrusel: None,
+        };
+        let out = html_passthrough_con(h, &m);
+        assert!(out.contains("orbital-carrusel"), "{out}");
+        assert!(!out.contains("language-carrusel"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn exporta_medios() {
         let dir = std::env::temp_dir().join(format!("orbital-057-exp-ñ-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -572,6 +674,7 @@ mod tests {
                 carpeta: Some(dir.clone()),
                 adjunto: Some(&adjunto),
                 reproducibles,
+                carrusel: None,
             };
             html_md_con(nota, "m.md", &m)
         };
@@ -595,6 +698,7 @@ mod tests {
             carpeta: None,
             adjunto: Some(&foto),
             reproducibles: true,
+            carrusel: None,
         };
         let out = html_md_con("![[foto.png]]\n", "f.md", &m);
         assert!(out.contains("<img src=\"file://"), "{out}");
@@ -616,6 +720,7 @@ mod tests {
             carpeta: Some(dir.clone()),
             adjunto: Some(&adjunto),
             reproducibles: true,
+            carrusel: None,
         };
         let out = html_passthrough_con(h, &m);
         assert!(out.contains("<p><figure class=\"medio\"><audio"), "{out}");

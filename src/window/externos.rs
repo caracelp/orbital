@@ -238,10 +238,17 @@ impl Window {
                 _ => None,
             }
         };
+        // Los carruseles (032) se resuelven como en la Lectura: medios y carpetas de la bóveda.
+        let carrusel = |c: &mut orbital_vault::carrusel::Carrusel| {
+            if let Some((v, r)) = vault.as_ref().zip(ruta.as_ref()) {
+                v.resolver_carrusel(r, c);
+            }
+        };
         let medios = crate::export::Medios {
             carpeta,
             adjunto: Some(&adjunto),
             reproducibles,
+            carrusel: Some(&carrusel),
         };
         let es_html = text.trim_start().starts_with("<!doctype html>")
             || text.trim_start().starts_with("<!DOCTYPE html>")

@@ -5,6 +5,9 @@
 //! o cerrar ([`Editor::flush`]).
 
 mod buscar_en_nota;
+#[cfg(test)]
+#[path = "carrusel_tests.rs"]
+mod carrusel_tests;
 pub mod code;
 pub mod completion;
 pub mod conflict;
