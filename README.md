@@ -52,7 +52,7 @@ compatible con otros editores. Ninguna función escribe HTML dentro de tus notas
 
 - **Estética oscura rosa y negra** sobre GTK4 y libadwaita, con riel de navegación, pestañas que recuerdan cursor, vista y desplazamiento, y barra de estado con totales de la bóveda y de la selección.
 - **Explorador y listas**: árbol de archivos, **Favoritos**, **Guardados** (colecciones personalizadas en `.orbital/listas.yaml`), etiquetas anidadas, recientes y selector de bóvedas recientes.
-- **Barra derecha** con cuatro modos: propiedades y etiquetas de la nota, contexto (retroenlaces y enlaces entrantes), **grafo local por saltos** (1 · 2 · 3) y notas relacionadas.
+- **Barra derecha** con cuatro modos: propiedades y etiquetas de la nota, contexto (retroenlaces y enlaces entrantes), **grafo local por saltos** (1 · 2 · 3) y **galería de la nota** (`Ctrl+Alt+G`): las imágenes y videos de la nota abierta agrupados por encabezado (los de cada carrusel o galería, en su propio grupo), con búsqueda por nombre o encabezado, filtro por tipo, tres tamaños de mosaico, plegar y desplegar grupos, el visor a pantalla completa y «Ir al embed» (`Ctrl+Enter` en un mosaico o `E` en el visor), que lleva al editor con el embed resaltado. El menú de cada mosaico (clic derecho o `Mayús+F10`) copia la ruta o lo muestra en el explorador.
 - **Paleta de comandos** (`Ctrl+Mayús+P`) y **selector rápido** (`Ctrl+P`).
 
 ### Editor y outliner
@@ -92,6 +92,7 @@ compatible con otros editores. Ninguna función escribe HTML dentro de tus notas
 | Plegar / desplegar elemento del outliner | `Ctrl+Arriba` / `Ctrl+Abajo` |
 | Enfocar elemento / subir un nivel en la miga | `Alt+Derecha` / `Alt+Izquierda` |
 | Barra izquierda / derecha | `Ctrl+[` / `Ctrl+]` |
+| Galería de la nota en la barra derecha | `Ctrl+Alt+G` |
 | Retroenlaces / Nota diaria | `Ctrl+Mayús+B` / `Ctrl+Alt+D` |
 | Exportar HTML / Pegar imagen | `Ctrl+Mayús+E` / `Ctrl+Mayús+V` |
 | Renombrar / enviar a papelera | `F2` / `Supr` |

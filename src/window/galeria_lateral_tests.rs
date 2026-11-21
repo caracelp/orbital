@@ -63,6 +63,17 @@ fn app(nombre: &str) -> adw::Application {
 /// Una bóveda con un nombre no ASCII bajo `base` (o el temporal), con las notas dadas y
 /// `fotos` imágenes en `wiki/fotos ñ/`.
 fn boveda(nombre: &str, notas: &[(&str, &str)], fotos: usize, base: Option<&Path>) -> PathBuf {
+    boveda_con(nombre, notas, fotos, base, 1)
+}
+
+/// Como [`boveda`], con las fotos `escala` veces más grandes.
+fn boveda_con(
+    nombre: &str,
+    notas: &[(&str, &str)],
+    fotos: usize,
+    base: Option<&Path>,
+    escala: i32,
+) -> PathBuf {
     let raiz = base.map_or_else(std::env::temp_dir, Path::to_path_buf);
     let root = raiz.join(format!(
         "orbital-034-{nombre}-Bóveda ñandú-{}",
@@ -73,8 +84,8 @@ fn boveda(nombre: &str, notas: &[(&str, &str)], fotos: usize, base: Option<&Path
     for k in 0..fotos {
         png(
             &root.join(format!("wiki/fotos ñ/foto-{k}.png")),
-            320 + (k as i32 % 3) * 80,
-            240,
+            (320 + (k as i32 % 3) * 80) * escala,
+            240 * escala,
             COLORES[k % COLORES.len()],
         );
     }
@@ -362,6 +373,64 @@ fn galeria_lateral_teclado_y_titulo_fijo() {
     });
 }
 
+/// SC-003: «Ir al embed» en una nota de 200 KiB con embeds al principio, en el medio y al final,
+/// en Código y en Lectura, también después de agregar texto arriba.
+#[test]
+#[ignore = "requiere GTK"]
+fn galeria_lateral_ir_al_embed_en_nota_grande() {
+    let app = app("Embed");
+    glib::MainContext::default().block_on(async {
+        let relleno = "Un párrafo de relleno con algo de texto para que la nota pese. ".repeat(4);
+        let mut texto = String::from("![[esquema-uno.png]]\n");
+        let mut lineas = vec![1];
+        while texto.len() < 100 * 1024 {
+            texto.push_str(&relleno);
+            texto.push_str("\n\n");
+        }
+        texto.push_str("# Medio\n![[esquema-dos.png]]\n");
+        lineas.push(texto.matches('\n').count());
+        while texto.len() < 200 * 1024 {
+            texto.push_str(&relleno);
+            texto.push_str("\n\n");
+        }
+        texto.push_str("# Final\n![[fotos ñ/foto-0.png]]\n");
+        lineas.push(texto.matches('\n').count());
+        let root = boveda("embed", &[("wiki/grande.md", &texto)], 1, None);
+        let window = ventana(&app, &root).await;
+        abrir(&window, "wiki/grande.md").await;
+        window.0.panel.set_modo("galeria");
+        let g = window.0.panel.galeria().unwrap();
+        assert!(
+            esperar(|| g.resumen() == "3 medios en 3 grupos").await,
+            "{}",
+            g.resumen()
+        );
+        for vista in [crate::editor::View::Codigo, crate::editor::View::Lectura] {
+            window.0.code_editor.set_view(vista);
+            glib::timeout_future(Duration::from_millis(300)).await;
+            for (k, linea) in lineas.iter().enumerate() {
+                g.activar(Pieza::Mosaico(k));
+                visor().unwrap().close();
+                assert!(esperar(|| visor().is_none()).await);
+                g.pulsar(gdk::Key::Return, gdk::ModifierType::CONTROL_MASK);
+                assert_eq!(
+                    window.0.code_editor.cursor_line() as usize,
+                    *linea,
+                    "{vista:?} {k}"
+                );
+            }
+        }
+        // Texto nuevo arriba, sin esperar a que la lista se rearme: el embed se busca cerca.
+        window.0.code_editor.set_view(crate::editor::View::Codigo);
+        let b = window.0.code_editor.buffer();
+        b.insert(&mut b.start_iter(), "Nuevo\n\n");
+        g.pulsar(gdk::Key::Return, gdk::ModifierType::CONTROL_MASK);
+        assert_eq!(window.0.code_editor.cursor_line() as usize, lineas[2] + 2);
+        window.0.window.destroy();
+        let _ = std::fs::remove_dir_all(root);
+    });
+}
+
 /// Mide (release): cambiar de nota con la barra cerrada, con otro modo y con la galería; abrir
 /// la galería en una nota de 200 medios (primer lote visible y con miniaturas) y el mayor hueco
 /// del hilo de GTK al abrir y al desplazar. `ORBITAL_MEDIR_DIR=<carpeta>` para la bóveda (si no,
@@ -388,7 +457,7 @@ fn medir_galeria_lateral() {
             ));
         }
         let refs: Vec<(&str, &str)> = notas.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-        let root = boveda("medir", &refs, 200, base.as_deref());
+        let root = boveda_con("medir", &refs, 200, base.as_deref(), 3);
         let window = ventana(&app, &root).await;
         // El mayor hueco sin volver al bucle de GTK (reloj de 1 ms).
         let hueco = Rc::new(Cell::new(0f64));
@@ -402,58 +471,8 @@ fn medir_galeria_lateral() {
                 glib::ControlFlow::Continue
             });
         }
-        let cambiar = |w: &Window, ruta: String| {
-            let t = Instant::now();
-            w.show_path(&ruta);
-            t.elapsed().as_secs_f64() * 1000.0
-        };
-        let medir_cambios = async |nombre: &str, w: &Window| {
-            let mut ms = Vec::new();
-            for vuelta in 0..3 {
-                for n in 0..10 {
-                    let ruta = format!("wiki/nota-{n}.md");
-                    let t = cambiar(w, ruta.clone());
-                    abrir(w, &ruta).await;
-                    glib::timeout_future(Duration::from_millis(120)).await;
-                    if vuelta > 0 {
-                        ms.push(t);
-                    }
-                }
-            }
-            ms.sort_by(f64::total_cmp);
-            println!(
-                "CAMBIAR DE NOTA ({nombre}): mediana {:.2} ms, máx {:.2} ms",
-                ms[ms.len() / 2],
-                ms[ms.len() - 1]
-            );
-        };
-        window.0.right_split.set_show_sidebar(false);
-        let antes = galeria_lateral::PEDIDOS.load(Ordering::Relaxed);
-        medir_cambios("barra cerrada", &window).await;
-        println!(
-            "Listas armadas con la barra cerrada: {}",
-            galeria_lateral::PEDIDOS.load(Ordering::Relaxed) - antes
-        );
-        window.0.right_split.set_show_sidebar(true);
-        medir_cambios("barra abierta, Propiedades", &window).await;
-        window.0.panel.set_modo("galeria");
-        medir_cambios("barra abierta, Galería", &window).await;
-        // El costo en el hilo de GTK de pedir la lista (copiar el texto y lanzar el hilo).
-        let mut ms = Vec::new();
-        for _ in 0..20 {
-            let t = Instant::now();
-            window.refresh_galeria_lateral();
-            ms.push(t.elapsed().as_secs_f64() * 1000.0);
-            glib::timeout_future(Duration::from_millis(30)).await;
-        }
-        ms.sort_by(f64::total_cmp);
-        println!(
-            "Pedir la lista (hilo de GTK, nota de 3 KB): mediana {:.3} ms, máx {:.3} ms",
-            ms[ms.len() / 2],
-            ms[ms.len() - 1]
-        );
-
         // Abrir la galería con la nota de 200 medios.
+        // Primero, con la caché de miniaturas vacía (fotos de 1200×800).
         window.0.panel.set_modo("propiedades");
         abrir(&window, "wiki/grande.md").await;
         glib::timeout_future(Duration::from_millis(500)).await;
@@ -504,6 +523,89 @@ fn medir_galeria_lateral() {
             "DESPLAZAR hasta el final: mayor hueco {:.1} ms, mosaicos vivos {}",
             hueco.get(),
             g.vivas().len()
+        );
+        guardar(&window, "034-grande").await;
+        // Desplazar hasta el final, una pantalla por cuadro.
+        glib::timeout_future(Duration::from_millis(800)).await;
+        hueco.set(0.0);
+        ultimo.set(Instant::now());
+        let adj = sw.vadjustment();
+        while adj.value() + adj.page_size() < adj.upper() - 1.0 {
+            adj.set_value(adj.value() + adj.page_size());
+            glib::timeout_future(Duration::from_millis(16)).await;
+        }
+        glib::timeout_future(Duration::from_millis(200)).await;
+        println!(
+            "DESPLAZAR hasta el final: mayor hueco {:.1} ms, mosaicos vivos {}",
+            hueco.get(),
+            g.vivas().len()
+        );
+        // Cambiar de nota: desde `show_path` hasta que el editor tiene la nota y, con la
+        // galería a la vista, hasta que la galería la muestra (reloj de 1 ms).
+        let medir_cambios = async |nombre: &str, w: &Window, galeria: bool| {
+            let mut editor = Vec::new();
+            let mut panel = Vec::new();
+            for vuelta in 0..3 {
+                for n in 0..10 {
+                    let ruta = format!("wiki/nota-{n}.md");
+                    let t = Instant::now();
+                    w.show_path(&ruta);
+                    while w.0.code_editor.current_path().map(|p| p.to_string()).as_deref()
+                        != Some(ruta.as_str())
+                    {
+                        glib::timeout_future(Duration::from_millis(1)).await;
+                    }
+                    let te = t.elapsed().as_secs_f64() * 1000.0;
+                    if galeria {
+                        let g = w.0.panel.galeria().unwrap();
+                        while g.ruta().as_deref() != Some(ruta.as_str()) {
+                            glib::timeout_future(Duration::from_millis(1)).await;
+                        }
+                    }
+                    let tp = t.elapsed().as_secs_f64() * 1000.0;
+                    glib::timeout_future(Duration::from_millis(150)).await;
+                    if vuelta > 0 {
+                        editor.push(te);
+                        panel.push(tp);
+                    }
+                }
+            }
+            editor.sort_by(f64::total_cmp);
+            panel.sort_by(f64::total_cmp);
+            let m = |v: &Vec<f64>| (v[v.len() / 2], v[v.len() - 1]);
+            let (em, ex) = m(&editor);
+            print!("CAMBIAR DE NOTA ({nombre}): editor con la nota mediana {em:.1} ms, máx {ex:.1} ms");
+            if galeria {
+                let (pm, px) = m(&panel);
+                print!("; galería con la nota mediana {pm:.1} ms, máx {px:.1} ms");
+            }
+            println!();
+        };
+        window.0.right_split.set_show_sidebar(false);
+        let antes = galeria_lateral::PEDIDOS.load(Ordering::Relaxed);
+        medir_cambios("barra cerrada", &window, false).await;
+        println!(
+            "Listas armadas con la barra cerrada: {}",
+            galeria_lateral::PEDIDOS.load(Ordering::Relaxed) - antes
+        );
+        window.0.right_split.set_show_sidebar(true);
+        window.0.panel.set_modo("propiedades");
+        medir_cambios("barra abierta, Propiedades", &window, false).await;
+        window.0.panel.set_modo("galeria");
+        medir_cambios("barra abierta, Galería", &window, true).await;
+        // El costo en el hilo de GTK de pedir la lista (copiar el texto y lanzar el hilo).
+        let mut ms = Vec::new();
+        for _ in 0..20 {
+            let t = Instant::now();
+            window.refresh_galeria_lateral();
+            ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            glib::timeout_future(Duration::from_millis(30)).await;
+        }
+        ms.sort_by(f64::total_cmp);
+        println!(
+            "Pedir la lista (hilo de GTK, nota de 3 KB): mediana {:.3} ms, máx {:.3} ms",
+            ms[ms.len() / 2],
+            ms[ms.len() - 1]
         );
         window.0.window.destroy();
         let _ = std::fs::remove_dir_all(root);
