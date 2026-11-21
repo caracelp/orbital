@@ -17,7 +17,7 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use orbital_vault::carrusel::{Carrusel, Clase, Diapositiva, Leyenda, Posicion};
 
-pub mod imagenes;
+use crate::imagenes;
 
 /// Abrir un enlace (un PDF en su visor), relativo a la nota del carrusel.
 pub type AbrirFn = Rc<dyn Fn(&str)>;

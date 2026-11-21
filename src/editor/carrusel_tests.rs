@@ -481,7 +481,7 @@ fn carrusel_pase_automatico_y_carpeta() {
 fn sin_carrusel_no_prepara_nada() {
     adw::init().expect("Se necesita una sesión gráfica GTK");
     glib::MainContext::default().block_on(async {
-        crate::carrusel::imagenes::vaciar();
+        crate::imagenes::vaciar();
         let (root, vault, rel) = boveda("sin", "# Nada\n\n```rust\nfn main() {}\n```\n", 2);
         let editor = Editor::new();
         let window = ventana(&editor, 800, 600);
@@ -490,7 +490,7 @@ fn sin_carrusel_no_prepara_nada() {
         editor.render_now();
         glib::timeout_future(Duration::from_millis(500)).await;
         assert!(carruseles(&editor.0.reader.text_view().clone()).is_empty());
-        assert_eq!(crate::carrusel::imagenes::en_cache_total(), 0);
+        assert_eq!(crate::imagenes::en_cache_total(), 0);
         window.destroy();
         let _ = fs::remove_dir_all(&root);
     });
