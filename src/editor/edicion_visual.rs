@@ -61,6 +61,9 @@ impl Editor {
         if new.contains("language-mermaid") {
             self.visual_diagramas();
         }
+        if new.contains("language-carrusel") || new.contains("language-media-slider") {
+            self.visual_carruseles();
+        }
     }
 
     /// Muestra la vista Visual con el texto actual.
@@ -98,6 +101,48 @@ impl Editor {
         self.visual_formulas();
         self.visual_graficos();
         self.visual_diagramas();
+        self.visual_carruseles();
+    }
+
+    /// Los carruseles de la nota `.html` (032): sus medios se resuelven contra la bóveda en
+    /// segundo plano y la Visual los muestra como una grilla estática (la navegación es de la
+    /// Lectura). Sin carruseles, nada.
+    pub(super) fn visual_carruseles(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+        if !text.contains("language-carrusel") && !text.contains("language-media-slider") {
+            i.visual.set_carruseles(&[]);
+            return;
+        }
+        let (Some(vault), Some(from)) = (i.vault.borrow().clone(), self.current_path()) else {
+            return;
+        };
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let desde = from.clone();
+            let result = gio::spawn_blocking(move || {
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                let mut out = Vec::new();
+                for lang in ["carrusel", "media-slider"] {
+                    for g in orbital_graficos::html::bloques(body, lang) {
+                        let mut c = orbital_vault::carrusel::parse(&g.fuente);
+                        vault.resolver_carrusel(&desde, &mut c);
+                        // La página está en la carpeta de la nota: los enlaces relativos sirven.
+                        let src = |d: &orbital_vault::carrusel::Diapositiva| d.enlace.clone();
+                        out.push((g.fuente, orbital_vault::carrusel::html(&c, &src, true)));
+                    }
+                }
+                out
+            })
+            .await;
+            let Ok(carruseles) = result else { return };
+            if this.current_path() != Some(from) {
+                return;
+            }
+            this.0.visual.set_carruseles(&carruseles);
+        });
     }
 
     /// Dibuja en segundo plano los diagramas Mermaid de la nota `.html` (058) como SVG con el

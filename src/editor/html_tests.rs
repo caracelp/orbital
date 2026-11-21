@@ -905,3 +905,177 @@ fn medios_en_visual_html() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// 032: un carrusel en una nota `.html` se ve en la Visual como la grilla estática de sus medios
+/// (resueltos contra la bóveda, con la imagen cargada) y el archivo conserva el bloque. Con
+/// `ORBITAL_CAPTURA_DIR`, guarda `032-visual-html.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn webkit_carruseles() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-032-html-ñ-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("wiki/fotos ñ")).unwrap();
+        for (n, color) in [("a", 0xff69b4ffu32), ("b", 0x5aa0ffff)] {
+            let pb = gtk::gdk_pixbuf::Pixbuf::new(
+                gtk::gdk_pixbuf::Colorspace::Rgb,
+                false,
+                8,
+                320,
+                200,
+            )
+            .unwrap();
+            pb.fill(color);
+            pb.savev(root.join(format!("wiki/fotos ñ/{n}.png")), "png", &[])
+                .unwrap();
+        }
+        let source = "<!doctype html><html><head></head><body><p>Antes.</p>\n<pre><code class=\"language-carrusel\">carpeta: fotos ñ\n![[falta.png|Falta]]</code></pre>\n<p>Después.</p></body></html>";
+        fs::write(root.join("wiki/c.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/c.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .title("Orbital — prueba aislada 032 carrusel")
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let figuras = "document.querySelectorAll('[data-orbital-tipo=\"carrusel\"]')";
+        for _ in 0..60 {
+            if eval(&web, &format!("{figuras}.length")).await == "1" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(eval(&web, &format!("{figuras}.length")).await, "1");
+        assert_eq!(
+            eval(&web, &format!("{figuras}[0].querySelectorAll('img').length")).await,
+            "2"
+        );
+        let texto = eval(&web, &format!("{figuras}[0].textContent")).await;
+        assert!(texto.contains("Archivo inexistente: «falta.png»"), "{texto}");
+        // Los medios del carrusel no se muestran además como tarjetas sueltas.
+        glib::timeout_future(Duration::from_millis(400)).await;
+        assert_eq!(eval(&web, "document.querySelectorAll('.orbital-embed').length").await, "0");
+        // La imagen se cargó (la página está en la carpeta de la nota).
+        let mut ancho = String::new();
+        for _ in 0..40 {
+            ancho = eval(&web, &format!("{figuras}[0].querySelector('img').naturalWidth")).await;
+            if ancho == "320" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(ancho, "320");
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::Visible,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("032-visual-html.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        eval(&web,
+            "const p = document.querySelectorAll('body > p')[1]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'Editado.')").await;
+        glib::timeout_future(Duration::from_millis(600)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/c.html")).unwrap();
+        assert!(saved.contains("Editado."), "{saved}");
+        assert!(saved.contains("<code class=\"language-carrusel\">carpeta: fotos ñ"), "{saved}");
+        assert!(!saved.contains("orbital-carrusel"), "{saved}");
+        assert!(!saved.contains("<img"), "{saved}");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
+
+/// 032: lo exportado muestra el carrusel como una grilla estática con las imágenes cargadas
+/// (lo mismo que se imprime a PDF). Con `ORBITAL_CAPTURA_DIR`, guarda `032-exportado.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn exportar_carrusel_en_webkit() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-032-exp-ñ-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("wiki/fotos")).unwrap();
+        for (n, color) in [("a", 0xff69b4ffu32), ("b", 0x5aa0ffff), ("c", 0xffaa3cff)] {
+            let pb = gtk::gdk_pixbuf::Pixbuf::new(
+                gtk::gdk_pixbuf::Colorspace::Rgb,
+                false,
+                8,
+                400,
+                250,
+            )
+            .unwrap();
+            pb.fill(color);
+            pb.savev(root.join(format!("wiki/fotos/{n}.png")), "png", &[])
+                .unwrap();
+        }
+        fs::write(root.join("wiki/sonido.mp3"), b"x").unwrap();
+        let nota = "# Exportado\n\n```carrusel\ncarpeta: fotos\n![[sonido.mp3|Entrevista]]\n![[falta.png]]\n```\n";
+        fs::write(root.join("wiki/n.md"), nota).unwrap();
+        let vault = orbital_vault::open(&root).unwrap();
+        let rel = orbital_vault::RelPath::new("wiki/n.md").unwrap();
+        let resolver = |c: &mut orbital_vault::carrusel::Carrusel| vault.resolver_carrusel(&rel, c);
+        let m = crate::export::Medios {
+            carpeta: Some(root.join("wiki")),
+            adjunto: None,
+            reproducibles: false,
+            carrusel: Some(&resolver),
+        };
+        let html = crate::export::html_md_con(nota, "n.md", &m);
+        assert_eq!(html.matches("<img ").count(), 3, "{html}");
+        let archivo = root.join("exportado.html");
+        fs::write(&archivo, &html).unwrap();
+        crate::html_view::preparar_sandbox(Some(&root));
+        let web = crate::html_view::new_view(None);
+        let window = gtk::Window::builder()
+            .default_width(860)
+            .default_height(700)
+            .child(&web)
+            .build();
+        window.present();
+        web.load_uri(&gtk::gio::File::for_path(&archivo).uri());
+        let mut cargadas = String::new();
+        for _ in 0..60 {
+            cargadas = eval(
+                &web,
+                "Array.from(document.images).filter(i => i.complete && i.naturalWidth > 0).length",
+            )
+            .await;
+            if cargadas == "3" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(cargadas, "3");
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::FullDocument,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("032-exportado.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
