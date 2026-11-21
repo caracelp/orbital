@@ -62,6 +62,10 @@ impl Window {
     pub(super) fn refresh_galeria_lateral(&self) {
         let i = &self.0;
         let Some(g) = i.panel.galeria() else { return };
+        // Puede llegar tarde (la pausa al editar) con la barra ya cerrada o en otro modo.
+        if !i.right_split.shows_sidebar() || i.panel.modo() != "galeria" {
+            return;
+        }
         let Some(entry) = i.current_entry.borrow().clone() else {
             g.mostrar_vacio("Abrí una nota para ver sus imágenes y videos.");
             return;

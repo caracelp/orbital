@@ -494,51 +494,63 @@ fn medir_galeria_lateral() {
         let g = window.0.panel.galeria().unwrap();
         assert!(esperar(|| g.ruta().as_deref() == Some("wiki/grande.md") && !g.vivas().is_empty()).await);
         let visible = t.elapsed().as_secs_f64() * 1000.0;
-        // Las miniaturas que se ven en la pantalla.
-        let sw = g.scroller();
-        let en_pantalla = || {
-            let alto = sw.vadjustment().page_size();
-            g.piezas().len().min(((alto / 98.0).ceil() as usize + 1) * 3)
-        };
-        let objetivo = en_pantalla().min(15);
-        assert!(esperar(|| g.con_textura() >= objetivo).await);
+        // Hasta que todos los mosaicos de imagen que se ven en la pantalla tienen miniatura.
+        assert!(
+            esperar(|| {
+                let (n, con) = g.en_pantalla();
+                n > 0 && con == n
+            })
+            .await
+        );
         let con_miniaturas = t.elapsed().as_secs_f64() * 1000.0;
         println!(
-            "ABRIR LA GALERÍA (200 medios): visible {visible:.0} ms, {objetivo} miniaturas {con_miniaturas:.0} ms, mayor hueco {:.1} ms, mosaicos vivos {}",
+            "ABRIR LA GALERÍA (200 medios, caché vacía): visible {visible:.0} ms, las {} miniaturas de la pantalla {con_miniaturas:.0} ms, mayor hueco {:.1} ms, mosaicos vivos {}",
+            g.en_pantalla().0,
             hueco.get(),
             g.vivas().len()
         );
         guardar(&window, "034-grande").await;
-        // Desplazar hasta el final, una pantalla por cuadro.
-        glib::timeout_future(Duration::from_millis(800)).await;
+        // Desplazar hasta el final, una pantalla por cuadro (las miniaturas nuevas se
+        // decodifican mientras tanto).
+        let sw = g.scroller();
+        glib::timeout_future(Duration::from_millis(300)).await;
         hueco.set(0.0);
         ultimo.set(Instant::now());
         let adj = sw.vadjustment();
+        let t = Instant::now();
         while adj.value() + adj.page_size() < adj.upper() - 1.0 {
             adj.set_value(adj.value() + adj.page_size());
             glib::timeout_future(Duration::from_millis(16)).await;
         }
-        glib::timeout_future(Duration::from_millis(200)).await;
-        println!(
-            "DESPLAZAR hasta el final: mayor hueco {:.1} ms, mosaicos vivos {}",
-            hueco.get(),
-            g.vivas().len()
+        let pantallas = t.elapsed();
+        assert!(
+            esperar(|| {
+                let (n, con) = g.en_pantalla();
+                n > 0 && con == n
+            })
+            .await
         );
-        guardar(&window, "034-grande").await;
-        // Desplazar hasta el final, una pantalla por cuadro.
-        glib::timeout_future(Duration::from_millis(800)).await;
-        hueco.set(0.0);
-        ultimo.set(Instant::now());
-        let adj = sw.vadjustment();
-        while adj.value() + adj.page_size() < adj.upper() - 1.0 {
-            adj.set_value(adj.value() + adj.page_size());
-            glib::timeout_future(Duration::from_millis(16)).await;
-        }
-        glib::timeout_future(Duration::from_millis(200)).await;
         println!(
-            "DESPLAZAR hasta el final: mayor hueco {:.1} ms, mosaicos vivos {}",
+            "DESPLAZAR hasta el final: {:.0} ms, mayor hueco {:.1} ms, mosaicos vivos {}, última pantalla con miniaturas a los {:.0} ms",
+            pantallas.as_secs_f64() * 1000.0,
             hueco.get(),
-            g.vivas().len()
+            g.vivas().len(),
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+        // La primera pantalla otra vez: ya en la caché.
+        glib::timeout_future(Duration::from_millis(300)).await;
+        let t = Instant::now();
+        adj.set_value(0.0);
+        assert!(
+            esperar(|| {
+                let (n, con) = g.en_pantalla();
+                n > 0 && con == n
+            })
+            .await
+        );
+        println!(
+            "VOLVER ARRIBA (miniaturas en la caché): {:.0} ms",
+            t.elapsed().as_secs_f64() * 1000.0
         );
         // Cambiar de nota: desde `show_path` hasta que el editor tiene la nota y, con la
         // galería a la vista, hasta que la galería la muestra (reloj de 1 ms).

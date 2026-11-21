@@ -1473,6 +1473,37 @@ impl GaleriaLateral {
             .count()
     }
 
+    /// Mosaicos de imagen que se ven enteros o en parte en la pantalla, y cuántos tienen
+    /// miniatura (pruebas y mediciones).
+    #[cfg(test)]
+    pub fn en_pantalla(&self) -> (usize, usize) {
+        let i = &self.0;
+        let adj = i.scroller.vadjustment();
+        let (a, b) = (adj.value() as i32, (adj.value() + adj.page_size()) as i32);
+        let m = i.medios.borrow();
+        let disp = i.disp.borrow();
+        let mut n = 0;
+        let mut con = 0;
+        for (p, r) in &disp.piezas {
+            let Pieza::Mosaico(k) = p else { continue };
+            if !r.en_franja(a, b)
+                || m.medios[*k].clase != Clase::Imagen
+                || m.medios[*k].abs.is_none()
+            {
+                continue;
+            }
+            n += 1;
+            if i.vivas
+                .borrow()
+                .iter()
+                .any(|(x, c)| x == k && c.pic.paintable().is_some())
+            {
+                con += 1;
+            }
+        }
+        (n, con)
+    }
+
     #[cfg(test)]
     pub fn resumen(&self) -> String {
         self.0.resumen.label().to_string()
