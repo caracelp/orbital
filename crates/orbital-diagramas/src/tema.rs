@@ -202,10 +202,18 @@ impl Tema {
 /// El SVG del motor con los colores que no salen del tema cambiados (solo en los Gantt, que son
 /// los que los traen fijos).
 pub(crate) fn ajustar(svg: &str, tema: Tema) -> String {
-    if !svg.contains("#8a90dd") && !svg.contains("#6666ff") {
+    // La sombra de los nodos del mapa mental es un filtro: cuadruplica lo que tarda la imagen
+    // (17 ms contra 4 en el N5100) y sobre la base oscura no se ve. Sale salvo en `.html`.
+    const SOMBRA: &str = " filter=\"url(#mm-shadow)\"";
+    let sin_sombra = tema != Tema::Html && svg.contains(SOMBRA);
+    if !sin_sombra && !svg.contains("#8a90dd") && !svg.contains("#6666ff") {
         return svg.to_owned();
     }
-    let mut out = svg.to_owned();
+    let mut out = if sin_sombra {
+        svg.replace(SOMBRA, "")
+    } else {
+        svg.to_owned()
+    };
     for (de, a) in tema.reemplazos() {
         if out.contains(de) {
             out = out.replace(de, a);

@@ -18,6 +18,7 @@ fn main() {
     let dir = args.get(1).expect("carpeta con .mmd");
     let salida = args.get(2);
     let familia = std::env::var("ORBITAL_FAMILIA").unwrap_or_else(|_| "Adwaita Sans".into());
+    let rss0 = rss_kb();
     let t = Instant::now();
     let f = Fuentes::para(&familia);
     println!(
@@ -26,6 +27,7 @@ fn main() {
         f.caras(),
         f.familia()
     );
+    let rss1 = rss_kb();
     let mut archivos: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -84,6 +86,23 @@ fn main() {
             }
         }
     }
+    println!(
+        "memoria: +{} KB al cargar las fuentes; +{} KB después de todos (sin las imágenes, que se sueltan)",
+        rss1.saturating_sub(rss0),
+        rss_kb().saturating_sub(rss1)
+    );
+}
+
+/// Memoria residente del proceso, en KB.
+fn rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
+        })
+        .unwrap_or(0)
 }
 
 /// PPM sobre un fondo (sin dependencias para escribir PNG).

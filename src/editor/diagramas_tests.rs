@@ -428,7 +428,15 @@ fn medir_lectura_diagramas() {
     adw::init().expect("Se necesita una sesión gráfica GTK");
     crate::style::apply();
     glib::MainContext::default().block_on(async {
-        let (root, vault, rel) = boveda("medir", NOTA);
+        // Con `ORBITAL_MEDIR_SIN_DIAGRAMAS=1`, la misma nota con los bloques como código común:
+        // lo que cuesta la nota sin los diagramas.
+        let sin = std::env::var_os("ORBITAL_MEDIR_SIN_DIAGRAMAS").is_some();
+        let nota = if sin {
+            NOTA.replace("```mermaid", "```texto")
+        } else {
+            NOTA.to_owned()
+        };
+        let (root, vault, rel) = boveda("medir", &nota);
         let editor = Editor::new();
         let window = gtk::Window::builder()
             .default_width(1000)
@@ -446,6 +454,12 @@ fn medir_lectura_diagramas() {
             u.set(ahora);
             glib::ControlFlow::Continue
         });
+        let estilo = editor.0.reader.estilo_diagramas();
+        let claves: Vec<crate::diagramas::Clave> = NOTA
+            .split("```mermaid\n")
+            .skip(1)
+            .map(|t| crate::diagramas::Clave::new(&t[..t.find("```").unwrap()], estilo))
+            .collect();
         for vuelta in ["frío", "caliente"] {
             hueco.set(Duration::ZERO);
             ultimo.set(Instant::now());
@@ -454,16 +468,46 @@ fn medir_lectura_diagramas() {
             editor.set_view(View::Lectura);
             editor.render_now();
             let vista = editor.0.reader.text_view().clone();
+            if sin {
+                glib::timeout_future(Duration::from_millis(500)).await;
+                for h in ["Entidades", "Torta", "Con un error"] {
+                    editor.0.reader.scroll_to_heading(h);
+                    glib::timeout_future(Duration::from_millis(200)).await;
+                }
+                println!(
+                    "{vuelta}, sin diagramas: mayor hueco del hilo de GTK {:.1} ms",
+                    hueco.get().as_secs_f64() * 1e3
+                );
+                editor.set_view(View::Codigo);
+                glib::timeout_future(Duration::from_millis(300)).await;
+                continue;
+            }
             assert!(
-                esperar(|| {
-                    let ds = diagramas(vista.upcast_ref());
-                    ds.len() == 9 && ds.iter().all(|p| p.paintable().is_some())
-                })
+                esperar(|| diagramas(vista.upcast_ref())
+                    .first()
+                    .is_some_and(|p| p.paintable().is_some()))
                 .await
             );
+            let primero = t.elapsed();
+            assert!(
+                esperar(|| claves
+                    .iter()
+                    .filter(|c| crate::diagramas::en_cache(c).is_some())
+                    .count()
+                    >= 9)
+                .await
+            );
+            let todos = t.elapsed();
+            // Recorrer la nota: se anclan los demás.
+            for h in ["Entidades", "Torta", "Con un error"] {
+                editor.0.reader.scroll_to_heading(h);
+                glib::timeout_future(Duration::from_millis(200)).await;
+            }
+            assert!(esperar(|| diagramas(vista.upcast_ref()).len() == 9).await);
             println!(
-                "{vuelta}: nueve diagramas en {:.0} ms; mayor hueco del hilo de GTK {:.1} ms",
-                t.elapsed().as_secs_f64() * 1e3,
+                "{vuelta}: primer diagrama a la vista en {:.0} ms; las nueve imágenes en {:.0} ms; mayor hueco del hilo de GTK (al volcar y al recorrer) {:.1} ms",
+                primero.as_secs_f64() * 1e3,
+                todos.as_secs_f64() * 1e3,
                 hueco.get().as_secs_f64() * 1e3
             );
             editor.set_view(View::Codigo);
