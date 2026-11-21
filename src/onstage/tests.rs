@@ -289,3 +289,80 @@ fn espacio_en_el_reproductor_no_pasa_de_diapositiva() {
     onstage.0.window.close();
     let _ = std::fs::remove_dir_all(&raiz);
 }
+
+/// 058: un ` ```mermaid ` se ve dibujado en la diapositiva (el mismo lector que la Lectura).
+/// Con `ORBITAL_CAPTURA_DIR`, guarda `058-onstage.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn diagrama_en_diapositiva() {
+    adw::init().expect("se necesita acceso GTK");
+    crate::style::apply();
+    let raiz = std::env::temp_dir().join(format!("orbital-onstage-058-ñ-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&raiz);
+    std::fs::create_dir_all(raiz.join("wiki")).unwrap();
+    let nota = "# Flujo\n\n```mermaid\nflowchart LR\n    A[Idea] --> B{¿Enlaces?}\n    B -->|Sí| C[Grafo]\n    B -->|No| D[Etiquetas]\n```\n";
+    std::fs::write(raiz.join("wiki/a.md"), nota).unwrap();
+    let vault = Arc::new(orbital_vault::open(&raiz).unwrap());
+    let ruta = orbital_vault::RelPath::new("wiki/a.md").unwrap();
+    let principal = gtk::Window::new();
+    principal.present();
+    let onstage = OnStage::new(&principal);
+    onstage.set_proveedor(move || {
+        Some(Fuente {
+            texto: nota.to_owned(),
+            ruta: ruta.clone(),
+            vault: Some(vault.clone()),
+        })
+    });
+    onstage.presentar();
+    glib::MainContext::default().block_on(async {
+        fn imagenes(w: &gtk::Widget, out: &mut Vec<gtk::Picture>) {
+            let mut h = w.first_child();
+            while let Some(x) = h {
+                match x.downcast_ref::<gtk::Picture>() {
+                    Some(p) if p.has_css_class("orbital-diagrama") => out.push(p.clone()),
+                    _ => imagenes(&x, out),
+                }
+                h = x.next_sibling();
+            }
+        }
+        let mut lista = Vec::new();
+        for _ in 0..250 {
+            lista.clear();
+            imagenes(onstage.0.reader.text_view().upcast_ref(), &mut lista);
+            if lista.first().is_some_and(|p| p.paintable().is_some()) {
+                break;
+            }
+            if onstage.0.stack.visible_child_name().as_deref() == Some("portada") {
+                onstage.0.adelante.emit_clicked();
+            }
+            glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        assert_eq!(lista.len(), 1, "un diagrama en la diapositiva");
+        assert!(lista[0].paintable().is_some(), "dibujado");
+        assert_eq!(
+            lista[0].alternative_text().as_deref(),
+            Some("Diagrama Mermaid: de flujo")
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            let w = onstage.0.reader.widget();
+            let (a, h) = (w.width() as f32, w.height() as f32);
+            let snap = gtk::Snapshot::new();
+            snap.append_color(
+                &crate::style::VIEW_BG.rgba(1.0),
+                &gtk::graphene::Rect::new(0.0, 0.0, a, h),
+            );
+            gtk::WidgetPaintable::new(Some(w)).snapshot(&snap, f64::from(a), f64::from(h));
+            let png = std::path::Path::new(&dir).join("058-onstage.png");
+            w.root()
+                .and_then(|r| r.renderer())
+                .unwrap()
+                .render_texture(&snap.to_node().unwrap(), None)
+                .save_to_png(&png)
+                .unwrap();
+            println!("Captura: {}", png.display());
+        }
+    });
+    let _ = std::fs::remove_dir_all(&raiz);
+}
