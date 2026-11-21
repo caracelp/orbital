@@ -244,11 +244,18 @@ impl Window {
                 v.resolver_carrusel(r, c);
             }
         };
+        // Y las galerías (033): la carpeta con el índice.
+        let galeria = |g: &mut orbital_vault::galeria::Galeria| {
+            if let Some((v, r)) = vault.as_ref().zip(ruta.as_ref()) {
+                v.resolver_galeria(r, g);
+            }
+        };
         let medios = crate::export::Medios {
             carpeta,
             adjunto: Some(&adjunto),
             reproducibles,
             carrusel: Some(&carrusel),
+            galeria: Some(&galeria),
         };
         let es_html = text.trim_start().starts_with("<!doctype html>")
             || text.trim_start().starts_with("<!DOCTYPE html>")
