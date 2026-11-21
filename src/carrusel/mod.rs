@@ -17,7 +17,9 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use orbital_vault::carrusel::{Carrusel, Clase, Diapositiva, Leyenda, Posicion};
 
-pub mod imagenes;
+use crate::imagenes;
+
+mod zoom;
 
 /// Abrir un enlace (un PDF en su visor), relativo a la nota del carrusel.
 pub type AbrirFn = Rc<dyn Fn(&str)>;
@@ -63,6 +65,17 @@ struct Inner {
     miniaturas_pedidas: Cell<bool>,
     /// Hay una copia a pantalla completa abierta: esta no avanza sola.
     tapado: Cell<bool>,
+    /// La imagen ampliable de la diapositiva vigente (solo a pantalla completa).
+    zoom: RefCell<Option<Rc<zoom::Zoom>>>,
+    /// El panel de información (solo a pantalla completa).
+    info: Option<Info>,
+}
+
+/// El panel con el nombre, las medidas, el tamaño y la fecha del archivo vigente.
+struct Info {
+    revelador: gtk::Revealer,
+    texto: gtk::Label,
+    boton: gtk::ToggleButton,
 }
 
 impl Inner {
@@ -131,6 +144,9 @@ impl Vista {
             ),
         ]);
         if modo == Modo::PantallaCompleta {
+            raiz.update_property(&[gtk::accessible::Property::Description(
+                "Flechas para pasar de foto; Inicio y Fin; más, menos y cero para el zoom; I para la información; P para el pase automático; Escape para salir",
+            )]);
             raiz.add_css_class("orbital-carrusel-completo");
             raiz.set_vexpand(true);
         }
@@ -177,6 +193,43 @@ impl Vista {
         sobre.add_overlay(&leyenda_encima);
         sobre.add_overlay(&anterior);
         sobre.add_overlay(&siguiente);
+        let info = (modo == Modo::PantallaCompleta).then(|| {
+            let texto = gtk::Label::builder()
+                .xalign(0.0)
+                .selectable(true)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .max_width_chars(40)
+                .build();
+            let caja = gtk::Box::builder()
+                .css_classes(["orbital-visor-info"])
+                .build();
+            caja.append(&texto);
+            caja.set_accessible_role(gtk::AccessibleRole::Group);
+            caja.update_property(&[gtk::accessible::Property::Label("Información del archivo")]);
+            let revelador = gtk::Revealer::builder()
+                .child(&caja)
+                .transition_type(gtk::RevealerTransitionType::Crossfade)
+                .halign(gtk::Align::End)
+                .valign(gtk::Align::Start)
+                .margin_top(12)
+                .margin_end(12)
+                .build();
+            sobre.add_overlay(&revelador);
+            let boton = gtk::ToggleButton::builder()
+                .icon_name("dialog-information-symbolic")
+                .tooltip_text("Información (I)")
+                .css_classes(["flat"])
+                .build();
+            boton.update_property(&[gtk::accessible::Property::Label(
+                "Información del archivo (I)",
+            )]);
+            Info {
+                revelador,
+                texto,
+                boton,
+            }
+        });
         let leyenda_debajo = gtk::Label::builder()
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -229,6 +282,9 @@ impl Vista {
             .css_classes(["flat"])
             .visible(ampliada && n > 0)
             .build();
+        if let Some(i) = &info {
+            barra.append(&i.boton);
+        }
         barra.append(&completa);
 
         // Las miniaturas, armadas sin imágenes (se piden al mostrarse).
@@ -291,6 +347,8 @@ impl Vista {
             vigia: RefCell::new(None),
             miniaturas_pedidas: Cell::new(false),
             tapado: Cell::new(false),
+            zoom: RefCell::new(None),
+            info,
             c,
         }));
         if modo == Modo::EnLinea {
@@ -339,6 +397,14 @@ impl Vista {
             completa.connect_clicked(move |_| {
                 if let Some(i) = d.upgrade() {
                     Vista(i).alternar_pantalla_completa();
+                }
+            });
+        }
+        if let Some(info) = &i.info {
+            let d = debil();
+            info.boton.connect_toggled(move |_| {
+                if let Some(i) = d.upgrade() {
+                    Vista(i).mostrar_info();
                 }
             });
         }
@@ -481,6 +547,30 @@ impl Vista {
         }
         let n = self.0.c.diapositivas.len();
         let i = self.0.indice.get();
+        // A pantalla completa: zoom, información y pase automático.
+        if self.0.modo == Modo::PantallaCompleta {
+            let z = self.0.zoom.borrow().clone();
+            if let Some(z) = z
+                && z.tecla(k)
+            {
+                return glib::Propagation::Stop;
+            }
+            match k {
+                Key::i | Key::I => {
+                    if let Some(info) = &self.0.info {
+                        info.boton.set_active(!info.boton.is_active());
+                    }
+                    return glib::Propagation::Stop;
+                }
+                Key::p | Key::P if self.0.pausa.is_some() => {
+                    if let Some(p) = &self.0.pausa {
+                        p.emit_clicked();
+                    }
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+        }
         let destino = match k {
             Key::Left | Key::KP_Left if n > 1 => Some(i.saturating_sub(1)),
             Key::Right | Key::KP_Right if n > 1 => Some(i + 1),
@@ -531,6 +621,7 @@ impl Vista {
         let Some(d) = i.c.diapositivas.get(n) else {
             return;
         };
+        *i.zoom.borrow_mut() = None;
         let pagina = self.pagina(d, n);
         // El nombre de cada página es único: el fundido va de la vieja a la nueva.
         let nombre = format!("d{n}-{}", glib::monotonic_time());
@@ -574,6 +665,71 @@ impl Vista {
             }
         }
         self.pedir_miniaturas();
+        self.mostrar_info();
+    }
+
+    /// Escribe en el panel de información (si está abierto) el nombre, las medidas, el tamaño y
+    /// la fecha del archivo vigente; las medidas y el tamaño se leen en el pool de `gio`.
+    fn mostrar_info(&self) {
+        let i = &self.0;
+        let Some(info) = &i.info else { return };
+        info.revelador.set_reveal_child(info.boton.is_active());
+        if !info.boton.is_active() {
+            return;
+        }
+        let n = i.indice.get();
+        let Some(d) = i.c.diapositivas.get(n) else {
+            return;
+        };
+        let nombre = d.nombre().to_owned();
+        info.texto.set_label(&nombre);
+        let Some(abs) = d.abs().map(std::path::Path::to_path_buf) else {
+            info.texto
+                .set_label(&format!("{nombre}\nArchivo inexistente"));
+            return;
+        };
+        let imagen = d.clase == Clase::Imagen;
+        let debil = Rc::downgrade(&self.0);
+        glib::spawn_future_local(async move {
+            let datos = gtk::gio::spawn_blocking(move || {
+                let m = std::fs::metadata(&abs).ok();
+                let medida = if imagen {
+                    imagenes::medida_de_archivo(&abs)
+                } else {
+                    None
+                };
+                (
+                    medida,
+                    m.as_ref().map(std::fs::Metadata::len),
+                    m.and_then(|m| m.modified().ok()),
+                )
+            })
+            .await;
+            let (Some(i), Ok((medida, bytes, fecha))) = (debil.upgrade(), datos) else {
+                return;
+            };
+            // Mientras tanto se pasó a otra.
+            if i.indice.get() != n {
+                return;
+            }
+            let mut t = nombre;
+            if let Some((w, h)) = medida {
+                t.push_str(&format!("\n{w} × {h} px"));
+            }
+            if let Some(b) = bytes {
+                t.push_str(&format!("\n{}", glib::format_size(b)));
+            }
+            if let Some(f) = fecha
+                .and_then(|f| f.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|d| glib::DateTime::from_unix_local(d.as_secs() as i64).ok())
+                .and_then(|d| d.format("%Y-%m-%d %H:%M").ok())
+            {
+                t.push_str(&format!("\n{f}"));
+            }
+            if let Some(info) = &i.info {
+                info.texto.set_label(&t);
+            }
+        });
     }
 
     /// Tamaño en píxeles del dispositivo al que se decodifican las imágenes del escenario.
@@ -627,15 +783,37 @@ impl Vista {
         };
         match d.clase {
             Clase::Imagen => {
-                let pic = gtk::Picture::builder()
-                    .can_shrink(true)
-                    .content_fit(gtk::ContentFit::Contain)
-                    .hexpand(true)
-                    .vexpand(true)
-                    .build();
                 let alt = d.leyenda.as_deref().unwrap_or_else(|| d.nombre());
-                pic.set_alternative_text(Some(alt));
-                caja.append(&pic);
+                // A pantalla completa, ampliable; en la nota, una imagen común.
+                let pic = if i.modo == Modo::PantallaCompleta {
+                    let debil = Rc::downgrade(&self.0);
+                    let z = zoom::Zoom::nueva(
+                        abs.to_path_buf(),
+                        alt,
+                        Rc::new(move |adelante| {
+                            if let Some(i) = debil.upgrade() {
+                                let v = Vista(i);
+                                v.interaccion();
+                                let n = v.0.indice.get();
+                                v.ir_a(if adelante { n + 1 } else { n.saturating_sub(1) });
+                            }
+                        }),
+                    );
+                    caja.append(z.widget());
+                    let p = z.picture().clone();
+                    *i.zoom.borrow_mut() = Some(z);
+                    p
+                } else {
+                    let p = gtk::Picture::builder()
+                        .can_shrink(true)
+                        .content_fit(gtk::ContentFit::Contain)
+                        .hexpand(true)
+                        .vexpand(true)
+                        .build();
+                    p.set_alternative_text(Some(alt));
+                    caja.append(&p);
+                    p
+                };
                 let (w, h) = self.medida_imagen();
                 let debil = pic.downgrade();
                 let nombre = d.nombre().to_owned();
@@ -743,61 +921,40 @@ impl Vista {
         }
         self.detener();
         self.0.tapado.set(true);
-        let (completa, raiz_completa) = Vista::nueva(
-            self.0.c.clone(),
-            Modo::PantallaCompleta,
-            self.0.abrir.clone(),
-            self.0.indice.get(),
-            0,
-        );
-        completa.0.pausado.set(self.0.pausado.get());
-        let tostadas = adw::ToastOverlay::new();
-        tostadas.set_child(Some(&raiz_completa));
-        let ventana = gtk::Window::builder()
-            .title("Carrusel")
-            .modal(true)
-            .child(&tostadas)
-            .css_classes(["orbital-carrusel-ventana"])
-            .build();
-        if let Some(madre) = self.0.raiz().root().and_downcast::<gtk::Window>() {
-            ventana.set_transient_for(Some(&madre));
-            ventana.set_application(madre.application().as_ref());
-        }
-        let esc = gtk::EventControllerKey::new();
-        {
-            let v = ventana.downgrade();
-            esc.connect_key_pressed(move |_, k, _, _| {
-                if k == gdk::Key::Escape
-                    && let Some(v) = v.upgrade()
-                {
-                    v.close();
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            });
-        }
-        ventana.add_controller(esc);
         // Al cerrar, la nota queda en la diapositiva en que se salió y con el foco en el carrusel.
-        {
-            let en_linea = Rc::downgrade(&self.0);
-            let c = completa.clone();
-            ventana.connect_close_request(move |_| {
-                if let Some(i) = en_linea.upgrade() {
-                    let v = Vista(i);
-                    v.0.tapado.set(false);
-                    v.0.pausado.set(c.0.pausado.get());
-                    v.mostrar_pausa();
-                    v.ir_a(c.indice());
-                    v.0.raiz().grab_focus();
-                    v.programar();
-                }
-                c.detener();
-                glib::Propagation::Proceed
-            });
-        }
-        ventana.fullscreen();
-        ventana.present();
-        completa.0.raiz().grab_focus();
+        let en_linea = Rc::downgrade(&self.0);
+        let completa = visor(
+            &self.0.raiz(),
+            self.0.c.clone(),
+            self.0.indice.get(),
+            self.0.abrir.clone(),
+            self.0.pausado.get(),
+        );
+        let c = completa.clone();
+        completa.al_cerrar(move || {
+            if let Some(i) = en_linea.upgrade() {
+                let v = Vista(i);
+                v.0.tapado.set(false);
+                v.0.pausado.set(c.0.pausado.get());
+                v.mostrar_pausa();
+                v.ir_a(c.indice());
+                v.0.raiz().grab_focus();
+                v.programar();
+            }
+        });
+    }
+
+    /// Lo que corre al cerrar la ventana del visor (después de soltar su reloj).
+    fn al_cerrar(&self, f: impl Fn() + 'static) {
+        let Some(ventana) = self.0.raiz().root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let c = self.clone();
+        ventana.connect_close_request(move |_| {
+            c.detener();
+            f();
+            glib::Propagation::Proceed
+        });
     }
 
     /// La usuaria hizo algo en el carrusel: el pase automático se detiene hasta que lo reanude
@@ -941,6 +1098,62 @@ impl Vista {
             }
         });
     }
+}
+
+/// El visor a pantalla completa (compartido por el carrusel y la galería de la 033): una
+/// ventana propia, modal y a pantalla completa, con otra instancia del carrusel que empieza en
+/// `indice`. La ventana principal nunca pasa a pantalla completa (GTK 4.24 le pierde el árbol
+/// AT-SPI al salir).
+fn visor(desde: &gtk::Box, c: Rc<Carrusel>, indice: usize, abrir: AbrirFn, pausado: bool) -> Vista {
+    let (completa, raiz_completa) = Vista::nueva(c, Modo::PantallaCompleta, abrir, indice, 0);
+    completa.0.pausado.set(pausado);
+    completa.mostrar_pausa();
+    let tostadas = adw::ToastOverlay::new();
+    tostadas.set_child(Some(&raiz_completa));
+    let ventana = gtk::Window::builder()
+        .title("Visor")
+        .modal(true)
+        .child(&tostadas)
+        .css_classes(["orbital-carrusel-ventana"])
+        .build();
+    if let Some(madre) = desde.root().and_downcast::<gtk::Window>() {
+        ventana.set_transient_for(Some(&madre));
+        ventana.set_application(madre.application().as_ref());
+    }
+    let esc = gtk::EventControllerKey::new();
+    {
+        let v = ventana.downgrade();
+        esc.connect_key_pressed(move |_, k, _, _| {
+            if k == gdk::Key::Escape
+                && let Some(v) = v.upgrade()
+            {
+                v.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    ventana.add_controller(esc);
+    ventana.fullscreen();
+    ventana.present();
+    completa.0.raiz().grab_focus();
+    completa
+}
+
+/// Abre el visor a pantalla completa desde otro widget (la galería, 033) en la diapositiva
+/// `indice`. `pausado`: el pase automático espera a que se lo pida. `al_cerrar` recibe la
+/// diapositiva en que se salió.
+pub fn abrir_visor(
+    desde: &gtk::Box,
+    c: Rc<Carrusel>,
+    indice: usize,
+    abrir: AbrirFn,
+    pausado: bool,
+    al_cerrar: impl Fn(usize) + 'static,
+) {
+    let v = visor(desde, c, indice, abrir, pausado);
+    let c = v.clone();
+    v.al_cerrar(move || al_cerrar(c.indice()));
 }
 
 /// Un canal de un solo uso sobre el hilo de GTK.

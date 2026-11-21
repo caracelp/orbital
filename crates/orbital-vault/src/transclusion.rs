@@ -44,6 +44,12 @@ impl Vault {
                         self.resolver_carrusel(from, c);
                     }
                 }
+                // La carpeta de una galería (033), desde la nota que la tiene.
+                BlockKind::Galeria(g) => {
+                    if let Some(from) = visited.last() {
+                        self.resolver_galeria(from, g);
+                    }
+                }
                 BlockKind::Quote(body)
                 | BlockKind::Callout { body, .. }
                 | BlockKind::Seccion { body, .. }
@@ -359,6 +365,24 @@ pub fn fingerprint(block: &Block) -> u64 {
                     }
                     acc.push(0);
                 }
+                // Una galería cambia si cambia su carpeta (033): un archivo nuevo, borrado o
+                // modificado rehace solo este bloque.
+                BlockKind::Galeria(g) => {
+                    for e in &g.elementos {
+                        acc.extend_from_slice(e.path.as_str().as_bytes());
+                        acc.extend_from_slice(&e.size.to_le_bytes());
+                        if let Some(t) = e
+                            .mtime
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        {
+                            acc.extend_from_slice(&t.as_nanos().to_le_bytes());
+                        }
+                    }
+                    if let Some(v) = &g.vacia {
+                        acc.extend_from_slice(v.as_bytes());
+                    }
+                    acc.push(0);
+                }
                 BlockKind::Quote(body)
                 | BlockKind::Callout { body, .. }
                 | BlockKind::Seccion { body, .. }
@@ -583,6 +607,10 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                     _ => None,
                 };
                 out.push_str(&crate::carrusel::html(c, &src, true));
+            }
+            // Una galería (033) de una nota incrustada: la grilla estática.
+            BlockKind::Galeria(g) => {
+                out.push_str(&crate::galeria::html(g, &|e| Some(href(&e.path)), true));
             }
             BlockKind::Code { text, .. } => {
                 out.push_str("<pre><code>");

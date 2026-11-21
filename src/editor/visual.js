@@ -258,7 +258,7 @@
     let n;
     while ((n = walker.nextNode())) {
       // Los medios de un carrusel (032) los muestra su propia figura.
-      if (n.parentElement && n.parentElement.closest('code.language-carrusel, code.language-media-slider')) continue;
+      if (n.parentElement && n.parentElement.closest('code.language-carrusel, code.language-media-slider, code.language-galeria, code.language-gallery')) continue;
       for (const k of keys) if (n.data.includes(k)) hits.push([n, k]);
     }
     for (const [node, k] of hits) {
@@ -420,6 +420,8 @@
     mermaid: { titulo: 'Clic para editar el fuente del diagrama' },
     carrusel: { titulo: 'Clic para editar el fuente del carrusel' },
     'media-slider': { titulo: 'Clic para editar el fuente del carrusel' },
+    galeria: { titulo: 'Clic para editar el fuente de la galería' },
+    gallery: { titulo: 'Clic para editar el fuente de la galería' },
   };
   function ponerFiguras(map, tipo) {
     if (!document.getElementById('orbital-grafico-style')) {
@@ -477,6 +479,9 @@
   function setCarruseles(map) {
     ponerFiguras(map, 'carrusel');
     ponerFiguras(map, 'media-slider');
+    // Las galerías (033) llegan en el mismo mapa: su grilla estática.
+    ponerFiguras(map, 'galeria');
+    ponerFiguras(map, 'gallery');
   }
 
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno

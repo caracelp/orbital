@@ -27,6 +27,9 @@ mod flechas;
 #[path = "formulas_tests.rs"]
 mod formulas_tests;
 #[cfg(test)]
+#[path = "galeria_tests.rs"]
+mod galeria_tests;
+#[cfg(test)]
 #[path = "graficos3d_tests.rs"]
 mod graficos3d_tests;
 #[cfg(test)]
@@ -35,6 +38,7 @@ mod graficos_tests;
 mod guardado;
 pub mod html;
 mod ids_bloque;
+mod insertar_galeria;
 mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;

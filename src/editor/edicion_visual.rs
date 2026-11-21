@@ -61,7 +61,11 @@ impl Editor {
         if new.contains("language-mermaid") {
             self.visual_diagramas();
         }
-        if new.contains("language-carrusel") || new.contains("language-media-slider") {
+        if new.contains("language-carrusel")
+            || new.contains("language-media-slider")
+            || new.contains("language-galeria")
+            || new.contains("language-gallery")
+        {
             self.visual_carruseles();
         }
     }
@@ -106,12 +110,16 @@ impl Editor {
 
     /// Los carruseles de la nota `.html` (032): sus medios se resuelven contra la bóveda en
     /// segundo plano y la Visual los muestra como una grilla estática (la navegación es de la
-    /// Lectura). Sin carruseles, nada.
+    /// Lectura). Las galerías (033) van por el mismo camino, como su grilla estática. Sin
+    /// carruseles ni galerías, nada.
     pub(super) fn visual_carruseles(&self) {
         let i = &self.0;
         let b = &i.buffer;
         let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
-        if !text.contains("language-carrusel") && !text.contains("language-media-slider") {
+        if !["carrusel", "media-slider", "galeria", "galería", "gallery"]
+            .iter()
+            .any(|l| text.contains(&format!("language-{l}")))
+        {
             i.visual.set_carruseles(&[]);
             return;
         }
@@ -132,6 +140,21 @@ impl Editor {
                         // La página está en la carpeta de la nota: los enlaces relativos sirven.
                         let src = |d: &orbital_vault::carrusel::Diapositiva| d.enlace.clone();
                         out.push((g.fuente, orbital_vault::carrusel::html(&c, &src, true)));
+                    }
+                }
+                // La página está en la carpeta de la nota: cada foto, relativa a ella.
+                let dir = desde.as_str().rsplit_once('/').map_or("", |(d, _)| d);
+                for lang in ["galeria", "galería", "gallery"] {
+                    for b in orbital_graficos::html::bloques(body, lang) {
+                        let mut g = orbital_vault::galeria::parse(&b.fuente);
+                        vault.resolver_galeria(&desde, &mut g);
+                        let src = |e: &orbital_vault::galeria::Elemento| {
+                            Some(orbital_vault::carrusel::enlace_relativo(
+                                dir,
+                                e.path.as_str(),
+                            ))
+                        };
+                        out.push((b.fuente, orbital_vault::galeria::html(&g, &src, true)));
                     }
                 }
                 out

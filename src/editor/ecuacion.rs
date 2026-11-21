@@ -295,7 +295,7 @@ impl Editor {
 
 /// `cuerpo` como bloque en su propio párrafo entre `a` y `z`: con los renglones en blanco que
 /// falten antes y después.
-fn en_su_parrafo(
+pub(super) fn en_su_parrafo(
     b: &gtk::TextBuffer,
     a: &gtk::TextIter,
     z: &gtk::TextIter,

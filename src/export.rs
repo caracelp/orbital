@@ -57,6 +57,8 @@ pub struct Medios<'a> {
     pub reproducibles: bool,
     /// Resuelve los medios de un carrusel (032) contra la bóveda.
     pub carrusel: Option<&'a dyn Fn(&mut orbital_vault::carrusel::Carrusel)>,
+    /// Arma la lista de una galería (033) con la bóveda.
+    pub galeria: Option<&'a dyn Fn(&mut orbital_vault::galeria::Galeria)>,
 }
 
 impl Medios<'_> {
@@ -157,7 +159,22 @@ fn con_medios<'a>(
     let mut saltar: Option<TagEnd> = None;
     // El cuerpo de un carrusel (032) que se está leyendo.
     let mut carrusel: Option<String> = None;
+    // El cuerpo de una galería (033) que se está leyendo.
+    let mut galeria: Option<String> = None;
     eventos.filter_map(move |(ev, rango)| {
+        if let Some(texto) = &mut galeria {
+            return match ev {
+                Event::Text(t) => {
+                    texto.push_str(&t);
+                    None
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let texto = galeria.take()?;
+                    Some((Event::Html(galeria_html(&texto, medios).into()), rango))
+                }
+                _ => None,
+            };
+        }
         if let Some(texto) = &mut carrusel {
             return match ev {
                 Event::Text(t) => {
@@ -170,6 +187,12 @@ fn con_medios<'a>(
                 }
                 _ => None,
             };
+        }
+        if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = &ev
+            && orbital_vault::galeria::es_lenguaje(info.split_whitespace().next().unwrap_or(""))
+        {
+            galeria = Some(String::new());
+            return None;
         }
         if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = &ev
             && orbital_vault::carrusel::es_lenguaje(info.split_whitespace().next().unwrap_or(""))
@@ -232,6 +255,27 @@ fn carrusel_html(cuerpo: &str, medios: &Medios) -> String {
             .map(|p| gtk::gio::File::for_path(p).uri().to_string())
     };
     let mut html = orbital_vault::carrusel::html(&c, &src, medios.reproducibles);
+    html.push('\n');
+    html
+}
+
+/// Una galería (033) para papel o para el navegador: la grilla estática de su carpeta, con la
+/// misma disposición (CSS, sin JavaScript) y las imágenes como `file://`. Sin bóveda (exportar
+/// un archivo suelto) no hay índice para listar la carpeta: queda el motivo.
+fn galeria_html(cuerpo: &str, medios: &Medios) -> String {
+    use gtk::gio::prelude::FileExt;
+    let mut g = orbital_vault::galeria::parse(cuerpo);
+    match medios.galeria {
+        Some(resolver) => resolver(&mut g),
+        None if g.vacia.is_none() => {
+            g.vacia = Some("La galería se muestra con la bóveda abierta".into());
+        }
+        None => {}
+    }
+    let src = |e: &orbital_vault::galeria::Elemento| {
+        Some(gtk::gio::File::for_path(&e.abs).uri().to_string())
+    };
+    let mut html = orbital_vault::galeria::html(&g, &src, medios.reproducibles);
     html.push('\n');
     html
 }
@@ -518,6 +562,13 @@ pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
             });
         }
     }
+    // Las galerías (033), también.
+    for lang in ["galeria", "galería", "gallery"] {
+        if out.contains(&format!("language-{lang}")) {
+            out =
+                orbital_graficos::html::reemplazar_bloques(&out, lang, |f| galeria_html(f, medios));
+        }
+    }
     out
 }
 
@@ -622,6 +673,49 @@ mod tests {
     }
 
     #[test]
+    fn exporta_galeria_estatica() {
+        let root =
+            std::env::temp_dir().join(format!("orbital-033-exportar-ñ-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fotos ñ")).unwrap();
+        for n in ["b.png", "a.jpg", "clip.mp4", "notas.txt"] {
+            std::fs::write(root.join("fotos ñ").join(n), b"x").unwrap();
+        }
+        std::fs::write(root.join("n.md"), "").unwrap();
+        let vault = orbital_vault::open(&root).unwrap();
+        let rel = orbital_vault::RelPath::new("n.md").unwrap();
+        let resolver = |g: &mut orbital_vault::galeria::Galeria| vault.resolver_galeria(&rel, g);
+        let nota = "# G\n\n```galeria\ncarpeta: fotos ñ\nlayout: masonry\n```\n";
+        for reproducibles in [true, false] {
+            let m = Medios {
+                reproducibles,
+                galeria: Some(&resolver),
+                ..Medios::default()
+            };
+            let out = html_md_con(nota, "n.md", &m);
+            assert!(out.contains("orbital-galeria-masonry"), "{out}");
+            assert_eq!(out.matches("<img ").count(), 2, "{out}");
+            assert!(out.find("a.jpg") < out.find("b.png"), "orden alfabético");
+            assert!(out.contains("column-width"), "{out}");
+            assert!(!out.contains("language-galeria"), "{out}");
+            assert_eq!(out.contains("<video controls"), reproducibles, "{out}");
+        }
+        // Sin bóveda: el motivo, no un hueco.
+        let out = html_md(nota, "n.md");
+        assert!(out.contains("con la bóveda abierta"), "{out}");
+        // En una nota `.html`.
+        let h = "<html><body><pre><code class=\"language-galeria\">carpeta: fotos ñ</code></pre></body></html>";
+        let m = Medios {
+            galeria: Some(&resolver),
+            ..Medios::default()
+        };
+        let out = html_passthrough_con(h, &m);
+        assert_eq!(out.matches("<img ").count(), 2, "{out}");
+        assert!(!out.contains("language-galeria"), "{out}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn exporta_carrusel_estatico() {
         let dir =
             std::env::temp_dir().join(format!("orbital-032-exportar ñ-{}", std::process::id()));
@@ -635,6 +729,7 @@ mod tests {
                 adjunto: None,
                 reproducibles,
                 carrusel: None,
+                galeria: None,
             };
             html_md_con(nota, "c.md", &m)
         };
@@ -654,6 +749,7 @@ mod tests {
             adjunto: None,
             reproducibles: true,
             carrusel: None,
+            galeria: None,
         };
         let out = html_passthrough_con(h, &m);
         assert!(out.contains("orbital-carrusel"), "{out}");
@@ -675,6 +771,7 @@ mod tests {
                 adjunto: Some(&adjunto),
                 reproducibles,
                 carrusel: None,
+                galeria: None,
             };
             html_md_con(nota, "m.md", &m)
         };
@@ -699,6 +796,7 @@ mod tests {
             adjunto: Some(&foto),
             reproducibles: true,
             carrusel: None,
+            galeria: None,
         };
         let out = html_md_con("![[foto.png]]\n", "f.md", &m);
         assert!(out.contains("<img src=\"file://"), "{out}");
@@ -721,6 +819,7 @@ mod tests {
             adjunto: Some(&adjunto),
             reproducibles: true,
             carrusel: None,
+            galeria: None,
         };
         let out = html_passthrough_con(h, &m);
         assert!(out.contains("<p><figure class=\"medio\"><audio"), "{out}");

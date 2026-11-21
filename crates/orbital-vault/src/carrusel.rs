@@ -10,6 +10,9 @@
 //! medio y las carpetas contra el índice de la bóveda (en el hilo de fondo que prepara la nota).
 
 use crate::RelPath;
+use crate::bloque_medios::{
+    booleano, escapar, ext_limpia, extension, lista_de_extensiones, opcion, recortar, sin_comillas,
+};
 use crate::links::Resolution;
 use crate::vault::Vault;
 
@@ -321,25 +324,6 @@ pub fn parse(cuerpo: &str) -> Carrusel {
     c
 }
 
-/// `clave: valor` si el renglón es una opción (no un medio).
-fn opcion(t: &str) -> Option<(&str, &str)> {
-    if t.starts_with('!') || t.starts_with("[[") || t.starts_with('-') {
-        return None;
-    }
-    let (clave, valor) = t.split_once(':')?;
-    let clave = clave.trim();
-    // Una ruta con dos puntos (`C:`, `http:`) no es una opción.
-    if clave.is_empty()
-        || !clave
-            .chars()
-            .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
-        || valor.starts_with("//")
-    {
-        return None;
-    }
-    Some((clave, valor.trim()))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn aplicar(
     c: &mut Carrusel,
@@ -410,12 +394,7 @@ fn aplicar(
             }
         }
         "filetypes" | "tipos" => {
-            let v = valor.trim().trim_start_matches('[').trim_end_matches(']');
-            let lista: Vec<String> = v
-                .split(',')
-                .map(|e| ext_limpia(e.trim().trim_matches(['"', '\''])))
-                .filter(|e| !e.is_empty())
-                .collect();
+            let lista = lista_de_extensiones(valor);
             if lista.is_empty() {
                 mal(&mut c.avisos);
             } else {
@@ -536,43 +515,6 @@ fn es_medida(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn booleano(v: &str) -> Option<bool> {
-    match sin_comillas(v).to_lowercase().as_str() {
-        "true" | "sí" | "si" | "yes" | "1" | "on" => Some(true),
-        "false" | "no" | "0" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn sin_comillas(v: &str) -> &str {
-    v.trim().trim_matches(['"', '\'']).trim()
-}
-
-fn ext_limpia(e: &str) -> String {
-    e.trim()
-        .trim_start_matches("*.")
-        .trim_start_matches('.')
-        .to_lowercase()
-}
-
-/// La extensión en minúscula.
-fn extension(nombre: &str) -> Option<String> {
-    let archivo = nombre.rsplit('/').next().unwrap_or(nombre);
-    let (_, ext) = archivo.rsplit_once('.')?;
-    (!ext.is_empty()).then(|| ext.to_lowercase())
-}
-
-/// Un renglón largo, cortado para un aviso.
-fn recortar(t: &str) -> String {
-    const N: usize = 60;
-    if t.chars().count() <= N {
-        t.to_owned()
-    } else {
-        let corte: String = t.chars().take(N).collect();
-        format!("{corte}…")
-    }
-}
-
 /// Si una extensión es de un medio que el carrusel muestra (imagen, audio, video o PDF).
 fn es_medio_de_carpeta(ext: &str) -> bool {
     ext == "pdf"
@@ -620,42 +562,24 @@ impl Vault {
         let carpetas = std::mem::take(&mut c.carpetas);
         let mut insertar: Vec<(usize, Vec<Diapositiva>)> = Vec::new();
         for f in &carpetas {
-            let Some(base) = self.carpeta_de(dir, &f.carpeta) else {
+            // `.` es la raíz (como antes de la 033, que agregó `./` relativo a la nota).
+            let escrita = if f.carpeta == "." { "" } else { &f.carpeta };
+            let Some(base) = self.carpeta_de_bloque(dir, escrita) else {
                 c.avisos
                     .push(format!("No existe la carpeta «{}»", f.carpeta));
                 continue;
             };
-            let prefijo = if base.is_empty() {
-                String::new()
-            } else {
-                format!("{base}/")
-            };
             let mut hallados: Vec<&RelPath> = self
-                .entries()
-                .iter()
-                .filter(|e| e.kind != crate::EntryKind::Folder)
+                .archivos_de_carpeta(&base, f.recursivo, |e| {
+                    if f.tipos.is_empty() {
+                        es_medio_de_carpeta(e)
+                    } else {
+                        f.tipos.iter().any(|t| t == e)
+                    }
+                })
+                .into_iter()
                 .map(|e| &e.path)
-                .filter(|p| {
-                    let Some(resto) = p.as_str().strip_prefix(&prefijo) else {
-                        return false;
-                    };
-                    (f.recursivo || !resto.contains('/'))
-                        && !resto.split('/').any(|c| c.starts_with('.'))
-                })
-                .filter(|p| {
-                    extension(p.as_str()).is_some_and(|e| {
-                        if f.tipos.is_empty() {
-                            es_medio_de_carpeta(&e)
-                        } else {
-                            f.tipos.contains(&e)
-                        }
-                    })
-                })
                 .collect();
-            hallados.sort_by(|a, b| {
-                let (a, b) = (a.as_str(), b.as_str());
-                a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b))
-            });
             // Lo escrito a mano (con su leyenda) no se repite.
             hallados.retain(|p| {
                 !c.diapositivas
@@ -722,49 +646,6 @@ impl Vault {
             c.avisos.push("El carrusel no tiene medios".into());
         }
     }
-
-    /// La carpeta de una fuente por carpeta: relativa a la raíz de la bóveda, a la carpeta de la
-    /// nota o a `wiki/`. `Some("")`: la raíz.
-    fn carpeta_de(&self, dir: &str, escrita: &str) -> Option<String> {
-        let escrita = escrita.trim().trim_matches('/');
-        if escrita.is_empty() || escrita == "." {
-            return Some(String::new());
-        }
-        let es_carpeta = |rel: &str| {
-            self.entries()
-                .iter()
-                .any(|e| e.kind == crate::EntryKind::Folder && e.path.as_str() == rel)
-        };
-        let candidatos = [
-            escrita.to_owned(),
-            if dir.is_empty() {
-                escrita.to_owned()
-            } else {
-                format!("{dir}/{escrita}")
-            },
-            format!("wiki/{escrita}"),
-        ];
-        candidatos
-            .into_iter()
-            .filter(|c| !c.split('/').any(|p| p == ".." || p.starts_with('.')))
-            .find(|c| es_carpeta(c))
-    }
-}
-
-/// Escapa texto para HTML (contenido y atributos).
-fn escapar(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// El carrusel en HTML estático (exportar y la Visual de las notas `.html`): una grilla con

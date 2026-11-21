@@ -149,6 +149,9 @@ impl Window {
             simple("insertar-grafico", |w| {
                 w.0.code_editor.insertar_grafico();
             }),
+            simple("insertar-galeria", |w| {
+                w.0.code_editor.insertar_galeria();
+            }),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
             simple("importar-md", Window::importar_md),
@@ -457,6 +460,7 @@ impl Window {
         ("Historial de versiones…", "historial", None, true),
         ("Insertar ecuación", "insertar-ecuacion", None, true),
         ("Insertar gráfico", "insertar-grafico", None, true),
+        ("Insertar galería…", "insertar-galeria", None, true),
         (
             "Editar o insertar ecuación",
             "ecuacion",

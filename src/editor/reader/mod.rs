@@ -482,6 +482,7 @@ mod diagramas;
 mod enlaces;
 mod etiquetas;
 mod formulas;
+mod galeria;
 mod generado;
 mod graficos;
 mod plegado;

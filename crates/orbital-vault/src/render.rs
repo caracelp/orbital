@@ -91,6 +91,9 @@ pub enum BlockKind {
     /// Un carrusel de medios (032): un codeblock ` ```carrusel ` o ` ```media-slider `. Lo
     /// resuelve contra la bóveda [`crate::Vault::expand_transclusions`].
     Carrusel(Box<crate::carrusel::Carrusel>),
+    /// Una galería (033): un codeblock ` ```galeria ` con una carpeta de la bóveda. La resuelve
+    /// [`crate::Vault::expand_transclusions`].
+    Galeria(Box<crate::galeria::Galeria>),
 }
 
 /// Una tarjeta de estudio (024): la pregunta y la respuesta, analizadas como Markdown.
@@ -832,6 +835,15 @@ fn parse_blocks(ctx: &Ctx, evs: &[Ev], i: &mut usize, until: Option<TagEnd>) -> 
                         _ => {}
                     }
                     *i += 1;
+                }
+                if crate::galeria::es_lenguaje(&lang) {
+                    out.push(Block {
+                        kind: BlockKind::Galeria(Box::new(crate::galeria::parse(&text))),
+                        source: abs,
+                        line,
+                        id: None,
+                    });
+                    continue;
                 }
                 if crate::carrusel::es_lenguaje(&lang) {
                     out.push(Block {
