@@ -366,3 +366,109 @@ fn diagrama_en_diapositiva() {
     });
     let _ = std::fs::remove_dir_all(&raiz);
 }
+
+/// 032: un carrusel en una diapositiva se ve con su primera imagen; con el foco en el carrusel,
+/// las flechas pasan sus diapositivas y no las de OnStage (Av Pág sí pasa de diapositiva).
+#[test]
+#[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
+fn carrusel_en_diapositiva() {
+    adw::init().expect("se necesita acceso GTK");
+    crate::style::apply();
+    let raiz = std::env::temp_dir().join(format!("orbital-onstage-032-ñ-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&raiz);
+    std::fs::create_dir_all(raiz.join("wiki")).unwrap();
+    for (n, color) in [("a", 0xff69b4ffu32), ("b", 0x5aa0ffff)] {
+        let pb = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, false, 8, 800, 500)
+            .unwrap();
+        pb.fill(color);
+        pb.savev(raiz.join(format!("wiki/{n}.png")), "png", &[])
+            .unwrap();
+    }
+    let nota =
+        "# Fotos\n\n```carrusel\n![[a.png|Primera]]\n![[b.png|Segunda]]\n```\n\n# Otra\n\nTexto.\n";
+    std::fs::write(raiz.join("wiki/a.md"), nota).unwrap();
+    let vault = Arc::new(orbital_vault::open(&raiz).unwrap());
+    let ruta = orbital_vault::RelPath::new("wiki/a.md").unwrap();
+    let principal = gtk::Window::new();
+    principal.present();
+    let onstage = OnStage::new(&principal);
+    onstage.set_proveedor(move || {
+        Some(Fuente {
+            texto: nota.to_owned(),
+            ruta: ruta.clone(),
+            vault: Some(vault.clone()),
+        })
+    });
+    onstage.presentar();
+    glib::MainContext::default().block_on(async {
+        fn buscar(w: &gtk::Widget) -> Option<gtk::Widget> {
+            let mut h = w.first_child();
+            while let Some(x) = h {
+                if x.has_css_class("orbital-carrusel") {
+                    return Some(x);
+                }
+                if let Some(c) = buscar(&x) {
+                    return Some(c);
+                }
+                h = x.next_sibling();
+            }
+            None
+        }
+        fn imagen(w: &gtk::Widget) -> bool {
+            let mut h = w.first_child();
+            while let Some(x) = h {
+                if x.downcast_ref::<gtk::Picture>()
+                    .is_some_and(|p| p.paintable().is_some() && p.is_visible())
+                    || imagen(&x)
+                {
+                    return true;
+                }
+                h = x.next_sibling();
+            }
+            false
+        }
+        let mut carrusel = None;
+        for _ in 0..250 {
+            carrusel = buscar(onstage.0.reader.text_view().upcast_ref());
+            if carrusel
+                .as_ref()
+                .is_some_and(|c| c.is_mapped() && imagen(c))
+            {
+                break;
+            }
+            if onstage.0.stack.visible_child_name().as_deref() == Some("portada") {
+                onstage.0.adelante.emit_clicked();
+            }
+            glib::timeout_future(Duration::from_millis(20)).await;
+        }
+        let c = carrusel.expect("un carrusel en la diapositiva");
+        assert!(imagen(&c), "con su imagen");
+        assert!(c.grab_focus(), "el carrusel toma el foco");
+        assert!(crate::carrusel::tiene_foco(&onstage.0.window));
+        assert_eq!(
+            onstage.tecla(gtk::gdk::Key::Right),
+            glib::Propagation::Proceed,
+            "la flecha queda para el carrusel"
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            let w = onstage.0.reader.widget();
+            let (a, h) = (w.width() as f32, w.height() as f32);
+            let snap = gtk::Snapshot::new();
+            snap.append_color(
+                &crate::style::VIEW_BG.rgba(1.0),
+                &gtk::graphene::Rect::new(0.0, 0.0, a, h),
+            );
+            gtk::WidgetPaintable::new(Some(w)).snapshot(&snap, f64::from(a), f64::from(h));
+            let png = std::path::Path::new(&dir).join("032-onstage.png");
+            w.root()
+                .and_then(|r| r.renderer())
+                .unwrap()
+                .render_texture(snap.to_node().unwrap(), None)
+                .save_to_png(&png)
+                .unwrap();
+            println!("Captura: {}", png.display());
+        }
+    });
+    let _ = std::fs::remove_dir_all(&raiz);
+}
