@@ -168,6 +168,8 @@ struct Inner {
     hay_formulas: Cell<bool>,
     /// Los gráficos (052) sin interacción (OnStage).
     graficos_estaticos: Cell<bool>,
+    /// Los diagramas (058) con su tamaño natural: se achican al ancho de la columna.
+    diagramas: RefCell<Vec<(glib::WeakRef<gtk::Widget>, f32, f32)>>,
     /// Bloques de primer nivel con código por resaltar en reposo (055).
     resaltar: RefCell<Vec<resaltar::Pendiente>>,
     resaltar_programado: Cell<bool>,
@@ -255,6 +257,7 @@ impl Reader {
             tamano_formulas: Cell::new(None),
             hay_formulas: Cell::new(false),
             graficos_estaticos: Cell::new(false),
+            diagramas: RefCell::new(Vec::new()),
             resaltar: RefCell::new(Vec::new()),
             resaltar_programado: Cell::new(false),
         }));
@@ -474,6 +477,7 @@ mod actualizar;
 mod bloques;
 mod capas;
 mod consulta;
+mod diagramas;
 mod enlaces;
 mod etiquetas;
 mod formulas;

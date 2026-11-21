@@ -301,6 +301,16 @@ impl Reader {
                 }
                 None => false,
             });
+            i.diagramas
+                .borrow_mut()
+                .retain(|(w, ancho, alto)| match w.upgrade() {
+                    Some(w) => {
+                        let (a, h) = crate::diagramas::medida(*ancho, *alto, text);
+                        w.set_size_request(a, h);
+                        true
+                    }
+                    None => false,
+                });
             i.view.set_left_margin(side);
             i.view.set_right_margin(side);
             let table = i.view.buffer().tag_table();

@@ -19,6 +19,7 @@ img{max-width:100%}input[type=checkbox]{margin-right:0.4em}\
 .formula-error{text-decoration:underline wavy #c2185b}\
 figure.grafico{margin:1em 0}figure.grafico svg{max-width:100%;height:auto}\
 .grafico-aviso{color:#c2185b}\
+figure.diagrama{margin:1em 0}figure.diagrama svg{max-width:100%;height:auto}\
 figure.medio{margin:1em 0}figure.medio video{max-width:100%}figure.medio audio{width:100%}\
 figure.medio figcaption,p.medio{color:#55555c;font-size:0.9em}\
 p.medio{border:1px solid #d0d0d4;border-radius:6px;padding:0.5em 0.8em}";
@@ -239,6 +240,7 @@ fn con_formulas<'a>(
                     Some(Event::Html(
                         match cercado {
                             Cercado::Grafico => grafico_html(&texto),
+                            Cercado::Diagrama => diagrama_html(&texto),
                             Cercado::Formula => formula_html(&texto, true, true),
                             Cercado::Codigo(lang) => codigo_html(&lang, &texto),
                         }
@@ -250,14 +252,17 @@ fn con_formulas<'a>(
         }
         match ev {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(ref lang)))
-                if matches!(lang.split_whitespace().next(), Some("math" | "grafico")) =>
+                if matches!(
+                    lang.split_whitespace().next(),
+                    Some("math" | "grafico" | "mermaid")
+                ) =>
             {
                 en_bloque = Some((
                     String::new(),
-                    if lang.split_whitespace().next() == Some("grafico") {
-                        Cercado::Grafico
-                    } else {
-                        Cercado::Formula
+                    match lang.split_whitespace().next() {
+                        Some("grafico") => Cercado::Grafico,
+                        Some("mermaid") => Cercado::Diagrama,
+                        _ => Cercado::Formula,
                     },
                 ));
                 None
@@ -317,6 +322,8 @@ fn formula_html(tex: &str, bloque: bool, sola: bool) -> String {
 enum Cercado {
     Formula,
     Grafico,
+    /// Un diagrama Mermaid (058).
+    Diagrama,
     /// Código para resaltar (055), con su lenguaje.
     Codigo(String),
 }
@@ -343,6 +350,21 @@ fn grafico_html(fuente: &str) -> String {
             let e = orbital_formulas::html::escapar_atributo(&e.to_string());
             format!(
                 "<pre class=\"grafico-error\" title=\"{e}\"><code>{}</code></pre>\n<p class=\"grafico-aviso\">⚠ {e}</p>\n",
+                orbital_formulas::html::escapar_atributo(fuente)
+            )
+        }
+    }
+}
+
+/// Un diagrama Mermaid (058) como SVG con los colores de papel; con error, su fuente y el motivo.
+fn diagrama_html(fuente: &str) -> String {
+    let fuente = fuente.strip_suffix('\n').unwrap_or(fuente);
+    match crate::diagramas::svg(fuente, crate::diagramas::Tema::Claro) {
+        Ok(d) => format!("<figure class=\"diagrama\">{}</figure>\n", d.marcado),
+        Err(e) => {
+            let e = orbital_formulas::html::escapar_atributo(&e.to_string());
+            format!(
+                "<pre class=\"grafico-error\" title=\"{e}\"><code class=\"language-mermaid\">{}</code></pre>\n<p class=\"grafico-aviso\">⚠ {e}</p>\n",
                 orbital_formulas::html::escapar_atributo(fuente)
             )
         }
@@ -432,7 +454,9 @@ pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
         formula_html(tex, modo == orbital_formulas::Modo::Bloque, false)
     });
     // Los gráficos (052): `<pre><code class="language-grafico">`.
-    orbital_graficos::html::reemplazar(&con_formulas, grafico_html)
+    let con_graficos = orbital_graficos::html::reemplazar(&con_formulas, grafico_html);
+    // Los diagramas Mermaid (058): `<pre><code class="language-mermaid">`.
+    orbital_graficos::html::reemplazar_bloques(&con_graficos, "mermaid", diagrama_html)
 }
 
 #[cfg(test)]
@@ -505,6 +529,28 @@ mod tests {
         let out = html_passthrough(html);
         assert_eq!(out.matches("<svg").count(), 2, "{out}");
         assert!(!out.contains("language-grafico"), "{out}");
+    }
+
+    #[test]
+    fn exporta_diagramas_como_svg() {
+        let nota = "# D\n\n```mermaid\ngraph TD\n  A[Año] --> B\n```\n\n```mermaid\ngraph TD\n  A -->> B[\n```\n";
+        let out = html_md(nota, "d.md");
+        assert_eq!(
+            out.matches("<figure class=\"diagrama\"><svg").count(),
+            1,
+            "{out}"
+        );
+        assert!(
+            out.contains("aria-label=\"Diagrama Mermaid: de flujo\""),
+            "{out}"
+        );
+        assert!(out.contains("Año"), "{out}");
+        assert!(out.contains("Error en el diagrama (renglón 2)"), "{out}");
+        assert!(!out.contains("currentColor"), "papel: colores fijos");
+        let html = "<html><body><pre><code class=\"language-mermaid\">pie\n  &quot;A&quot; : 1</code></pre></body></html>";
+        let out = html_passthrough(html);
+        assert!(out.contains("<figure class=\"diagrama\"><svg"), "{out}");
+        assert!(!out.contains("language-mermaid"), "{out}");
     }
 
     #[test]

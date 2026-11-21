@@ -403,39 +403,48 @@
     wrapPendingFormulas();
   }
 
-  // Gráficos (052): para cada `pre > code.language-grafico`, Orbital pasa su SVG (estático, de la
-  // vista inicial) por el fuente, o `!` y el motivo. La figura va después del `pre`, que se
-  // oculta; no es editable y body() la quita. Un clic en la figura muestra el fuente.
+  // Gráficos (052) y diagramas Mermaid (058): para cada `pre > code.language-grafico` (o
+  // `language-mermaid`), Orbital pasa su SVG (estático) por el fuente, o `!` y el motivo. La
+  // figura va después del `pre`, que se oculta; no es editable y body() la quita. Un clic en la
+  // figura muestra el fuente. Cada tipo lleva su `data-orbital-tipo`: poner los de uno no saca
+  // los del otro.
   const GRAFICO_CSS =
     'pre[data-orbital-grafico-oculto]{display:none}' +
     '.orbital-grafico{margin:0.6em 0;cursor:pointer;max-width:100%}' +
     '.orbital-grafico svg{max-width:100%;height:auto}' +
     '.orbital-grafico-error{color:#ff8cc6;cursor:default}';
-  let graficoMap = {};
-  function setGraficos(map) {
-    graficoMap = map;
+  const FIGURAS = {
+    grafico: { titulo: 'Clic para editar el fuente del gráfico' },
+    mermaid: { titulo: 'Clic para editar el fuente del diagrama' },
+  };
+  function ponerFiguras(map, tipo) {
     if (!document.getElementById('orbital-grafico-style')) {
       const st = document.createElement('style');
       st.id = 'orbital-grafico-style';
       st.textContent = GRAFICO_CSS;
       document.head.appendChild(st);
     }
-    document.querySelectorAll('[data-orbital-grafico]').forEach((f) => f.remove());
-    document.querySelectorAll('pre[data-orbital-grafico-oculto]').forEach((p) =>
-      p.removeAttribute('data-orbital-grafico-oculto'));
-    document.querySelectorAll('pre > code.language-grafico').forEach((code) => {
+    document.querySelectorAll('[data-orbital-grafico][data-orbital-tipo="' + tipo + '"]')
+      .forEach((f) => {
+        const pre = f.previousElementSibling;
+        if (pre) pre.removeAttribute('data-orbital-grafico-oculto');
+        f.remove();
+      });
+    document.querySelectorAll('pre > code.language-' + tipo).forEach((code) => {
       const pre = code.parentElement;
       if (pre.closest('[data-orbital-embed]')) return;
+      pre.removeAttribute('data-orbital-grafico-oculto');
       // El que se está editando queda como fuente hasta que el cursor salga.
       const sel = window.getSelection();
       if (sel && sel.anchorNode && pre.contains(sel.anchorNode)) return;
       const src = code.textContent;
-      let html = graficoMap[src];
-      if (html === undefined) html = graficoMap[src.replace(/\n$/, '')];
+      let html = map[src];
+      if (html === undefined) html = map[src.replace(/\n$/, '')];
       if (html === undefined) return;
       const fig = document.createElement('figure');
       fig.setAttribute('contenteditable', 'false');
       fig.setAttribute('data-orbital-grafico', '');
+      fig.setAttribute('data-orbital-tipo', tipo);
       if (html.startsWith('!')) {
         fig.className = 'orbital-grafico orbital-grafico-error';
         fig.setAttribute('role', 'alert');
@@ -444,7 +453,7 @@
         return;
       }
       fig.className = 'orbital-grafico';
-      fig.title = 'Clic para editar el fuente del gráfico';
+      fig.title = FIGURAS[tipo].titulo;
       fig.innerHTML = html;
       fig.addEventListener('click', () => {
         pre.removeAttribute('data-orbital-grafico-oculto');
@@ -453,6 +462,12 @@
       pre.setAttribute('data-orbital-grafico-oculto', '');
       pre.after(fig);
     });
+  }
+  function setGraficos(map) {
+    ponerFiguras(map, 'grafico');
+  }
+  function setDiagramas(map) {
+    ponerFiguras(map, 'mermaid');
   }
 
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno
@@ -510,6 +525,7 @@
     setMarkers,
     setFormulas,
     setGraficos,
+    setDiagramas,
     body,
     rememberSelection() {
       rememberSelection();

@@ -1,4 +1,5 @@
 mod bases;
+mod diagramas;
 mod ecuaciones;
 mod editor;
 mod export;
