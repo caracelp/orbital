@@ -791,6 +791,72 @@ vistaAmpliada: true
 - **Exportar**: la grilla estática (HTML con audio y video reproducibles; PDF con su nombre y un
   enlace).
 
+### Galería en la nota (033)
+
+Un codeblock ` ```galeria ` (también ` ```galería ` o ` ```gallery `, nombres que Orbital acepta
+como propios) muestra las imágenes y los videos de una carpeta de la bóveda como una grilla dentro
+de la nota: en Lectura, Dividida y OnStage. El archivo guarda el bloque tal cual; mirar la galería,
+recorrerla o abrir el visor no cambia la nota ni nada de la bóveda, y nada pide red.
+
+````markdown
+```galeria
+carpeta: imagenes/tesis
+layout: justificadas
+recursivo: true
+agrupar: true
+paginar: 100
+```
+````
+
+- **Opciones**: `clave: valor`, una por renglón (opcionalmente entre dos renglones `---`). Valen el
+  nombre en español y el heredado:
+
+  | Opción | Heredada | Valores | Por defecto |
+  |---|---|---|---|
+  | `carpeta` | `folder`, `path` | la carpeta (ver abajo); también un renglón `[[carpeta/]]` | — |
+  | `layout` | — | `miniaturas`, `masonry`, `justificadas`, `carrusel` (también `grid`, `justified`, `carousel`) | `miniaturas` |
+  | `recursivo` | `recursive` | también las subcarpetas | `false` |
+  | `agrupar` | `group` | con `recursivo`, un título por subcarpeta (la carpeta primero) | `false` |
+  | `tipos` | `fileTypes` | extensiones: `[png, jpg]` o una por renglón con `-` | todas las imágenes y videos |
+  | `paginar` | `pagination` | fotos por página | sin páginas |
+  | `columnas` | `columns` | columnas fijas de `miniaturas` y `masonry` (1–12) | según el ancho |
+  | `alto` | `rowHeight` | alto de las filas de `justificadas` (60–480 px) | `180` |
+  | `velocidad` | `slideshowSpeed` | segundos por foto del pase automático del visor | `4` |
+
+  Una opción desconocida o un valor inválido se ignora con un aviso tenue debajo de la galería.
+  `layout: mosaico` (mosaico con patrón) y las fotos sin marco todavía no están: avisan y se usa
+  `miniaturas`. Las direcciones externas no se cargan.
+- **Carpeta**: escrita con `./` o `../` (`carpeta: ./fotos`), es relativa a la carpeta de la nota;
+  si no, se busca relativa a la raíz, a la carpeta de la nota y a `wiki/`, en ese orden. `/` es la
+  raíz. Nunca sale de la bóveda ni entra en carpetas ocultas. La lista sale del índice de la
+  bóveda (no se lee el disco al dibujar): imágenes (`png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`,
+  `bmp`, `avif`) y videos (`mp4`, `webm`, `ogv`, `mkv`, `mov`), en orden alfabético sin distinguir
+  mayúsculas, hasta 10 000. Los enlaces simbólicos quedan afuera (pueden apuntar fuera de la
+  bóveda). Un archivo nuevo, borrado o cambiado se nota cuando Orbital relee la bóveda y rehace
+  solo ese bloque. Sin carpeta, con una que no existe o sin fotos, la galería dice el motivo.
+- **Disposiciones**: `miniaturas` (celdas cuadradas, la foto recortada), `masonry` (columnas con
+  el alto natural de cada foto, sin recorte), `justificadas` (filas de alto parejo que llenan el
+  ancho, las proporciones respetadas; la última fila no se estira) y `carrusel` (una foto grande
+  a la vez, con flechas y miniaturas: el carrusel de la 032). La misma carpeta da siempre la misma
+  grilla. Un video se ve como un cuadro negro con el marcador de reproducción (sin reproducir en
+  la grilla); el GIF muestra su primer cuadro.
+- **Teclado**: Tab entra a una sola foto de la grilla; las flechas la recorren, Inicio y Fin van
+  a la primera y a la última de la página, Av Pág y Re Pág cambian de página (con `paginar`), y
+  Enter, Espacio o un clic abren el visor.
+- **Visor**: a pantalla completa, sobre negro, con todas las fotos de la galería (no solo las de la
+  página). ← y → (o deslizar con el dedo) pasan de foto, la rueda, `+` y `-` acercan alrededor del
+  puntero, arrastrar recorre la foto ampliada, doble clic o `0` la ajustan, `I` muestra el nombre,
+  las medidas, el tamaño y la fecha del archivo, `P` (o el botón) arranca y pausa el pase
+  automático, F o Esc salen. Los videos se reproducen ahí. Al salir, el foco vuelve a la foto en
+  que se estaba (en su página).
+- **Insertar galería…** (paleta de comandos, notas `.md`): un diálogo para elegir la carpeta, la
+  disposición y si entran las subcarpetas; el bloque queda en el cursor en su propio párrafo.
+- **Notas `.html`**: un `<pre><code class="language-galeria">…</code></pre>`. En Visual se ve como
+  una grilla estática con la misma disposición (CSS, sin JavaScript); un clic muestra el fuente;
+  al guardar, el archivo conserva el `pre` tal cual.
+- **Exportar**: la grilla estática con todas las fotos (sin páginas); en HTML los videos con
+  controles, en PDF su nombre y un enlace.
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas
