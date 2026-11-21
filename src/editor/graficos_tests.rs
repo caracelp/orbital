@@ -504,7 +504,7 @@ fn medir_lectura_graficos() {
 }
 
 /// La ventana con el globito encima (el globito es otra superficie).
-fn capturar_con_globito(window: &gtk::Window, editor: &Editor, nombre: &str) {
+pub(crate) fn capturar_con_globito(window: &gtk::Window, editor: &Editor, nombre: &str) {
     let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {
         return;
     };

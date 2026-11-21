@@ -9,6 +9,9 @@ pub mod code;
 pub mod completion;
 pub mod conflict;
 mod cursores;
+#[cfg(test)]
+#[path = "diagramas_tests.rs"]
+mod diagramas_tests;
 mod ecuacion;
 #[cfg(test)]
 #[path = "ecuaciones_tests.rs"]

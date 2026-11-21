@@ -80,8 +80,17 @@ struct CacheSvg {
 
 static SVGS: LazyLock<Mutex<CacheSvg>> = LazyLock::new(Mutex::default);
 
+static USADO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Si ya se pidió algún diagrama en este proceso (una nota sin diagramas no carga nada).
+#[cfg(test)]
+pub fn usado() -> bool {
+    USADO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// El diagrama como SVG, con caché por (fuente, tema). Cualquier hilo.
 pub fn svg(fuente: &str, tema: Tema) -> ResultadoSvg {
+    USADO.store(true, std::sync::atomic::Ordering::Relaxed);
     let fuente = fuente.strip_suffix('\n').unwrap_or(fuente);
     let clave = (Arc::<str>::from(fuente), tema);
     if let Some(r) = SVGS.lock().ok().and_then(|c| c.mapa.get(&clave).cloned()) {

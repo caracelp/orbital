@@ -31,13 +31,13 @@ const fn c(s: &'static str) -> Cow<'static, str> {
 /// medios, con texto claro u oscuro según el contraste (lo elige el motor).
 static PALETA_OSCURA: Paleta = [
     c("#B8467C"),
-    c("#6B3B56"),
-    c("#9C3D6B"),
     c("#4B5D8A"),
     c("#C9823F"),
     c("#2F8A88"),
+    c("#6B3B56"),
     c("#8A5CB8"),
     c("#3E8A56"),
+    c("#9C3D6B"),
     c("#C982A7"),
     c("#B8474C"),
     c("#5C5862"),
@@ -47,13 +47,13 @@ static PALETA_OSCURA: Paleta = [
 /// Rellenos por categoría sobre papel: pasteles con texto oscuro.
 static PALETA_CLARA: Paleta = [
     c("#FFC2DF"),
-    c("#FFD1E6"),
-    c("#FFE1EF"),
     c("#C9D6F5"),
     c("#FBD9B5"),
     c("#BDEBE9"),
+    c("#FFD1E6"),
     c("#E0CCF5"),
     c("#C8EBD2"),
+    c("#FFE1EF"),
     c("#EBC9DB"),
     c("#F9C4C6"),
     c("#E2E0E4"),
@@ -63,13 +63,13 @@ static PALETA_CLARA: Paleta = [
 /// Rellenos translúcidos para `.html`: se ven sobre cualquier fondo.
 static PALETA_HTML: Paleta = [
     c("rgba(255,140,198,0.45)"),
-    c("rgba(184,70,124,0.45)"),
-    c("rgba(255,173,213,0.35)"),
     c("rgba(77,155,255,0.35)"),
     c("rgba(233,151,63,0.40)"),
     c("rgba(83,223,221,0.35)"),
+    c("rgba(184,70,124,0.45)"),
     c("rgba(160,110,230,0.35)"),
     c("rgba(68,207,110,0.35)"),
+    c("rgba(255,173,213,0.35)"),
     c("rgba(201,130,167,0.40)"),
     c("rgba(255,92,98,0.35)"),
     c("rgba(153,148,158,0.35)"),
