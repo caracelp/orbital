@@ -468,10 +468,11 @@ impl Vista {
             }
         }
         *i.vivas.borrow_mut() = quedan;
-        if r.contains(&activo) && !necesarias.iter().any(|(k, _)| *k == activo) {
-            if let Some(rect) = self.rect(activo) {
-                necesarias.push((activo, rect));
-            }
+        if r.contains(&activo)
+            && !necesarias.iter().any(|(k, _)| *k == activo)
+            && let Some(rect) = self.rect(activo)
+        {
+            necesarias.push((activo, rect));
         }
         let e = raiz.scale_factor().max(1);
         for (k, rect) in &necesarias {
