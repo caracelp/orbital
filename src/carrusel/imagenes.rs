@@ -15,6 +15,8 @@ const CACHE_BYTES: usize = 48 << 20;
 const LADO_MAXIMO: i32 = 4096;
 
 type Clave = (PathBuf, i32, i32);
+/// Quien espera una imagen.
+type Listo = Box<dyn FnOnce(Option<gdk::Texture>)>;
 
 #[derive(Default)]
 struct Cache {
@@ -25,7 +27,7 @@ struct Cache {
 thread_local! {
     static CACHE: RefCell<Cache> = RefCell::default();
     /// Pedidos en curso: no se decodifica dos veces lo mismo a la vez.
-    static EN_CURSO: RefCell<Vec<(Clave, Vec<Box<dyn FnOnce(Option<gdk::Texture>)>>)>> =
+    static EN_CURSO: RefCell<Vec<(Clave, Vec<Listo>)>> =
         RefCell::default();
 }
 

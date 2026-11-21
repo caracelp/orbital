@@ -534,12 +534,15 @@ fn medir_lectura_carrusel() {
         editor.set_view(View::Lectura);
         editor.render_now();
         let vista = editor.0.reader.text_view().clone();
-        let buf = editor.0.reader.buffer();
         if sin {
+            // El buffer de la vista cambia al volcar: se lo pide cada vez.
+            let lector = editor.0.reader.clone();
             assert!(
-                esperar(|| buf
-                    .text(&buf.start_iter(), &buf.end_iter(), true)
-                    .contains("Fin."))
+                esperar(|| {
+                    let buf = lector.buffer();
+                    buf.text(&buf.start_iter(), &buf.end_iter(), true)
+                        .contains("Fin.")
+                })
                 .await
             );
             glib::timeout_future(Duration::from_millis(300)).await;

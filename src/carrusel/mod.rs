@@ -930,7 +930,7 @@ impl Vista {
         glib::spawn_future_local(async move {
             for (k, p) in trabajo {
                 let (tx, rx) = futures_oneshot();
-                imagenes::pedir(&p, MINI_ANCHO * e, MINI_ALTO * e, move |t| tx(t));
+                imagenes::pedir(&p, MINI_ANCHO * e, MINI_ALTO * e, tx);
                 let t = rx.await;
                 let Some(i) = d.upgrade() else { return };
                 if let (Some(m), Some(t)) = (&i.miniaturas, t)
@@ -948,8 +948,8 @@ fn futures_oneshot() -> (
     impl FnOnce(Option<gdk::Texture>),
     impl std::future::Future<Output = Option<gdk::Texture>>,
 ) {
-    let celda: Rc<RefCell<(Option<Option<gdk::Texture>>, Option<std::task::Waker>)>> =
-        Rc::default();
+    type Celda = (Option<Option<gdk::Texture>>, Option<std::task::Waker>);
+    let celda: Rc<RefCell<Celda>> = Rc::default();
     let c2 = celda.clone();
     let tx = move |t: Option<gdk::Texture>| {
         let mut c = c2.borrow_mut();

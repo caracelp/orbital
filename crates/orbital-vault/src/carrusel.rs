@@ -238,7 +238,7 @@ const POSTERGADAS: &[&str] = &[
 /// [`Carrusel::avisos`].
 pub fn parse(cuerpo: &str) -> Carrusel {
     let mut c = Carrusel::default();
-    let mut renglones = cuerpo.lines().peekable();
+    let renglones = cuerpo.lines();
     // Las opciones entre `---` (la forma heredada) o sueltas antes y entre los medios.
     let mut tipos: Option<Vec<String>> = None;
     let mut recursivo = false;
@@ -247,7 +247,7 @@ pub fn parse(cuerpo: &str) -> Carrusel {
     let mut primera = true;
     // Clave con valor en los renglones siguientes (`fileTypes:` y debajo `- png`).
     let mut lista_abierta: Option<String> = None;
-    while let Some(r) = renglones.next() {
+    for r in renglones {
         let t = r.trim();
         if t.is_empty() {
             continue;
