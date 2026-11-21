@@ -37,6 +37,8 @@ mod esqueleto;
 mod explorador;
 mod externos;
 mod galeria_lateral;
+#[cfg(test)]
+mod galeria_lateral_tests;
 mod historial;
 mod izquierda;
 mod listas;

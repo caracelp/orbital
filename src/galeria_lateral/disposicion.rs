@@ -101,7 +101,7 @@ impl Disposicion {
     }
 }
 
-/// Minúsculas y sin tildes (la búsqueda no las distingue). Un carácter por carácter: las
+/// Minúsculas, sin tildes y con la ñ como n (la búsqueda no los distingue). Un carácter por carácter: las
 /// posiciones en caracteres valen para el texto original.
 pub fn plegar(s: &str) -> Vec<char> {
     s.chars()
@@ -113,6 +113,7 @@ pub fn plegar(s: &str) -> Vec<char> {
                 'í' | 'ì' | 'ï' | 'î' => 'i',
                 'ó' | 'ò' | 'ö' | 'ô' => 'o',
                 'ú' | 'ù' | 'ü' | 'û' => 'u',
+                'ñ' => 'n',
                 otra => otra,
             }
         })
@@ -272,7 +273,7 @@ pub enum Direccion {
 /// derecha recorren en orden; arriba y abajo van a la fila anterior o siguiente, a la pieza más
 /// cercana en horizontal (un título es una fila de un solo elemento).
 pub fn vecina(piezas: &[(Pieza, Rect)], n: usize, dir: Direccion) -> Option<usize> {
-    let (_, r) = piezas.get(n)?;
+    let (p, r) = piezas.get(n)?;
     match dir {
         Direccion::Izquierda => n.checked_sub(1),
         Direccion::Derecha => (n + 1 < piezas.len()).then_some(n + 1),
@@ -284,7 +285,11 @@ pub fn vecina(piezas: &[(Pieza, Rect)], n: usize, dir: Direccion) -> Option<usiz
                 .map(|(_, q)| q.y)
                 .filter(|y| if arriba { *y < r.y } else { *y > r.y })
                 .min_by_key(|y| (y - r.y).abs())?;
-            let centro = r.x + r.w / 2;
+            // Desde un título, a la primera de la fila.
+            let centro = match p {
+                Pieza::Titulo(_) => r.x,
+                Pieza::Mosaico(_) => r.x + r.w / 2,
+            };
             piezas
                 .iter()
                 .enumerate()

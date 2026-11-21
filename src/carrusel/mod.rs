@@ -24,6 +24,9 @@ mod zoom;
 /// Abrir un enlace (un PDF en su visor), relativo a la nota del carrusel.
 pub type AbrirFn = Rc<dyn Fn(&str)>;
 
+/// «Ir al embed» del visor (034): recibe la diapositiva vigente.
+pub type IrAlEmbedFn = Rc<dyn Fn(usize)>;
+
 /// Alto y ancho de las miniaturas.
 const MINI_ANCHO: i32 = 96;
 const MINI_ALTO: i32 = 64;
@@ -71,7 +74,7 @@ struct Inner {
     info: Option<Info>,
     /// «Ir al embed» (solo en el visor abierto desde la galería lateral, 034).
     embed: Option<gtk::Button>,
-    al_embed: RefCell<Option<Rc<dyn Fn(usize)>>>,
+    al_embed: RefCell<Option<IrAlEmbedFn>>,
 }
 
 /// El panel con el nombre, las medidas, el tamaño y la fecha del archivo vigente.
@@ -1204,7 +1207,7 @@ pub fn abrir_visor_con_embed(
     indice: usize,
     abrir: AbrirFn,
     al_cerrar: impl Fn(usize) + 'static,
-    ir_al_embed: Rc<dyn Fn(usize)>,
+    ir_al_embed: IrAlEmbedFn,
 ) {
     let v = visor(desde, c, indice, abrir, true);
     if let Some(b) = &v.0.embed {

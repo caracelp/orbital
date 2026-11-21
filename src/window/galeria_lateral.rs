@@ -11,6 +11,10 @@ use crate::galeria_lateral::Pedido;
 /// La misma pausa que el refresco por edición del editor.
 const PAUSA_MS: u64 = 250;
 
+/// Listas pedidas (pruebas: con el panel cerrado tiene que quedar en cero).
+#[cfg(test)]
+pub(super) static PEDIDOS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl Window {
     /// Conecta la galería lateral la primera vez que se elige su modo.
     pub(super) fn setup_galeria_lateral(&self) {
@@ -92,6 +96,8 @@ impl Window {
                 None => return,
             }
         };
+        #[cfg(test)]
+        PEDIDOS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let generacion = g.nuevo_pedido();
         let ruta = entry.path.clone();
         glib::spawn_future_local(async move {

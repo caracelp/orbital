@@ -430,11 +430,14 @@ pub fn extraer(fuente: &str) -> MediosNota {
     m
 }
 
+/// Bytes de un embed dentro de su renglón (`None`: el renglón entero, en un bloque).
+pub type Tramo = Option<(usize, usize)>;
+
 /// Dónde está ahora el embed de `u` en `fuente` (la nota pudo cambiar después de armar la
 /// galería): el renglón y los bytes del embed dentro de él (`None` en un bloque). Si el renglón
 /// guardado ya no lo tiene, el más cercano que lo tenga; `None` si no está en ninguno.
-pub fn ubicar(fuente: &str, u: &Ubicacion) -> Option<(usize, Option<(usize, usize)>)> {
-    let en = |r: &str| -> Option<Option<(usize, usize)>> {
+pub fn ubicar(fuente: &str, u: &Ubicacion) -> Option<(usize, Tramo)> {
+    let en = |r: &str| -> Option<Tramo> {
         let r = r.strip_suffix('\r').unwrap_or(r);
         match u.rango {
             None => (r == u.texto).then_some(None),
@@ -442,7 +445,8 @@ pub fn ubicar(fuente: &str, u: &Ubicacion) -> Option<(usize, Option<(usize, usiz
             Some(_) => r.find(&u.texto).map(|a| Some((a, a + u.texto.len()))),
         }
     };
-    let mut mejor: Option<(usize, usize, Option<(usize, usize)>)> = None;
+    // (distancia al renglón guardado, renglón, tramo)
+    let mut mejor: Option<(usize, usize, Tramo)> = None;
     for (n, r) in fuente.split('\n').enumerate() {
         if !r.contains(u.texto.as_str()) {
             continue;

@@ -112,6 +112,9 @@ struct Inner {
     menu: Cell<Option<usize>>,
     /// Se están poniendo la búsqueda y el filtro guardados (sus señales no redisponen).
     ignorar_cambios: Cell<bool>,
+    /// Un desplazamiento que espera a que el lienzo crezca (la disposición nueva todavía no
+    /// llegó al ajuste del `ScrolledWindow`).
+    desplazar: Cell<Option<f64>>,
     /// El último pedido de lista de la ventana (los anteriores que lleguen tarde no cuentan).
     generacion: Cell<u64>,
 }
@@ -288,6 +291,7 @@ impl GaleriaLateral {
             menu: Cell::new(None),
             ignorar_cambios: Cell::new(false),
             generacion: Cell::new(0),
+            desplazar: Cell::new(None),
         }));
         this.conectar();
         this.mostrar_vacio("Abrí una nota para ver sus imágenes y videos.");
@@ -535,6 +539,19 @@ impl GaleriaLateral {
         }
         {
             let d = debil();
+            adj.connect_upper_notify(move |a| {
+                if let Some(i) = d.upgrade()
+                    && let Some(v) = i.desplazar.get()
+                {
+                    if v <= a.upper() - a.page_size() {
+                        i.desplazar.set(None);
+                    }
+                    a.set_value(v.min(a.upper() - a.page_size()));
+                }
+            });
+        }
+        {
+            let d = debil();
             adj.connect_page_size_notify(move |_| {
                 if let Some(i) = d.upgrade() {
                     GaleriaLateral(i).programar();
@@ -682,7 +699,9 @@ impl GaleriaLateral {
             return;
         }
         // El ancho real de la grilla (la barra derecha es fija: casi nunca cambia).
-        let ancho = i.scroller.width() - 4;
+        // Menos los márgenes del lienzo (12 de cada lado) y un respiro para la barra de
+        // desplazamiento superpuesta.
+        let ancho = i.scroller.width() - 28;
         if ancho > 100 && ancho != i.ancho.get() {
             i.ancho.set(ancho);
             self.disponer();
@@ -788,7 +807,7 @@ impl GaleriaLateral {
                 Pieza::Titulo(s) if r.y < arriba => Some(*s),
                 _ => None,
             })
-            .last();
+            .next_back();
         match s {
             Some(s) => {
                 let m = i.medios.borrow();
@@ -1222,10 +1241,20 @@ impl GaleriaLateral {
             let arriba = f64::from(r.y);
             let abajo = arriba + f64::from(r.h);
             let tapa = f64::from(disposicion::ALTO_TITULO);
-            if arriba - tapa < adj.value() {
-                adj.set_value((arriba - tapa - 4.0).max(0.0));
+            let valor = if arriba - tapa < adj.value() {
+                Some((arriba - tapa - 4.0).max(0.0))
             } else if abajo > adj.value() + adj.page_size() {
-                adj.set_value(abajo - adj.page_size() + 4.0);
+                Some(abajo - adj.page_size() + 4.0)
+            } else {
+                None
+            };
+            if let Some(v) = valor {
+                let tope = (f64::from(i.disp.borrow().alto) - adj.page_size()).max(0.0);
+                let v = v.min(tope);
+                if v > adj.upper() - adj.page_size() {
+                    i.desplazar.set(Some(v));
+                }
+                adj.set_value(v);
             }
             if let Some(w) = self.widget_de(p) {
                 w.grab_focus();

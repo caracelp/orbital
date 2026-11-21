@@ -28,6 +28,7 @@ pub struct Metadatos {
 
 type ModoFn = Box<dyn Fn(&str)>;
 type AbrirFn = Box<dyn Fn(&str)>;
+type CrearGaleriaFn = Box<dyn Fn(&GaleriaLateral)>;
 
 struct Inner {
     root: gtk::Box,
@@ -44,7 +45,7 @@ struct Inner {
     pendientes: RefCell<Vec<(&'static str, gtk::Box)>>,
     /// La galería lateral, creada al elegir su modo por primera vez.
     galeria: RefCell<Option<GaleriaLateral>>,
-    al_crear_galeria: RefCell<Option<Box<dyn Fn(&GaleriaLateral)>>>,
+    al_crear_galeria: RefCell<Option<CrearGaleriaFn>>,
     boton_galeria: gtk::ToggleButton,
 }
 
