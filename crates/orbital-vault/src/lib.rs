@@ -9,6 +9,7 @@
 pub mod aux_files;
 pub mod bases;
 pub mod bloques;
+pub mod carrusel;
 pub mod config;
 pub mod consulta;
 pub mod diff;

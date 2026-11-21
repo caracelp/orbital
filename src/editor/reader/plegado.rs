@@ -133,6 +133,14 @@ fn hojas(b: &Block, fija: Option<u32>, out: &mut Vec<(u32, String)>) {
         }
         BlockKind::Code { text, .. } | BlockKind::Html(text) => hoja(text.clone()),
         BlockKind::Math { tex } => hoja(tex.clone()),
+        // Un carrusel (032): sus leyendas y nombres, como los lee el lector de pantalla.
+        BlockKind::Carrusel(c) => hoja(
+            c.diapositivas
+                .iter()
+                .map(|d| d.descripcion())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         BlockKind::Table { header, rows, .. } => {
             let mut texto = String::new();
             for fila in std::iter::once(header).chain(rows) {

@@ -133,6 +133,8 @@ struct Inner {
     graficos: RefCell<String>,
     /// Los diagramas Mermaid de la nota (058), como objeto JS fuente → SVG.
     diagramas: RefCell<String>,
+    /// Los carruseles de la nota (032), como objeto JS fuente → HTML estático.
+    carruseles: RefCell<String>,
     page_ready: Cell<bool>,
 }
 
@@ -175,6 +177,7 @@ impl Visual {
             formulas: RefCell::new("{}".to_owned()),
             graficos: RefCell::new("{}".to_owned()),
             diagramas: RefCell::new("{}".to_owned()),
+            carruseles: RefCell::new("{}".to_owned()),
             page_ready: Cell::new(false),
         }))
     }
@@ -303,6 +306,7 @@ impl Visual {
                 Visual(i.clone()).apply_formulas();
                 Visual(i.clone()).apply_graficos();
                 Visual(i.clone()).apply_diagramas();
+                Visual(i.clone()).apply_carruseles();
                 if let Some(f) = i.on_ready.borrow().as_ref() {
                     f();
                 }
@@ -467,6 +471,33 @@ impl Visual {
         if self.0.page_ready.get() {
             self.apply_diagramas();
         }
+    }
+
+    /// Los carruseles de la nota (032): para cada fuente, la grilla estática de sus medios.
+    pub fn set_carruseles(&self, carruseles: &[(String, String)]) {
+        let body: Vec<String> = carruseles
+            .iter()
+            .map(|(k, v)| format!("{}: {}", js_string(k), js_string(v)))
+            .collect();
+        *self.0.carruseles.borrow_mut() = format!("{{{}}}", body.join(", "));
+        if self.0.page_ready.get() {
+            self.apply_carruseles();
+        }
+    }
+
+    fn apply_carruseles(&self) {
+        let Some(web) = self.0.web.borrow().clone() else {
+            return;
+        };
+        let script = format!(
+            "window.orbital.setCarruseles({})",
+            self.0.carruseles.borrow()
+        );
+        glib::spawn_future_local(async move {
+            let _ = web
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+        });
     }
 
     fn apply_diagramas(&self) {

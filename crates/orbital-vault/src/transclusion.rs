@@ -38,6 +38,12 @@ impl Vault {
                 BlockKind::Transclusion(t) if t.content == Embed::Pending => {
                     t.content = self.embed(&t.target, t.anchor.as_deref(), visited, depth, deps);
                 }
+                // Los medios de un carrusel (032), desde la nota que lo tiene.
+                BlockKind::Carrusel(c) => {
+                    if let Some(from) = visited.last() {
+                        self.resolver_carrusel(from, c);
+                    }
+                }
                 BlockKind::Quote(body)
                 | BlockKind::Callout { body, .. }
                 | BlockKind::Seccion { body, .. }
@@ -345,6 +351,14 @@ pub fn fingerprint(block: &Block) -> u64 {
                     }
                     acc.push(0);
                 }
+                // Un carrusel por carpeta cambia si cambia la carpeta (032).
+                BlockKind::Carrusel(c) => {
+                    for d in &c.diapositivas {
+                        acc.extend_from_slice(d.escrito.as_bytes());
+                        acc.push(u8::from(d.abs().is_some()));
+                    }
+                    acc.push(0);
+                }
                 BlockKind::Quote(body)
                 | BlockKind::Callout { body, .. }
                 | BlockKind::Seccion { body, .. }
@@ -561,6 +575,14 @@ fn blocks_html(out: &mut String, blocks: &[Block], href: &dyn Fn(&RelPath) -> St
                 out.push_str("</strong></p>");
                 blocks_html(out, body, href);
                 out.push_str("</blockquote>");
+            }
+            // Un carrusel (032) de una nota incrustada: la grilla estática.
+            BlockKind::Carrusel(c) => {
+                let src = |d: &crate::carrusel::Diapositiva| match &d.estado {
+                    crate::carrusel::Estado::Encontrado { path, .. } => Some(href(path)),
+                    _ => None,
+                };
+                out.push_str(&crate::carrusel::html(c, &src, true));
             }
             BlockKind::Code { text, .. } => {
                 out.push_str("<pre><code>");

@@ -257,6 +257,8 @@
     const hits = [];
     let n;
     while ((n = walker.nextNode())) {
+      // Los medios de un carrusel (032) los muestra su propia figura.
+      if (n.parentElement && n.parentElement.closest('code.language-carrusel, code.language-media-slider')) continue;
       for (const k of keys) if (n.data.includes(k)) hits.push([n, k]);
     }
     for (const [node, k] of hits) {
@@ -416,6 +418,8 @@
   const FIGURAS = {
     grafico: { titulo: 'Clic para editar el fuente del gráfico' },
     mermaid: { titulo: 'Clic para editar el fuente del diagrama' },
+    carrusel: { titulo: 'Clic para editar el fuente del carrusel' },
+    'media-slider': { titulo: 'Clic para editar el fuente del carrusel' },
   };
   function ponerFiguras(map, tipo) {
     if (!document.getElementById('orbital-grafico-style')) {
@@ -468,6 +472,11 @@
   }
   function setDiagramas(map) {
     ponerFiguras(map, 'mermaid');
+  }
+  // Carruseles (032): la grilla estática de sus medios (la Visual no tiene la navegación).
+  function setCarruseles(map) {
+    ponerFiguras(map, 'carrusel');
+    ponerFiguras(map, 'media-slider');
   }
 
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno
@@ -526,6 +535,7 @@
     setFormulas,
     setGraficos,
     setDiagramas,
+    setCarruseles,
     body,
     rememberSelection() {
       rememberSelection();
