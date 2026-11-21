@@ -456,6 +456,68 @@ fn galeria_grande_carga_perezosa() {
     });
 }
 
+/// «Insertar galería…»: el diálogo arma el bloque en el cursor, sin escribir YAML a mano, y
+/// la Lectura lo muestra.
+#[test]
+#[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
+fn insertar_galeria_con_el_dialogo() {
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    glib::MainContext::default().block_on(async {
+        let texto = "# Nota\n\nAntes.\nDespués.\n";
+        let (root, vault, rel) = boveda("insertar", texto, 3, 0.25, None);
+        let editor = Editor::new();
+        let window = ventana(&editor, 900, 700);
+        editor.load(vault.clone(), &vault.read_note(&rel).unwrap());
+        editor.set_view(View::Codigo);
+        let b = &editor.0.buffer;
+        let fin_antes = b.text(&b.start_iter(), &b.end_iter(), true).find("Después").unwrap();
+        b.place_cursor(&b.iter_at_offset(fin_antes as i32));
+        let d = editor.insertar_galeria().expect("el diálogo");
+        let filas: Vec<adw::ComboRow> = todos(&d)
+            .into_iter()
+            .filter_map(|w| w.downcast::<adw::ComboRow>().ok())
+            .collect();
+        assert_eq!(filas.len(), 2);
+        let lista = filas[0].model().unwrap();
+        let k = (0..lista.n_items())
+            .find(|k| {
+                lista.item(*k).and_downcast::<gtk::StringObject>().unwrap().string()
+                    == "imagenes/tesis ñ"
+            })
+            .unwrap();
+        filas[0].set_selected(k);
+        filas[1].set_selected(2);
+        todos(&d)
+            .into_iter()
+            .find_map(|w| w.downcast::<adw::SwitchRow>().ok())
+            .unwrap()
+            .set_active(true);
+        todos(&d)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Button>().ok())
+            .find(|b| b.label().as_deref() == Some("Insertar"))
+            .unwrap()
+            .emit_clicked();
+        let nuevo = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+        assert_eq!(
+            nuevo,
+            "# Nota\n\nAntes.\n\n```galeria\ncarpeta: imagenes/tesis ñ\nlayout: justificadas\nrecursivo: true\n```\n\nDespués.\n"
+        );
+        // Una sola acción de deshacer.
+        b.undo();
+        assert_eq!(b.text(&b.start_iter(), &b.end_iter(), true), texto);
+        b.redo();
+        editor.set_view(View::Lectura);
+        editor.render_now();
+        let vista = editor.0.reader.text_view().clone();
+        assert!(esperar(|| galerias(&vista).len() == 1).await);
+        assert!(esperar(|| celdas(&galerias(&vista)[0]).len() == 3).await);
+        window.destroy();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
+
 /// Una nota sin galería no decodifica ni crea nada de la galería.
 #[test]
 #[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]

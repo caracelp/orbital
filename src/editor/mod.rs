@@ -38,6 +38,7 @@ mod graficos_tests;
 mod guardado;
 pub mod html;
 mod ids_bloque;
+mod insertar_galeria;
 mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;
