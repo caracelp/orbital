@@ -552,6 +552,24 @@ fn medir_galeria_lateral() {
             "VOLVER ARRIBA (miniaturas en la caché): {:.0} ms",
             t.elapsed().as_secs_f64() * 1000.0
         );
+        // SC-002: escribir en la búsqueda, letra por letra (lo que hace el hilo de GTK por
+        // tecla: filtrar, disponer y ubicar los widgets).
+        let mut ms = Vec::new();
+        hueco.set(0.0);
+        ultimo.set(Instant::now());
+        for consulta in ["f", "fo", "fot", "foto", "foto-", "foto-1", "foto-12", "c", "ca", "cap", "capí", "capítulo 1", ""] {
+            let t = Instant::now();
+            g.buscar(consulta);
+            ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            glib::timeout_future(Duration::from_millis(40)).await;
+        }
+        ms.sort_by(f64::total_cmp);
+        println!(
+            "BUSCAR por tecla (200 medios): mediana {:.2} ms, máx {:.2} ms; mayor hueco con los widgets {:.1} ms",
+            ms[ms.len() / 2],
+            ms[ms.len() - 1],
+            hueco.get()
+        );
         // Cambiar de nota: desde `show_path` hasta que el editor tiene la nota y, con la
         // galería a la vista, hasta que la galería la muestra (reloj de 1 ms).
         let medir_cambios = async |nombre: &str, w: &Window, galeria: bool| {
