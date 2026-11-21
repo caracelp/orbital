@@ -204,6 +204,51 @@ fn galeria_cuatro_layouts_y_visor() {
         assert!(peor < Duration::from_millis(50), "{peor:?}");
         glib::timeout_future(Duration::from_millis(500)).await;
         capturar(&v, "033-visor");
+        // La información del archivo (I).
+        tecla(&c, gdk::Key::i);
+        let info = || {
+            todos(&v)
+                .into_iter()
+                .filter(|w| w.has_css_class("orbital-visor-info"))
+                .flat_map(|w| todos(&w))
+                .filter_map(|w| w.downcast::<gtk::Label>().ok())
+                .map(|l| l.label().to_string())
+                .next()
+                .unwrap_or_default()
+        };
+        assert!(
+            esperar(|| info().contains("foto-0004.png\n360 × 480 px\n")).await,
+            "{}",
+            info()
+        );
+        // Zoom con el teclado: la foto crece más que la pantalla; 0 la ajusta.
+        let foto = || {
+            todos(&v)
+                .into_iter()
+                .filter(|w| w.has_css_class("orbital-visor-zoom") && w.is_mapped())
+                .flat_map(|w| todos(&w))
+                .find_map(|w| w.downcast::<gtk::Picture>().ok())
+                .expect("la foto ampliable")
+        };
+        assert!(esperar(|| foto().paintable().is_some()).await);
+        tecla(&c, gdk::Key::plus);
+        tecla(&c, gdk::Key::plus);
+        tecla(&c, gdk::Key::plus);
+        assert!(
+            foto().width_request() > v.width() / 2,
+            "{}",
+            foto().width_request()
+        );
+        assert!(
+            foto().height_request() > v.height(),
+            "{}",
+            foto().height_request()
+        );
+        glib::timeout_future(Duration::from_millis(400)).await;
+        capturar(&v, "033-visor-zoom");
+        tecla(&c, gdk::Key::_0);
+        assert_eq!(foto().width_request(), -1);
+        tecla(&c, gdk::Key::i);
         tecla(&c, gdk::Key::Right);
         assert_eq!(contador(&c), "6 de 10");
         v.close();
