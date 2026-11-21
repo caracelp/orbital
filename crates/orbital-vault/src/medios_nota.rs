@@ -430,6 +430,36 @@ pub fn extraer(fuente: &str) -> MediosNota {
     m
 }
 
+/// Dónde está ahora el embed de `u` en `fuente` (la nota pudo cambiar después de armar la
+/// galería): el renglón y los bytes del embed dentro de él (`None` en un bloque). Si el renglón
+/// guardado ya no lo tiene, el más cercano que lo tenga; `None` si no está en ninguno.
+pub fn ubicar(fuente: &str, u: &Ubicacion) -> Option<(usize, Option<(usize, usize)>)> {
+    let en = |r: &str| -> Option<Option<(usize, usize)>> {
+        let r = r.strip_suffix('\r').unwrap_or(r);
+        match u.rango {
+            None => (r == u.texto).then_some(None),
+            Some((a, z)) if r.get(a..z) == Some(u.texto.as_str()) => Some(Some((a, z))),
+            Some(_) => r.find(&u.texto).map(|a| Some((a, a + u.texto.len()))),
+        }
+    };
+    let mut mejor: Option<(usize, usize, Option<(usize, usize)>)> = None;
+    for (n, r) in fuente.split('\n').enumerate() {
+        if !r.contains(u.texto.as_str()) {
+            continue;
+        }
+        if let Some(rango) = en(r) {
+            let d = n.abs_diff(u.linea);
+            if mejor.is_none_or(|(md, _, _)| d < md) {
+                mejor = Some((d, n, rango));
+            }
+            if d == 0 {
+                break;
+            }
+        }
+    }
+    mejor.map(|(_, n, r)| (n, r))
+}
+
 /// Deja solo los grupos con medios (`con_bloques`: los de los bloques sin resolver también
 /// quedan) y renumera.
 fn podar(m: &mut MediosNota, con_bloques: bool) {
@@ -607,6 +637,25 @@ mod tests {
         assert_eq!(m.bloques[1].ubicacion.linea, 6);
         // Los embeds del encabezado quedan juntos aunque haya un bloque en el medio.
         assert!(m.medios.iter().all(|x| x.seccion == 0));
+    }
+
+    #[test]
+    fn ubica_el_embed_aunque_la_nota_cambie() {
+        let antes = "# A\n![[x.png]] y ![[x.png]]\n```galeria\ncarpeta: f\n```\n";
+        let m = extraer(antes);
+        let u = &m.medios[1].ubicacion;
+        assert_eq!(ubicar(antes, u), Some((1, Some((13, 23)))));
+        // Dos renglones nuevos arriba: el mismo embed, dos renglones más abajo.
+        let despues = format!("intro\n\n{antes}");
+        assert_eq!(ubicar(&despues, u), Some((3, Some((13, 23)))));
+        let b = Ubicacion {
+            linea: 2,
+            lineas: 3,
+            rango: None,
+            texto: "```galeria".into(),
+        };
+        assert_eq!(ubicar(&despues, &b), Some((4, None)));
+        assert_eq!(ubicar("nada", u), None);
     }
 
     #[test]

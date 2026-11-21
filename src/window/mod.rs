@@ -36,6 +36,7 @@ mod enlaces;
 mod esqueleto;
 mod explorador;
 mod externos;
+mod galeria_lateral;
 mod historial;
 mod izquierda;
 mod listas;

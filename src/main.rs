@@ -6,6 +6,7 @@ mod editor;
 mod export;
 mod formulas;
 mod galeria;
+mod galeria_lateral;
 mod graficos;
 mod grafo;
 mod guardar_en;

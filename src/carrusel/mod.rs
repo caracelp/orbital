@@ -69,6 +69,9 @@ struct Inner {
     zoom: RefCell<Option<Rc<zoom::Zoom>>>,
     /// El panel de información (solo a pantalla completa).
     info: Option<Info>,
+    /// «Ir al embed» (solo en el visor abierto desde la galería lateral, 034).
+    embed: Option<gtk::Button>,
+    al_embed: RefCell<Option<Rc<dyn Fn(usize)>>>,
 }
 
 /// El panel con el nombre, las medidas, el tamaño y la fecha del archivo vigente.
@@ -285,6 +288,19 @@ impl Vista {
         if let Some(i) = &info {
             barra.append(&i.boton);
         }
+        let embed = (modo == Modo::PantallaCompleta).then(|| {
+            let b = gtk::Button::builder()
+                .icon_name("mark-location-symbolic")
+                .tooltip_text("Ir al embed (E)")
+                .css_classes(["flat"])
+                .visible(false)
+                .build();
+            b.update_property(&[gtk::accessible::Property::Label(
+                "Ir al embed en la nota (E)",
+            )]);
+            barra.append(&b);
+            b
+        });
         barra.append(&completa);
 
         // Las miniaturas, armadas sin imágenes (se piden al mostrarse).
@@ -349,6 +365,8 @@ impl Vista {
             tapado: Cell::new(false),
             zoom: RefCell::new(None),
             info,
+            embed,
+            al_embed: RefCell::new(None),
             c,
         }));
         if modo == Modo::EnLinea {
@@ -405,6 +423,14 @@ impl Vista {
             info.boton.connect_toggled(move |_| {
                 if let Some(i) = d.upgrade() {
                     Vista(i).mostrar_info();
+                }
+            });
+        }
+        if let Some(b) = &i.embed {
+            let d = debil();
+            b.connect_clicked(move |_| {
+                if let Some(i) = d.upgrade() {
+                    Vista(i).ir_al_embed();
                 }
             });
         }
@@ -560,6 +586,10 @@ impl Vista {
                     if let Some(info) = &self.0.info {
                         info.boton.set_active(!info.boton.is_active());
                     }
+                    return glib::Propagation::Stop;
+                }
+                Key::e | Key::E if self.0.al_embed.borrow().is_some() => {
+                    self.ir_al_embed();
                     return glib::Propagation::Stop;
                 }
                 Key::p | Key::P if self.0.pausa.is_some() => {
@@ -944,6 +974,16 @@ impl Vista {
         });
     }
 
+    /// «Ir al embed»: avisa la diapositiva vigente y cierra el visor.
+    fn ir_al_embed(&self) {
+        let f = self.0.al_embed.borrow().clone();
+        let Some(f) = f else { return };
+        f(self.0.indice.get());
+        if let Some(v) = self.0.raiz().root().and_downcast::<gtk::Window>() {
+            v.close();
+        }
+    }
+
     /// Lo que corre al cerrar la ventana del visor (después de soltar su reloj).
     fn al_cerrar(&self, f: impl Fn() + 'static) {
         let Some(ventana) = self.0.raiz().root().and_downcast::<gtk::Window>() else {
@@ -1152,6 +1192,28 @@ pub fn abrir_visor(
     al_cerrar: impl Fn(usize) + 'static,
 ) {
     let v = visor(desde, c, indice, abrir, pausado);
+    let c = v.clone();
+    v.al_cerrar(move || al_cerrar(c.indice()));
+}
+
+/// Como [`abrir_visor`], con el botón y la tecla E de «Ir al embed» (la galería lateral, 034):
+/// `ir_al_embed` recibe la diapositiva vigente antes de que el visor se cierre.
+pub fn abrir_visor_con_embed(
+    desde: &gtk::Box,
+    c: Rc<Carrusel>,
+    indice: usize,
+    abrir: AbrirFn,
+    al_cerrar: impl Fn(usize) + 'static,
+    ir_al_embed: Rc<dyn Fn(usize)>,
+) {
+    let v = visor(desde, c, indice, abrir, true);
+    if let Some(b) = &v.0.embed {
+        b.set_visible(true);
+    }
+    *v.0.al_embed.borrow_mut() = Some(ir_al_embed);
+    v.0.raiz().update_property(&[gtk::accessible::Property::Description(
+        "Flechas para pasar de foto; Inicio y Fin; más, menos y cero para el zoom; I para la información; E para ir al embed; Escape para salir",
+    )]);
     let c = v.clone();
     v.al_cerrar(move || al_cerrar(c.indice()));
 }

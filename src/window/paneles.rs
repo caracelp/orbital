@@ -26,6 +26,11 @@ impl Window {
         if !i.right_split.shows_sidebar() {
             return;
         }
+        // Galería (034): solo su lista; los otros modos se ponen al día al volver a elegirlos.
+        if i.panel.modo() == "galeria" {
+            self.refresh_galeria_lateral();
+            return;
+        }
         let Some(entry) = i.current_entry.borrow().clone() else {
             i.panel.set_nota(None);
             i.panel
