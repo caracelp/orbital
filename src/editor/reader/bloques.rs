@@ -216,6 +216,7 @@ impl Reader {
                 self.diagrama(s, end, text, &base)
             }
             BlockKind::Carrusel(c) => self.carrusel(s, end, c, &base),
+            BlockKind::Galeria(g) => self.galeria(s, end, g, &base),
             BlockKind::Code { lang, text } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));

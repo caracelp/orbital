@@ -166,7 +166,9 @@ fn decodificar(path: &Path, ancho: i32, alto: i32, ajuste: Ajuste) -> Option<Pix
         Pixbuf::from_file_at_scale(path, ancho, alto, true).ok()?
     } else {
         let escala = match ajuste {
-            Ajuste::Contener => (f64::from(ancho) / f64::from(w)).min(f64::from(alto) / f64::from(h)),
+            Ajuste::Contener => {
+                (f64::from(ancho) / f64::from(w)).min(f64::from(alto) / f64::from(h))
+            }
             Ajuste::Cubrir => (f64::from(ancho) / f64::from(w)).max(f64::from(alto) / f64::from(h)),
         };
         if escala >= 1.0 {
@@ -197,18 +199,15 @@ fn textura(p: Pixeles) -> gdk::Texture {
     gdk::MemoryTexture::new(p.ancho, p.alto, formato, &p.bytes, p.fila).upcast()
 }
 
-/// La imagen ya decodificada para entrar en ese tamaño máximo, si está en la caché.
-pub fn en_cache(path: &Path, ancho: i32, alto: i32) -> Option<gdk::Texture> {
-    en_cache_con(path, ancho, alto, Ajuste::Contener)
-}
-
-/// Como [`en_cache`], con el ajuste dado.
+/// La imagen ya decodificada para entrar (o cubrir, según `ajuste`) ese tamaño, si está en la
+/// caché.
 pub fn en_cache_con(path: &Path, ancho: i32, alto: i32, ajuste: Ajuste) -> Option<gdk::Texture> {
     let (ancho, alto) = acotar(ancho, alto);
     CACHE.with_borrow_mut(|c| {
-        let n = c.orden.iter().position(|(k, _, _)| {
-            k.0 == path && k.1 == ancho && k.2 == alto && k.3 == ajuste
-        })?;
+        let n = c
+            .orden
+            .iter()
+            .position(|(k, _, _)| k.0 == path && k.1 == ancho && k.2 == alto && k.3 == ajuste)?;
         // Al frente: la más reciente.
         let e = c.orden.remove(n)?;
         let t = e.1.clone();

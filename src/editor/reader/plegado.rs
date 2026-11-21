@@ -141,6 +141,14 @@ fn hojas(b: &Block, fija: Option<u32>, out: &mut Vec<(u32, String)>) {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        // Una galería (033): los nombres de sus archivos.
+        BlockKind::Galeria(g) => hoja(
+            g.elementos
+                .iter()
+                .map(|e| e.nombre())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         BlockKind::Table { header, rows, .. } => {
             let mut texto = String::new();
             for fila in std::iter::once(header).chain(rows) {

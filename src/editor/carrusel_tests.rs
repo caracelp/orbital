@@ -13,7 +13,7 @@ use gtk::{gdk, glib};
 use orbital_vault::RelPath;
 
 /// Una imagen PNG de prueba con un degradé del color dado.
-fn png(path: &std::path::Path, ancho: i32, alto: i32, color: [u8; 3]) {
+pub(super) fn png(path: &std::path::Path, ancho: i32, alto: i32, color: [u8; 3]) {
     let mut px = Vec::with_capacity((ancho * alto * 3) as usize);
     for y in 0..alto {
         for x in 0..ancho {
@@ -87,7 +87,7 @@ fn boveda(
     )
 }
 
-async fn esperar(mut f: impl FnMut() -> bool) -> bool {
+pub(super) async fn esperar(mut f: impl FnMut() -> bool) -> bool {
     for _ in 0..240 {
         if f() {
             return true;
@@ -106,7 +106,7 @@ fn descendientes(w: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
     }
 }
 
-fn todos(w: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
+pub(super) fn todos(w: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
     let mut v = Vec::new();
     descendientes(w.as_ref(), &mut v);
     v
@@ -119,7 +119,7 @@ fn carruseles(w: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
         .collect()
 }
 
-fn boton(w: &gtk::Widget, tooltip: &str) -> gtk::Button {
+pub(super) fn boton(w: &gtk::Widget, tooltip: &str) -> gtk::Button {
     todos(w)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Button>().ok())
@@ -127,7 +127,7 @@ fn boton(w: &gtk::Widget, tooltip: &str) -> gtk::Button {
         .unwrap_or_else(|| panic!("botón «{tooltip}»"))
 }
 
-fn contador(w: &gtk::Widget) -> String {
+pub(super) fn contador(w: &gtk::Widget) -> String {
     todos(w)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk::Label>().ok())
@@ -158,7 +158,7 @@ fn leyenda_visible(w: &gtk::Widget) -> Option<String> {
 }
 
 /// Manda una tecla al controlador de teclado del carrusel.
-fn tecla(w: &gtk::Widget, k: gdk::Key) -> bool {
+pub(super) fn tecla(w: &gtk::Widget, k: gdk::Key) -> bool {
     let ctrls = w.observe_controllers();
     for n in 0..ctrls.n_items() {
         if let Some(c) = ctrls.item(n).and_downcast::<gtk::EventControllerKey>() {
@@ -175,7 +175,7 @@ use gtk::glib::translate::IntoGlib;
 
 const NOTA: &str = "# Carrusel\n\nAntes.\n\n```media-slider\n---\ncarouselShowThumbnails: true\nthumbnailPosition: bottom\nenhancedView: true\n---\n![[foto-00.png|Corte sagital]]\n![[foto-01.png]]\n![[fotos ñ/foto-02.png|Vista lateral]]\n```\n\nDespués.\n";
 
-fn ventana(editor: &Editor, ancho: i32, alto: i32) -> gtk::Window {
+pub(super) fn ventana(editor: &Editor, ancho: i32, alto: i32) -> gtk::Window {
     let tostadas = adw::ToastOverlay::new();
     tostadas.set_child(Some(editor.widget()));
     let w = gtk::Window::builder()

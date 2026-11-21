@@ -514,15 +514,20 @@ impl Vista {
     /// caché.
     fn celda(&self, k: usize, rect: Rect) -> Celda {
         let i = &self.0;
-        let c = i.libres.borrow_mut().pop().unwrap_or_else(|| self.celda_nueva());
+        let c = i
+            .libres
+            .borrow_mut()
+            .pop()
+            .unwrap_or_else(|| self.celda_nueva());
         let el = &i.g.elementos[k];
         let total = i.g.elementos.len();
         let tipo = el.clase.nombre();
-        c.boton.update_property(&[gtk::accessible::Property::Label(&format!(
-            "{tipo} {} de {total}: {}",
-            k + 1,
-            el.nombre()
-        ))]);
+        c.boton
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "{tipo} {} de {total}: {}",
+                k + 1,
+                el.nombre()
+            ))]);
         c.boton.set_tooltip_text(Some(el.nombre()));
         // SAFETY: la clave es propia de este módulo y solo se guarda un `usize`.
         unsafe { c.boton.set_data("orbital-galeria-indice", k) };
@@ -611,10 +616,11 @@ impl Vista {
         let i = &self.0;
         let e = i.raiz().scale_factor().max(1);
         while i.en_vuelo.get() < EN_VUELO {
-            let Some(k) = (!i.cola.borrow().is_empty()).then(|| i.cola.borrow_mut().remove(0))
-            else {
-                return;
+            let siguiente = {
+                let mut cola = i.cola.borrow_mut();
+                (!cola.is_empty()).then(|| cola.remove(0))
             };
+            let Some(k) = siguiente else { return };
             let Some(rect) = self.rect(k) else { continue };
             let (w, h) = medida_pedida(rect, e);
             {
@@ -778,7 +784,9 @@ impl Vista {
             Key::Up | Key::KP_Up => mover(Direccion::Arriba),
             Key::Down | Key::KP_Down => mover(Direccion::Abajo),
             Key::Home | Key::KP_Home => Some(r.start),
-            Key::End | Key::KP_End => Some(r.start + i.disp.borrow().celdas.len().saturating_sub(1)),
+            Key::End | Key::KP_End => {
+                Some(r.start + i.disp.borrow().celdas.len().saturating_sub(1))
+            }
             Key::Page_Down | Key::KP_Page_Down if i.paginas.is_some() => {
                 self.ir_a_pagina(i.pagina.get() + 1, true);
                 return glib::Propagation::Stop;
@@ -846,27 +854,20 @@ impl Vista {
             .get_or_insert_with(|| Rc::new(i.g.a_carrusel(i.g.elementos.len() <= MINIATURAS_HASTA)))
             .clone();
         let d = Rc::downgrade(&self.0);
-        crate::carrusel::abrir_visor(
-            i.raiz().upcast_ref(),
-            c,
-            k,
-            i.abrir.clone(),
-            true,
-            move |n| {
-                let Some(i) = d.upgrade() else { return };
-                let v = Vista(i);
-                let p = v.0.g.opciones.paginar.map_or(0, |por| n / por.max(1));
-                if p != v.0.pagina.get() {
-                    v.ir_a_pagina(p, false);
+        crate::carrusel::abrir_visor(&i.raiz(), c, k, i.abrir.clone(), true, move |n| {
+            let Some(i) = d.upgrade() else { return };
+            let v = Vista(i);
+            let p = v.0.g.opciones.paginar.map_or(0, |por| n / por.max(1));
+            if p != v.0.pagina.get() {
+                v.ir_a_pagina(p, false);
+            }
+            let d = Rc::downgrade(&v.0);
+            glib::idle_add_local_once(move || {
+                if let Some(i) = d.upgrade() {
+                    Vista(i).enfocar(n, true);
                 }
-                let d = Rc::downgrade(&v.0);
-                glib::idle_add_local_once(move || {
-                    if let Some(i) = d.upgrade() {
-                        Vista(i).enfocar(n, true);
-                    }
-                });
-            },
-        );
+            });
+        });
     }
 }
 

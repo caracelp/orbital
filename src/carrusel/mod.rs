@@ -743,61 +743,40 @@ impl Vista {
         }
         self.detener();
         self.0.tapado.set(true);
-        let (completa, raiz_completa) = Vista::nueva(
-            self.0.c.clone(),
-            Modo::PantallaCompleta,
-            self.0.abrir.clone(),
-            self.0.indice.get(),
-            0,
-        );
-        completa.0.pausado.set(self.0.pausado.get());
-        let tostadas = adw::ToastOverlay::new();
-        tostadas.set_child(Some(&raiz_completa));
-        let ventana = gtk::Window::builder()
-            .title("Carrusel")
-            .modal(true)
-            .child(&tostadas)
-            .css_classes(["orbital-carrusel-ventana"])
-            .build();
-        if let Some(madre) = self.0.raiz().root().and_downcast::<gtk::Window>() {
-            ventana.set_transient_for(Some(&madre));
-            ventana.set_application(madre.application().as_ref());
-        }
-        let esc = gtk::EventControllerKey::new();
-        {
-            let v = ventana.downgrade();
-            esc.connect_key_pressed(move |_, k, _, _| {
-                if k == gdk::Key::Escape
-                    && let Some(v) = v.upgrade()
-                {
-                    v.close();
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            });
-        }
-        ventana.add_controller(esc);
         // Al cerrar, la nota queda en la diapositiva en que se salió y con el foco en el carrusel.
-        {
-            let en_linea = Rc::downgrade(&self.0);
-            let c = completa.clone();
-            ventana.connect_close_request(move |_| {
-                if let Some(i) = en_linea.upgrade() {
-                    let v = Vista(i);
-                    v.0.tapado.set(false);
-                    v.0.pausado.set(c.0.pausado.get());
-                    v.mostrar_pausa();
-                    v.ir_a(c.indice());
-                    v.0.raiz().grab_focus();
-                    v.programar();
-                }
-                c.detener();
-                glib::Propagation::Proceed
-            });
-        }
-        ventana.fullscreen();
-        ventana.present();
-        completa.0.raiz().grab_focus();
+        let en_linea = Rc::downgrade(&self.0);
+        let completa = visor(
+            &self.0.raiz(),
+            self.0.c.clone(),
+            self.0.indice.get(),
+            self.0.abrir.clone(),
+            self.0.pausado.get(),
+        );
+        let c = completa.clone();
+        completa.al_cerrar(move || {
+            if let Some(i) = en_linea.upgrade() {
+                let v = Vista(i);
+                v.0.tapado.set(false);
+                v.0.pausado.set(c.0.pausado.get());
+                v.mostrar_pausa();
+                v.ir_a(c.indice());
+                v.0.raiz().grab_focus();
+                v.programar();
+            }
+        });
+    }
+
+    /// Lo que corre al cerrar la ventana del visor (después de soltar su reloj).
+    fn al_cerrar(&self, f: impl Fn() + 'static) {
+        let Some(ventana) = self.0.raiz().root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        let c = self.clone();
+        ventana.connect_close_request(move |_| {
+            c.detener();
+            f();
+            glib::Propagation::Proceed
+        });
     }
 
     /// La usuaria hizo algo en el carrusel: el pase automático se detiene hasta que lo reanude
@@ -941,6 +920,62 @@ impl Vista {
             }
         });
     }
+}
+
+/// El visor a pantalla completa (compartido por el carrusel y la galería de la 033): una
+/// ventana propia, modal y a pantalla completa, con otra instancia del carrusel que empieza en
+/// `indice`. La ventana principal nunca pasa a pantalla completa (GTK 4.24 le pierde el árbol
+/// AT-SPI al salir).
+fn visor(desde: &gtk::Box, c: Rc<Carrusel>, indice: usize, abrir: AbrirFn, pausado: bool) -> Vista {
+    let (completa, raiz_completa) = Vista::nueva(c, Modo::PantallaCompleta, abrir, indice, 0);
+    completa.0.pausado.set(pausado);
+    completa.mostrar_pausa();
+    let tostadas = adw::ToastOverlay::new();
+    tostadas.set_child(Some(&raiz_completa));
+    let ventana = gtk::Window::builder()
+        .title("Visor")
+        .modal(true)
+        .child(&tostadas)
+        .css_classes(["orbital-carrusel-ventana"])
+        .build();
+    if let Some(madre) = desde.root().and_downcast::<gtk::Window>() {
+        ventana.set_transient_for(Some(&madre));
+        ventana.set_application(madre.application().as_ref());
+    }
+    let esc = gtk::EventControllerKey::new();
+    {
+        let v = ventana.downgrade();
+        esc.connect_key_pressed(move |_, k, _, _| {
+            if k == gdk::Key::Escape
+                && let Some(v) = v.upgrade()
+            {
+                v.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    ventana.add_controller(esc);
+    ventana.fullscreen();
+    ventana.present();
+    completa.0.raiz().grab_focus();
+    completa
+}
+
+/// Abre el visor a pantalla completa desde otro widget (la galería, 033) en la diapositiva
+/// `indice`. `pausado`: el pase automático espera a que se lo pida. `al_cerrar` recibe la
+/// diapositiva en que se salió.
+pub fn abrir_visor(
+    desde: &gtk::Box,
+    c: Rc<Carrusel>,
+    indice: usize,
+    abrir: AbrirFn,
+    pausado: bool,
+    al_cerrar: impl Fn(usize) + 'static,
+) {
+    let v = visor(desde, c, indice, abrir, pausado);
+    let c = v.clone();
+    v.al_cerrar(move || al_cerrar(c.indice()));
 }
 
 /// Un canal de un solo uso sobre el hilo de GTK.

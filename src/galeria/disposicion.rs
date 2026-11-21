@@ -297,9 +297,25 @@ mod tests {
         let d = pedido(Layout::Miniaturas, 800, &[None; 11]);
         // (800 + 6) / 156 = 5 columnas de (800 - 24) / 5 = 155.
         assert_eq!(d.celdas.len(), 11);
-        assert_eq!(d.celdas[0], Rect { x: 0, y: 0, w: 155, h: 155 });
+        assert_eq!(
+            d.celdas[0],
+            Rect {
+                x: 0,
+                y: 0,
+                w: 155,
+                h: 155
+            }
+        );
         assert_eq!(d.celdas[4].x, 4 * 161);
-        assert_eq!(d.celdas[5], Rect { x: 0, y: 161, w: 155, h: 155 });
+        assert_eq!(
+            d.celdas[5],
+            Rect {
+                x: 0,
+                y: 161,
+                w: 155,
+                h: 155
+            }
+        );
         assert_eq!(d.alto, 3 * 161 - 6);
         for c in &d.celdas {
             assert!(c.x + c.w <= 800);
@@ -311,8 +327,24 @@ mod tests {
         let props = [Some(1.0), Some(2.0), Some(0.5), Some(1.0), Some(2.0)];
         let d = pedido(Layout::Masonry, 640, &props);
         // (640 + 6) / 216 = 2 columnas de 317.
-        assert_eq!(d.celdas[0], Rect { x: 0, y: 0, w: 317, h: 317 });
-        assert_eq!(d.celdas[1], Rect { x: 323, y: 0, w: 317, h: 159 });
+        assert_eq!(
+            d.celdas[0],
+            Rect {
+                x: 0,
+                y: 0,
+                w: 317,
+                h: 317
+            }
+        );
+        assert_eq!(
+            d.celdas[1],
+            Rect {
+                x: 323,
+                y: 0,
+                w: 317,
+                h: 159
+            }
+        );
         // La tercera va a la columna más baja (la segunda).
         assert_eq!(d.celdas[2].x, 323);
         assert_eq!(d.celdas[2].y, 165);
@@ -380,7 +412,11 @@ mod tests {
         assert_eq!(vecina(&d.celdas, 9, Direccion::Abajo), Some(10));
         assert_eq!(vecina(&d.celdas, 10, Direccion::Abajo), None);
         assert_eq!(vecina(&d.celdas, 10, Direccion::Derecha), None);
-        let m = pedido(Layout::Masonry, 640, &[Some(1.0), Some(2.0), Some(0.5), Some(1.0)]);
+        let m = pedido(
+            Layout::Masonry,
+            640,
+            &[Some(1.0), Some(2.0), Some(0.5), Some(1.0)],
+        );
         // Abajo de la primera (columna izquierda) está la cuarta, en la misma columna.
         assert_eq!(vecina(&m.celdas, 0, Direccion::Abajo), Some(3));
     }

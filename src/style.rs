@@ -204,7 +204,14 @@ fn css() -> String {
          .orbital-carrusel-leyenda { padding: 4px 10px; border-radius: 6px; }\n\
          .orbital-carrusel-miniatura { padding: 2px; border-radius: 6px; border: 2px solid transparent; }\n\
          .orbital-carrusel-miniatura:checked { border-color: var(--accent-color); background: transparent; }\n\
-         .orbital-carrusel-marcador { background: alpha(currentColor, 0.08); border-radius: 4px; }\n",
+         .orbital-carrusel-marcador { background: alpha(currentColor, 0.08); border-radius: 4px; }\n\
+         .orbital-galeria-celda { padding: 0; min-width: 0; min-height: 0; border-radius: 6px; background: alpha(currentColor, 0.08); }\n\
+         .orbital-galeria-celda:focus-visible { outline: 3px solid var(--accent-color); outline-offset: 1px; }\n\
+         .orbital-galeria-celda:hover { filter: brightness(1.08); }\n\
+         .orbital-galeria-video { background: #000000; }\n\
+         .orbital-galeria-marca { padding: 10px; }\n\
+         .orbital-galeria-vacia { background: var(--card-bg-color); border-radius: 10px; padding: 14px; }\n\
+         .orbital-visor-info { background: rgba(0,0,0,0.75); color: #ffffff; border-radius: 10px; padding: 12px 16px; }\n",
     );
     out.push_str(&props_css());
     out.push_str(&v13_css());
