@@ -1,0 +1,16 @@
+[package]
+name = "orbital-diagramas"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Diagramas Mermaid de Orbital (058): SVG con los colores del tema e imagen, sin GTK."
+publish = false
+
+# Motor: `mermaid-svg` (MIT, Rust puro, sin dependencias salvo `thiserror`). Imagen: `resvg`
+# (Apache-2.0/MIT), que comparte `tiny-skia`, `fontdb` y `ttf-parser` con el motor de fórmulas.
+# Sin las fuentes del sistema enteras (1000 archivos): solo las de la interfaz, que se buscan con
+# fontconfig (ya cargado por GTK). La comparación con los otros motores está en
+# specs/058-mermaid/quickstart.md.
+[dependencies]
+mermaid-svg = "0.7.0"
+resvg = { version = "0.45.1", default-features = false, features = ["text"] }

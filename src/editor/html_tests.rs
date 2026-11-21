@@ -641,6 +641,140 @@ fn exportar_graficos_en_webkit() {
     });
 }
 
+/// 058: en Visual, cada `pre > code.language-mermaid` se ve como su SVG (texto en
+/// `currentColor`) en una figura no editable; uno con error, con su motivo. Los gráficos de la
+/// misma página no se pisan con los diagramas. Al guardar, el disco conserva el fuente.
+/// `cargo test --bin orbital webkit_diagramas -- --ignored --nocapture`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn webkit_diagramas() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let root = std::env::temp_dir().join(format!("orbital-058-html-ñ-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        let source = "<!doctype html><html><head>\n<script type=\"application/yaml\">\ntype: sintesis\n</script>\n</head><body><p>Antes.</p>\n<pre><code class=\"language-mermaid\">graph TD\n    A[Año] --&gt; B{¿Sí?}\n    B --&gt;|No| C[Fin]</code></pre>\n<pre><code class=\"language-mermaid\">graph TD\n    A --&gt;&gt; B[</code></pre>\n<pre><code class=\"language-grafico\">y = x^2</code></pre>\n<p>Después.</p></body></html>";
+        fs::write(root.join("wiki/d.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/d.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .title("Orbital — prueba aislada 058 diagramas")
+            .default_width(1000)
+            .default_height(800)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let figuras = "document.querySelectorAll('[data-orbital-tipo=\"mermaid\"]')";
+        let graficos = "document.querySelectorAll('[data-orbital-tipo=\"grafico\"]')";
+        for _ in 0..60 {
+            if eval(&web, &format!("{figuras}.length + {graficos}.length")).await == "3" {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(eval(&web, &format!("{figuras}.length")).await, "2");
+        assert_eq!(eval(&web, &format!("{graficos}.length")).await, "1");
+        assert_eq!(
+            eval(
+                &web,
+                &format!("{figuras}[0].querySelector('svg').getAttribute('aria-label')")
+            )
+            .await,
+            "Diagrama Mermaid: de flujo"
+        );
+        let error = eval(&web, &format!("{figuras}[1].textContent")).await;
+        assert!(error.contains("Error en el diagrama (renglón 2)"), "{error}");
+        assert_eq!(
+            eval(&web, "getComputedStyle(document.querySelectorAll('pre')[0]).display").await,
+            "none"
+        );
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            glib::timeout_future(Duration::from_millis(300)).await;
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::Visible,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("058-visual-html.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        eval(&web,
+            "const p = document.querySelectorAll('body > p')[1]; getSelection().selectAllChildren(p); document.execCommand('insertText', false, 'Editado.')").await;
+        glib::timeout_future(Duration::from_millis(600)).await;
+        editor.flush().await;
+        let saved = fs::read_to_string(root.join("wiki/d.html")).unwrap();
+        assert!(saved.contains("Editado."), "{saved}");
+        assert!(saved.contains("<code class=\"language-mermaid\">graph TD\n    A[Año] --&gt; B{¿Sí?}"), "{saved}");
+        assert!(!saved.contains("<svg"), "{saved}");
+        assert!(!saved.contains("data-orbital-tipo"), "{saved}");
+        assert!(!saved.contains("<figure"), "{saved}");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
+
+/// 058: lo exportado muestra los diagramas como SVG de papel en WebKit (lo mismo que se imprime
+/// a PDF). Con `ORBITAL_CAPTURA_DIR`, guarda `058-exportado.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn exportar_diagramas_en_webkit() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let nota = crate::editor::diagramas_tests::NOTA;
+        let html = crate::export::html_md(nota, "diagramas.md");
+        assert_eq!(
+            html.matches("<figure class=\"diagrama\"><svg").count(),
+            9,
+            "{html}"
+        );
+        assert!(html.contains("class=\"grafico-error\""), "{html}");
+        let web = crate::html_view::new_view(None);
+        let window = gtk::Window::builder()
+            .default_width(860)
+            .default_height(900)
+            .child(&web)
+            .build();
+        window.present();
+        web.load_html(&crate::html_view::with_csp(&html), None);
+        for _ in 0..100 {
+            if !web.is_loading() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(50)).await;
+        }
+        glib::timeout_future(Duration::from_millis(400)).await;
+        // Cada SVG tiene tamaño en la página (no quedó un hueco).
+        let anchos = eval(
+            &web,
+            "Array.from(document.querySelectorAll('figure.diagrama svg')).map(s => s.getBoundingClientRect().width > 50 && s.getBoundingClientRect().height > 50).every(x => x)",
+        )
+        .await;
+        assert_eq!(anchos, "true");
+        if let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") {
+            let t = web
+                .snapshot_future(
+                    webkit6::SnapshotRegion::FullDocument,
+                    webkit6::SnapshotOptions::NONE,
+                )
+                .await
+                .unwrap();
+            let png = std::path::Path::new(&dir).join("058-exportado.png");
+            t.save_to_png(&png).unwrap();
+            println!("Captura: {}", png.display());
+        }
+        window.close();
+    });
+}
+
 /// 050: lo exportado (007) muestra las fórmulas como SVG en WebKit, lo mismo que se imprime a
 /// PDF. Con `ORBITAL_CAPTURA_DIR`, guarda `050-exportado.png`.
 #[test]

@@ -59,6 +59,13 @@ pub fn decodificar(s: &str) -> String {
 
 /// Los gráficos de un HTML, en orden.
 pub fn graficos(html: &str) -> Vec<GraficoHtml> {
+    bloques(html, "grafico")
+}
+
+/// Los `<pre><code class="language-{lang}">` de un HTML, en orden (los gráficos y, desde la 058,
+/// los diagramas Mermaid). `lang` va en minúsculas.
+pub fn bloques(html: &str, lang: &str) -> Vec<GraficoHtml> {
+    let clases = [format!("language-{lang}"), format!("lang-{lang}")];
     let mut out = Vec::new();
     let bajo = html.to_ascii_lowercase();
     let mut desde = 0;
@@ -75,7 +82,7 @@ pub fn graficos(html: &str) -> Vec<GraficoHtml> {
             continue;
         };
         let tag = &pre[c..c + cierre_tag];
-        let es = tag.contains("language-grafico") || tag.contains("lang-grafico");
+        let es = clases.iter().any(|c| tiene_clase(tag, c));
         if !es {
             desde = fin_pre;
             continue;
@@ -108,9 +115,25 @@ pub fn graficos(html: &str) -> Vec<GraficoHtml> {
     out
 }
 
+/// `clase` está en `tag` como palabra entera (`language-grafico` no es `language-grafico3d`).
+fn tiene_clase(tag: &str, clase: &str) -> bool {
+    tag.match_indices(clase).any(|(i, _)| {
+        let antes = tag[..i].chars().next_back();
+        let despues = tag[i + clase.len()..].chars().next();
+        !antes.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            && !despues.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    })
+}
+
 /// Cambia cada gráfico de `html` por lo que devuelve `f` con su fuente.
-pub fn reemplazar(html: &str, mut f: impl FnMut(&str) -> String) -> String {
-    let gs = graficos(html);
+pub fn reemplazar(html: &str, f: impl FnMut(&str) -> String) -> String {
+    reemplazar_bloques(html, "grafico", f)
+}
+
+/// Cambia cada `<pre><code class="language-{lang}">` de `html` por lo que devuelve `f` con su
+/// fuente.
+pub fn reemplazar_bloques(html: &str, lang: &str, mut f: impl FnMut(&str) -> String) -> String {
+    let gs = bloques(html, lang);
     if gs.is_empty() {
         return html.to_owned();
     }
@@ -139,5 +162,11 @@ mod tests {
         let r = reemplazar(html, |f| format!("[{}]", f.len()));
         assert!(r.contains("</pre>[20]<p>b</p>"), "{r}");
         assert_eq!(reemplazar("<p>sin</p>", |_| String::new()), "<p>sin</p>");
+        // Otros lenguajes (058) y la clase entera.
+        let m = "<pre><code class=\"language-mermaid\">pie\n\"A\" : 1</code></pre><pre><code class=\"language-mermaidx\">no</code></pre>";
+        let b = bloques(m, "mermaid");
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].fuente, "pie\n\"A\" : 1");
+        assert!(graficos(m).is_empty());
     }
 }

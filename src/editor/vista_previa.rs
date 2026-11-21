@@ -1,7 +1,8 @@
 //! Vista previa de fórmulas en Código (050): con el cursor dentro de una fórmula (`$…$`,
 //! `$$…$$`, ` ```math `), un globito encima muestra la fórmula dibujada, o el motivo si tiene un
 //! error. No toma el foco ni las teclas (como el autocompletado) y se arma recién con la primera
-//! fórmula. Dentro de un ` ```grafico ` (052) muestra el gráfico estático (o el error).
+//! fórmula. Dentro de un ` ```grafico ` (052) muestra el gráfico estático (o el error); dentro de
+//! un ` ```mermaid ` (058), el diagrama achicado (o el error).
 
 use super::*;
 use crate::formulas::{self, Clave, Formula, Modo};
@@ -31,6 +32,10 @@ pub(super) struct GraficoEnBuffer {
     pub(super) contenido: std::ops::Range<i32>,
     pub(super) fuente: String,
 }
+
+/// Lo más grande que se ve un diagrama en el globito (se achica sin deformarse).
+const DIAGRAMA_ANCHO: i32 = 480;
+const DIAGRAMA_ALTO: i32 = 360;
 
 /// Ancho y alto del gráfico del globito.
 const GRAFICO_ANCHO: i32 = 380;
@@ -196,6 +201,11 @@ impl Editor {
 
     /// El ` ```grafico ` que contiene el carácter `offset` del buffer (busca en ±200 renglones).
     pub(super) fn grafico_en_offset(&self, offset: i32) -> Option<GraficoEnBuffer> {
+        self.cerca_en_offset(offset, "grafico")
+    }
+
+    /// El bloque cercado con lenguaje `lang` que contiene el carácter `offset` (±200 renglones).
+    pub(super) fn cerca_en_offset(&self, offset: i32, lang: &str) -> Option<GraficoEnBuffer> {
         let i = &self.0;
         if i.format.get() != Format::Md {
             return None;
@@ -211,12 +221,12 @@ impl Editor {
             hasta.forward_to_line_end();
         }
         let ventana = b.text(&desde, &hasta, true);
-        if !ventana.contains("grafico") {
+        if !ventana.contains(lang) {
             return None;
         }
         let byte = b.text(&desde, &cursor, true).len();
         let c = orbital_vault::formulas::cerca_en(&ventana, byte)?;
-        if c.lang != "grafico" {
+        if c.lang != lang {
             return None;
         }
         let base = desde.offset();
@@ -262,6 +272,13 @@ impl Editor {
         }
         if let Some(g) = grafico {
             self.mostrar_grafico(g);
+            return;
+        }
+        let diagrama = (activa && hallada.is_none())
+            .then(|| self.cerca_en_offset(i.buffer.cursor_position(), "mermaid"))
+            .flatten();
+        if let Some(d) = diagrama {
+            self.mostrar_diagrama(d);
             return;
         }
         let Some((inicio, tex, modo)) = hallada else {
@@ -350,6 +367,65 @@ impl Editor {
         v.actual_grafico.replace(Some(g.fuente));
         v.popover
             .update_property(&[gtk::accessible::Property::Label("Vista previa del gráfico")]);
+        v.popover.popup();
+    }
+
+    /// El diagrama Mermaid bajo el cursor (058), achicado para el globito; con error, el motivo.
+    /// El SVG sale de la caché (o se arma: décimas de milisegundo) y la imagen se dibuja en el
+    /// pool de `gio`.
+    fn mostrar_diagrama(&self, g: GraficoEnBuffer) {
+        let i = &self.0;
+        if g.fuente.trim().is_empty() {
+            self.ocultar_vista_previa();
+            return;
+        }
+        if i.vista_previa.borrow().is_none() {
+            i.vista_previa.replace(Some(VistaPrevia::new(&i.view)));
+        }
+        let prestamo = i.vista_previa.borrow();
+        let Some(v) = prestamo.as_ref() else { return };
+        self.apuntar_globito(v, g.inicio);
+        let mismo = v.actual_grafico.borrow().as_deref() == Some(g.fuente.as_str());
+        if mismo && v.popover.is_visible() {
+            return;
+        }
+        v.actual.replace(None);
+        v.imagen.set_paintable(None::<&gtk::gdk::Paintable>);
+        v.imagen.set_visible(false);
+        while let Some(h) = v.grafico.first_child() {
+            v.grafico.remove(&h);
+        }
+        let mut estilo = crate::diagramas::Estilo::de(&i.view);
+        // Código es oscuro como la Lectura.
+        estilo.tema = crate::diagramas::Tema::Oscuro;
+        match crate::diagramas::svg(&g.fuente, estilo.tema) {
+            Ok(d) => {
+                let pic = crate::diagramas::picture(
+                    crate::diagramas::Clave::new(&g.fuente, estilo),
+                    &d.nombre(),
+                );
+                let k = (DIAGRAMA_ANCHO as f32 / d.ancho)
+                    .min(DIAGRAMA_ALTO as f32 / d.alto)
+                    .min(1.0);
+                pic.set_size_request(
+                    (d.ancho * k).round().max(1.0) as i32,
+                    (d.alto * k).round().max(1.0) as i32,
+                );
+                v.grafico.append(&pic);
+                v.grafico.set_visible(true);
+                v.error.set_visible(false);
+            }
+            Err(e) => {
+                v.grafico.set_visible(false);
+                v.error.set_label(&e.to_string());
+                v.error.set_visible(true);
+            }
+        }
+        v.actual_grafico.replace(Some(g.fuente));
+        v.popover
+            .update_property(&[gtk::accessible::Property::Label(
+                "Vista previa del diagrama",
+            )]);
         v.popover.popup();
     }
 

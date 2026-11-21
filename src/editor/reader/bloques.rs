@@ -212,6 +212,9 @@ impl Reader {
             BlockKind::Code { lang, text } if lang == "grafico" => {
                 self.grafico(s, end, text, &base)
             }
+            BlockKind::Code { lang, text } if lang == "mermaid" => {
+                self.diagrama(s, end, text, &base)
+            }
             BlockKind::Code { lang, text } => {
                 let mut tags = base.clone();
                 tags.extend(table.lookup("codeblock"));

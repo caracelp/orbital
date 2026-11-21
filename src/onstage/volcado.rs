@@ -209,6 +209,7 @@ impl OnStage {
         i.generation.set(generation);
         let texto = slide.texto;
         let estilo = i.reader.estilo_formulas();
+        let estilo_diagramas = i.reader.estilo_diagramas();
         let this = self.clone();
         glib::spawn_future_local(async move {
             let Ok(prepared) = gio::spawn_blocking(move || {
@@ -218,6 +219,11 @@ impl OnStage {
                 };
                 // Las fórmulas, fuera del hilo de GTK (050).
                 crate::formulas::precalentar(Reader::claves_formulas(&prepared.doc, &estilo));
+                // Los diagramas (058).
+                crate::diagramas::precalentar(Reader::claves_diagramas(
+                    &prepared.doc,
+                    estilo_diagramas,
+                ));
                 prepared
             })
             .await

@@ -691,6 +691,37 @@ cámara: -60, 28
 - **Estático** (exportar, `.html`, OnStage, globito): la vista de la cámara del bloque. El SVG
   dibuja de atrás para adelante con mallas más gruesas y los colores para papel blanco.
 
+### Diagramas Mermaid (058)
+
+Un codeblock ` ```mermaid ` es un diagrama: el archivo guarda el bloque tal cual (la sintaxis de
+Mermaid) y Orbital lo dibuja en Lectura y Dividida, en OnStage, en el globito de Código, en la
+Visual de las notas `.html` y al exportar (HTML y PDF, como SVG). Mirarlo no cambia la nota.
+
+````markdown
+```mermaid
+flowchart TD
+    A[Idea] --> B{¿Tiene enlaces?}
+    B -->|Sí| C[Conectar]
+    B -->|No| D[Etiquetar]
+```
+````
+
+- **Tipos**: flowchart/graph, sequenceDiagram, classDiagram, stateDiagram(-v2), erDiagram,
+  gantt, pie, mindmap y timeline; también journey, gitGraph, quadrantChart, xychart, sankey,
+  requirementDiagram, C4, block, packet, architecture, kanban, radar, treemap y zenuml (lo que
+  entiende el motor). Se aceptan comentarios `%%`, el frontmatter `---` con `title:` y las
+  directivas `%%{init: …}%%`.
+- **Colores**: los de Orbital (rosa y negro) sobre la base oscura; tonos de papel al exportar; en
+  la Visual de una nota `.html`, el texto y las líneas toman el color del texto de la página y los
+  rellenos son rosas translúcidos. Un tema pedido por el propio diagrama (`%%{init: {theme: …}}%%`)
+  se respeta.
+- **Tamaño**: el natural; si no entra en la columna, se achica (sin deformarse).
+- **Con error**: se ve el fuente como código y debajo el motivo con el renglón del bloque
+  («⚠ Error en el diagrama (renglón 3): …»). El archivo no cambia.
+- **Notas `.html`**: un `<pre><code class="language-mermaid">…</code></pre>` (como sale un bloque
+  de Markdown convertido a HTML). En Visual se ve el SVG; un clic muestra el fuente para editarlo;
+  al guardar, el archivo conserva el `pre` tal cual.
+
 ## 13. Etiquetas, campos y búsqueda (004)
 
 ### Etiquetas

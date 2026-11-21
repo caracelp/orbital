@@ -58,6 +58,9 @@ impl Editor {
         if new.contains("language-grafico") {
             self.visual_graficos();
         }
+        if new.contains("language-mermaid") {
+            self.visual_diagramas();
+        }
     }
 
     /// Muestra la vista Visual con el texto actual.
@@ -94,6 +97,45 @@ impl Editor {
         self.visual_markers();
         self.visual_formulas();
         self.visual_graficos();
+        self.visual_diagramas();
+    }
+
+    /// Dibuja en segundo plano los diagramas Mermaid de la nota `.html` (058) como SVG con el
+    /// texto en `currentColor` (el fondo de la página es de la nota) y se los pasa a la Visual.
+    /// Sin diagramas, nada.
+    pub(super) fn visual_diagramas(&self) {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+        if !text.contains("language-mermaid") {
+            i.visual.set_diagramas(&[]);
+            return;
+        }
+        let path = self.current_path();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let body =
+                    orbital_vault::html_edit::body_range(&text).map_or(&text[..0], |r| &text[r]);
+                orbital_graficos::html::bloques(body, "mermaid")
+                    .into_iter()
+                    .map(|g| {
+                        let html =
+                            match crate::diagramas::svg(&g.fuente, crate::diagramas::Tema::Html) {
+                                Ok(d) => d.marcado.clone(),
+                                Err(e) => format!("!{e}"),
+                            };
+                        (g.fuente, html)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            let Ok(diagramas) = result else { return };
+            if this.current_path() != path {
+                return;
+            }
+            this.0.visual.set_diagramas(&diagramas);
+        });
     }
 
     /// Dibuja en segundo plano los gráficos de la nota `.html` (052) como SVG estático (papel:

@@ -218,6 +218,7 @@ impl Editor {
         let place = (i.vault.borrow().clone(), self.current_path());
         let index = i.search_index.borrow().clone();
         let estilo = i.reader.estilo_formulas();
+        let estilo_diagramas = i.reader.estilo_diagramas();
         glib::spawn_future_local(async move {
             let parsed = gio::spawn_blocking(move || {
                 let props = orbital_vault::props::markdown::locate(&text)
@@ -250,6 +251,11 @@ impl Editor {
                 crate::formulas::precalentar(reader::Reader::claves_formulas(
                     &prepared.doc,
                     &estilo,
+                ));
+                // Los diagramas (058), igual: la imagen sale de este hilo.
+                crate::diagramas::precalentar(reader::Reader::claves_diagramas(
+                    &prepared.doc,
+                    estilo_diagramas,
                 ));
                 (prepared, props, genero)
             })
