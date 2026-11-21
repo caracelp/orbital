@@ -61,6 +61,8 @@ struct Inner {
     vigia: RefCell<Option<(gtk::Adjustment, glib::SignalHandlerId)>>,
     /// Las miniaturas ya se pidieron.
     miniaturas_pedidas: Cell<bool>,
+    /// Hay una copia a pantalla completa abierta: esta no avanza sola.
+    tapado: Cell<bool>,
 }
 
 impl Inner {
@@ -288,6 +290,7 @@ impl Vista {
             reloj: RefCell::new(None),
             vigia: RefCell::new(None),
             miniaturas_pedidas: Cell::new(false),
+            tapado: Cell::new(false),
             c,
         }));
         if modo == Modo::EnLinea {
@@ -739,6 +742,7 @@ impl Vista {
             return;
         }
         self.detener();
+        self.0.tapado.set(true);
         let (completa, raiz_completa) = Vista::nueva(
             self.0.c.clone(),
             Modo::PantallaCompleta,
@@ -780,6 +784,7 @@ impl Vista {
             ventana.connect_close_request(move |_| {
                 if let Some(i) = en_linea.upgrade() {
                     let v = Vista(i);
+                    v.0.tapado.set(false);
                     v.0.pausado.set(c.0.pausado.get());
                     v.mostrar_pausa();
                     v.ir_a(c.indice());
@@ -827,6 +832,7 @@ impl Vista {
         let corre = i.c.opciones.autoplay
             && i.c.diapositivas.len() > 1
             && !i.pausado.get()
+            && !i.tapado.get()
             && i.en_vista.get()
             && i.raiz().is_mapped();
         if !corre {
