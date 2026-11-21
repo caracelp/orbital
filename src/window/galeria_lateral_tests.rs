@@ -78,8 +78,8 @@ fn boveda(nombre: &str, notas: &[(&str, &str)], fotos: usize, base: Option<&Path
             COLORES[k % COLORES.len()],
         );
     }
-    png(&root.join("wiki/esquema-uno.png"), 400, 300, COLORES[0]);
-    png(&root.join("wiki/esquema-dos.png"), 300, 400, COLORES[1]);
+    png(&root.join("wiki/esquema-uno.png"), 1200, 900, COLORES[0]);
+    png(&root.join("wiki/esquema-dos.png"), 900, 1200, COLORES[1]);
     std::fs::write(root.join("wiki/clip.mp4"), b"no es un video").unwrap();
     for (ruta, texto) in notas {
         std::fs::write(root.join(ruta), texto).unwrap();
@@ -117,19 +117,23 @@ async fn abrir(window: &Window, ruta: &str) {
 
 const NOTA_A: &str = "# Esquemas\n![[esquema-uno.png]] ![[esquema-dos.png]]\n\nTexto.\n\n# Fotos\n![](fotos%20ñ/foto-0.png) ![[clip.mp4]]\n![[borrada.png]]\n\n## Viaje\n```carrusel\n![[fotos ñ/foto-1.png|Playa]]\n```\n";
 
-fn guardar(window: &Window, nombre: &str) {
+async fn guardar(window: &Window, nombre: &str) {
+    guardar_ventana(&window.0.window.clone().upcast(), nombre).await;
+}
+
+async fn guardar_ventana(ventana: &gtk::Window, nombre: &str) {
     let Some(dir) = std::env::var_os("ORBITAL_CAPTURA_DIR") else {
         return;
     };
-    let (ancho, alto) = (window.0.window.width(), window.0.window.height());
-    let pintable = gtk::WidgetPaintable::new(Some(&window.0.window));
+    // Que se dibuje lo último que cambió (y lleguen las miniaturas).
+    glib::timeout_future(Duration::from_millis(400)).await;
+    let (ancho, alto) = (ventana.width(), ventana.height());
+    let pintable = gtk::WidgetPaintable::new(Some(ventana));
     let snap = gtk::Snapshot::new();
     pintable.snapshot(&snap, f64::from(ancho), f64::from(alto));
     let node = snap.to_node().expect("cuadro");
     let png = Path::new(&dir).join(format!("{nombre}.png"));
-    window
-        .0
-        .window
+    ventana
         .renderer()
         .unwrap()
         .render_texture(&node, None)
@@ -201,7 +205,7 @@ fn galeria_lateral_grupos_busqueda_visor_y_embed() {
             esperar(|| g.con_textura() >= 4).await,
             "miniaturas de las imágenes"
         );
-        guardar(&window, "034-panel");
+        guardar(&window, "034-panel").await;
 
         // Plegar un grupo (clic o Enter en su título) y todos con el menú.
         g.activar(Pieza::Titulo(0));
@@ -212,7 +216,7 @@ fn galeria_lateral_grupos_busqueda_visor_y_embed() {
             g.piezas(),
             [Pieza::Titulo(0), Pieza::Titulo(1), Pieza::Titulo(2)]
         );
-        guardar(&window, "034-plegado");
+        guardar(&window, "034-plegado").await;
         g.accion("desplegar-todo", None, None);
         assert_eq!(g.piezas().len(), 9);
 
@@ -233,7 +237,7 @@ fn galeria_lateral_grupos_busqueda_visor_y_embed() {
         );
         g.buscar("foto");
         assert_eq!(g.resumen(), "4 de 6 medios en 2 grupos");
-        guardar(&window, "034-busqueda");
+        guardar(&window, "034-busqueda").await;
         g.filtrar("videos");
         assert!(esperar(|| g.piezas() == [Pieza::Titulo(1), Pieza::Mosaico(3)]).await);
         g.filtrar("todo");
@@ -252,7 +256,7 @@ fn galeria_lateral_grupos_busqueda_visor_y_embed() {
         // Visor: clic en un mosaico; al cerrar, el foco vuelve a la grilla.
         g.activar(Pieza::Mosaico(1));
         assert!(esperar(|| visor().is_some()).await, "se abre el visor");
-        guardar(&window, "034-ventana-con-visor");
+        guardar_ventana(&visor().unwrap(), "034-visor").await;
         visor().unwrap().close();
         assert!(esperar(|| visor().is_none()).await);
         assert_eq!(g.activo(), Some(Pieza::Mosaico(1)));
@@ -287,7 +291,7 @@ fn galeria_lateral_grupos_busqueda_visor_y_embed() {
         // Sin medios: el estado vacío.
         abrir(&window, "wiki/c.md").await;
         assert!(esperar(|| g.pagina() == "vacio").await);
-        guardar(&window, "034-vacia");
+        guardar(&window, "034-vacia").await;
         window.0.window.destroy();
         let _ = std::fs::remove_dir_all(root);
     });
@@ -346,13 +350,13 @@ fn galeria_lateral_teclado_y_titulo_fijo() {
             "solo lo visible y un margen: {}",
             g.vivas().len()
         );
-        guardar(&window, "034-titulo-fijo");
+        guardar(&window, "034-titulo-fijo").await;
         g.pulsar(gdk::Key::Home, gdk::ModifierType::empty());
         assert_eq!(g.activo(), Some(Pieza::Titulo(0)));
         // Tamaños fijos.
         g.accion("tamano", None, Some(&"grande".to_variant()));
         assert!(esperar(|| !g.vivas().is_empty()).await);
-        guardar(&window, "034-grandes");
+        guardar(&window, "034-grandes").await;
         window.0.window.destroy();
         let _ = std::fs::remove_dir_all(root);
     });
@@ -485,7 +489,7 @@ fn medir_galeria_lateral() {
             hueco.get(),
             g.vivas().len()
         );
-        guardar(&window, "034-grande");
+        guardar(&window, "034-grande").await;
         // Desplazar hasta el final, una pantalla por cuadro.
         glib::timeout_future(Duration::from_millis(800)).await;
         hueco.set(0.0);

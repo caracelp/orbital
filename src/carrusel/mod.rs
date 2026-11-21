@@ -1326,13 +1326,17 @@ impl Miniaturas {
             .child(&caja)
             .css_classes(["orbital-carrusel-tira"])
             .build();
+        // Explícito: los marcadores de video y de faltante se expanden adentro de su botón, y
+        // sin esto la tira se llevaba el lugar sobrante del visor (y las miniaturas crecían).
         if vertical {
             scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
             scroller.set_width_request(MINI_ANCHO + 24);
             scroller.set_vexpand(true);
+            scroller.set_hexpand(false);
         } else {
             scroller.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
             scroller.set_height_request(MINI_ALTO + 24);
+            scroller.set_vexpand(false);
         }
         Self {
             scroller,

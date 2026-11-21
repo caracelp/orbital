@@ -133,15 +133,22 @@ impl GaleriaLateral {
             "Buscar medios por nombre o encabezado",
         )]);
         let filtro_grupo = adw::ToggleGroup::new();
-        for (nombre, rotulo, ayuda) in [
-            ("todo", "Todo", "Imágenes y videos"),
-            ("imagenes", "Imágenes", "Solo imágenes"),
-            ("videos", "Videos", "Solo videos"),
+        // Íconos para los tipos: con el ancho de la barra, los rótulos no entran.
+        filtro_grupo.add(
+            adw::Toggle::builder()
+                .name("todo")
+                .label("Todo")
+                .tooltip("Imágenes y videos")
+                .build(),
+        );
+        for (nombre, icono, ayuda) in [
+            ("imagenes", "image-x-generic-symbolic", "Solo imágenes"),
+            ("videos", "video-x-generic-symbolic", "Solo videos"),
         ] {
             filtro_grupo.add(
                 adw::Toggle::builder()
                     .name(nombre)
-                    .label(rotulo)
+                    .icon_name(icono)
                     .tooltip(ayuda)
                     .build(),
             );
@@ -642,6 +649,7 @@ impl GaleriaLateral {
                 Some(r) => {
                     ubicar(&i.lienzo, c.boton.upcast_ref(), r);
                     self.ajustar_celda(&c, r);
+                    self.rotular(&c, k);
                     quedan.push((k, c));
                 }
                 None => self.soltar(c),
@@ -833,6 +841,50 @@ impl GaleriaLateral {
             .unwrap_or_else(|| self.celda_nueva());
         let m = i.medios.borrow();
         let x = &m.medios[k];
+        let falta = x.abs.is_none();
+        self.rotular(&c, k);
+        // SAFETY: la clave es propia de este módulo y solo se guarda un `usize`.
+        unsafe { c.boton.set_data("orbital-galeria-lateral-indice", k) };
+        let video = x.clase == Clase::Video;
+        c.marca.set_icon_name(Some(if falta {
+            "image-missing-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        }));
+        c.marca.set_visible(video || falta);
+        for (clase, si) in [
+            ("orbital-galeria-lateral-video", video && !falta),
+            ("orbital-galeria-lateral-rota", falta),
+        ] {
+            if si {
+                c.boton.add_css_class(clase);
+            } else {
+                c.boton.remove_css_class(clase);
+            }
+        }
+        c.pic.set_alternative_text(Some(x.nombre()));
+        c.pic.set_paintable(gdk::Paintable::NONE);
+        c.pedida.set((0, 0));
+        if !video && let Some(abs) = &x.abs {
+            let e = i.root.scale_factor().max(1);
+            let (w, h) = medida_pedida(r, e);
+            if let Some(t) = imagenes::en_cache_con(abs, w, h, Ajuste::Cubrir) {
+                c.pic.set_paintable(Some(&t));
+                c.pedida.set((w, h));
+            }
+        }
+        drop(m);
+        ubicar(&i.lienzo, c.boton.upcast_ref(), r);
+        self.ajustar_celda(&c, r);
+        c.boton.set_visible(true);
+        c
+    }
+
+    /// El nombre (con lo buscado resaltado), la ayuda y el nombre accesible de un mosaico.
+    fn rotular(&self, c: &Celda, k: usize) {
+        let i = &self.0;
+        let m = i.medios.borrow();
+        let x = &m.medios[k];
         let consulta = i.consulta.borrow();
         c.nombre
             .set_markup(&disposicion::resaltado(x.nombre(), &consulta));
@@ -867,42 +919,6 @@ impl GaleriaLateral {
         } else {
             ayuda
         }));
-        // SAFETY: la clave es propia de este módulo y solo se guarda un `usize`.
-        unsafe { c.boton.set_data("orbital-galeria-lateral-indice", k) };
-        let video = x.clase == Clase::Video;
-        c.marca.set_icon_name(Some(if falta {
-            "image-missing-symbolic"
-        } else {
-            "media-playback-start-symbolic"
-        }));
-        c.marca.set_visible(video || falta);
-        for (clase, si) in [
-            ("orbital-galeria-lateral-video", video && !falta),
-            ("orbital-galeria-lateral-rota", falta),
-        ] {
-            if si {
-                c.boton.add_css_class(clase);
-            } else {
-                c.boton.remove_css_class(clase);
-            }
-        }
-        c.pic.set_alternative_text(Some(x.nombre()));
-        c.pic.set_paintable(gdk::Paintable::NONE);
-        c.pedida.set((0, 0));
-        if !video && let Some(abs) = &x.abs {
-            let e = i.root.scale_factor().max(1);
-            let (w, h) = medida_pedida(r, e);
-            if let Some(t) = imagenes::en_cache_con(abs, w, h, Ajuste::Cubrir) {
-                c.pic.set_paintable(Some(&t));
-                c.pedida.set((w, h));
-            }
-        }
-        drop(m);
-        drop(consulta);
-        ubicar(&i.lienzo, c.boton.upcast_ref(), r);
-        self.ajustar_celda(&c, r);
-        c.boton.set_visible(true);
-        c
     }
 
     fn ajustar_celda(&self, c: &Celda, r: Rect) {
