@@ -20,7 +20,11 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, Rust, Xvfb, D-Bus, fuentes y curl)
+      # GStreamer con sus elementos base y buenos (y libav, como en un escritorio) para los
+      # reproductores de audio y video (057); sin dispositivo de audio, autoaudiosink cae en un
+      # sumidero falso. openbox y xcompmgr hacen de gestor de ventanas y compositor sobre Xvfb:
+      # sin ellos no hay foco de teclado, ni pantalla completa, ni maximizar y volver al tamaño.
+      - name: Dependencias (GTK4, libadwaita, WebKitGTK 6.0, GtkSourceView 5, GStreamer, Rust, Xvfb, gestor de ventanas, D-Bus, fuentes y curl)
         run: |
           pacman -Syu --noconfirm \
             curl \
@@ -33,11 +37,18 @@ jobs:
             dbus \
             cantarell-fonts \
             ttf-dejavu \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-libav \
+            openbox \
+            xcompmgr \
             rust
 
       - uses: actions/checkout@v5
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Formato
         run: cargo fmt --all -- --check
@@ -49,15 +60,20 @@ jobs:
       - name: Tests
         run: xvfb-run -a cargo test
 
-      # Las pruebas GTK en proceso (`#[ignore]`): una por proceso, con D-Bus (la app se registra) y
-      # sin el sandbox de WebKit (el contenedor no permite los espacios de nombres que usa).
+      # Las pruebas GTK en proceso (`#[ignore]`): una por proceso, con D-Bus (la app se registra),
+      # un gestor de ventanas con compositor (como en un escritorio) y sin el sandbox de WebKit
+      # (el contenedor no permite los espacios de nombres que usa).
       - name: Pruebas GTK en proceso
         env:
           WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
         run: |
           dbus-uuidgen --ensure
           # Pantalla grande: con la de 640×480 por defecto, las barras laterales se pliegan.
-          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" tools/pruebas-gtk.sh
+          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" sh -c '
+            openbox >/dev/null 2>&1 &
+            xcompmgr >/dev/null 2>&1 &
+            sleep 2
+            tools/pruebas-gtk.sh'
 
       - name: Licencias y vulnerabilidades
         uses: taiki-e/install-action@v2
