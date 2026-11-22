@@ -1678,6 +1678,85 @@ mod listas_tests {
         }
         out
     }
+
+    /// 036 US2: «Nota nueva con #etiqueta» desde el índice de la Lectura pide el nombre, crea la
+    /// nota en la carpeta de la nota del índice con la etiqueta y el índice la toma; la nota del
+    /// índice no cambia. Bóveda con ruta no ASCII.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn indice_nota_nueva_con_etiqueta() {
+        let app = app("Indice036");
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "orbital-036-ventana-Bóveda ñandú-{}",
+                glib::uuid_string_random()
+            ));
+            let nota = "# Proyectos\n\n```indice\netiqueta: proyectos\n```\n";
+            std::fs::create_dir_all(root.join("wiki/índices ñ")).unwrap();
+            std::fs::write(root.join("wiki/índices ñ/proyectos.md"), nota).unwrap();
+            std::fs::write(root.join("wiki/a.md"), "#proyectos/tesis\n").unwrap();
+            let window = ventana(&app, &root).await;
+            abrir(&window, "wiki/índices ñ/proyectos.md").await;
+            let editor = window.0.code_editor.clone();
+            editor.set_view(crate::editor::View::Lectura);
+            esperar("el índice en Lectura", || {
+                editor.render_now();
+                editor
+                    .texto_lectura()
+                    .contains("Nota nueva con #proyectos/tesis")
+            })
+            .await;
+            window.open_link(
+                None,
+                &format!("{}proyectos/tesis", crate::editor::reader::NOTA_NUEVA),
+            );
+            esperar("el pedido de nombre", || {
+                window.0.window.visible_dialog().is_some()
+            })
+            .await;
+            let d = window
+                .0
+                .window
+                .visible_dialog()
+                .and_downcast::<adw::AlertDialog>()
+                .expect("un AlertDialog");
+            d.extra_child()
+                .and_downcast::<gtk::Entry>()
+                .expect("el campo del nombre")
+                .set_text("Borrador ñ");
+            d.emit_by_name::<()>("response", &[&"create"]);
+            esperar("se abre la nota nueva", || {
+                window
+                    .0
+                    .current_entry
+                    .borrow()
+                    .as_ref()
+                    .map(|e| e.path.as_str().to_owned())
+                    == Some("wiki/índices ñ/Borrador ñ.md".to_owned())
+            })
+            .await;
+            let creada =
+                std::fs::read_to_string(root.join("wiki/índices ñ/Borrador ñ.md")).unwrap();
+            assert!(
+                creada.contains("tags:") && creada.contains("proyectos/tesis"),
+                "{creada}"
+            );
+            // El índice la toma.
+            abrir(&window, "wiki/índices ñ/proyectos.md").await;
+            editor.set_view(crate::editor::View::Lectura);
+            esperar("la nota nueva en el índice", || {
+                editor.render_now();
+                editor.texto_lectura().contains("Borrador ñ")
+            })
+            .await;
+            assert_eq!(
+                std::fs::read_to_string(root.join("wiki/índices ñ/proyectos.md")).unwrap(),
+                nota
+            );
+            window.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
 }
 
 mod plegado_tests {

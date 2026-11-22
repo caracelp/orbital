@@ -131,6 +131,13 @@ impl Editor {
         Some(dialogo)
     }
 
+    /// El texto que muestra la Lectura (pruebas de la ventana).
+    #[cfg(test)]
+    pub(crate) fn texto_lectura(&self) -> String {
+        let b = self.0.reader.text_view().buffer();
+        b.text(&b.start_iter(), &b.end_iter(), true).to_string()
+    }
+
     /// La etiqueta del bloque ` ```indice ` donde está el cursor (con los valores por defecto de
     /// Preferencias), o `None` si el cursor no está en uno o es un índice de índices.
     pub fn etiqueta_del_indice(&self) -> Option<String> {
