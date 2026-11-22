@@ -166,6 +166,61 @@ impl Tema {
         t
     }
 
+    /// Las franjas de fondo de las secciones del Gantt. El motor las alterna entre cuatro
+    /// estilos fijos (lila, blanco, amarillo, blanco, con su opacidad): el blanco al 20 %
+    /// quedaba como un gris (#444) sobre la base oscura. Acá cada uno pasa a un tono del tema,
+    /// distinto del de al lado, para que las secciones alternen. Van antes de [`reemplazos`]
+    /// (que cambia esos mismos colores sueltos en otras partes).
+    fn franjas(self) -> &'static [(&'static str, &'static str)] {
+        const LILA: &str = "fill=\"#6666ff\" fill-opacity=\"0.098\" stroke=\"none\"";
+        const BLANCO: &str = "fill=\"#ffffff\" fill-opacity=\"0.2\" stroke=\"none\"";
+        const AMARILLO: &str = "fill=\"#fff400\" fill-opacity=\"0.2\" stroke=\"none\"";
+        match self {
+            Tema::Oscuro => &[
+                (
+                    LILA,
+                    "fill=\"#FF8CC6\" fill-opacity=\"0.12\" stroke=\"none\"",
+                ),
+                (
+                    BLANCO,
+                    "fill=\"#FF8CC6\" fill-opacity=\"0.035\" stroke=\"none\"",
+                ),
+                (
+                    AMARILLO,
+                    "fill=\"#B8467C\" fill-opacity=\"0.24\" stroke=\"none\"",
+                ),
+            ],
+            Tema::Claro => &[
+                (
+                    LILA,
+                    "fill=\"#FF8CC6\" fill-opacity=\"0.16\" stroke=\"none\"",
+                ),
+                (
+                    BLANCO,
+                    "fill=\"#C2185B\" fill-opacity=\"0.05\" stroke=\"none\"",
+                ),
+                (
+                    AMARILLO,
+                    "fill=\"#F7A8CC\" fill-opacity=\"0.30\" stroke=\"none\"",
+                ),
+            ],
+            Tema::Html => &[
+                (
+                    LILA,
+                    "fill=\"#FF8CC6\" fill-opacity=\"0.14\" stroke=\"none\"",
+                ),
+                (
+                    BLANCO,
+                    "fill=\"#B8467C\" fill-opacity=\"0.08\" stroke=\"none\"",
+                ),
+                (
+                    AMARILLO,
+                    "fill=\"#E0559A\" fill-opacity=\"0.18\" stroke=\"none\"",
+                ),
+            ],
+        }
+    }
+
     /// Los colores que el motor no toma del tema (las barras del Gantt, sus franjas), cambiados
     /// por los de Orbital.
     fn reemplazos(self) -> &'static [(&'static str, &'static str)] {
@@ -214,7 +269,7 @@ pub(crate) fn ajustar(svg: &str, tema: Tema) -> String {
     } else {
         svg.to_owned()
     };
-    for (de, a) in tema.reemplazos() {
+    for (de, a) in tema.franjas().iter().chain(tema.reemplazos()) {
         if out.contains(de) {
             out = out.replace(de, a);
         }

@@ -182,3 +182,40 @@ fn entradas_rotas_no_entran_en_panico() {
         panicos[0]
     );
 }
+
+/// Las secciones de un Gantt alternan tonos del tema: ninguna franja queda con los colores fijos
+/// del motor (la blanca al 20 % salía gris, #444, sobre la base oscura), y dos seguidas no son
+/// iguales.
+#[test]
+fn gantt_secciones_con_tonos_del_tema() {
+    let fuente = "gantt\n    dateFormat YYYY-MM-DD\n    section Uno\n    A :a1, 2026-03-01, 3d\n    section Dos\n    B :2026-03-02, 3d\n    section Tres\n    C :2026-03-03, 3d\n    section Cuatro\n    D :2026-03-04, 3d\n    section Cinco\n    E :2026-03-05, 3d";
+    for tema in [Tema::Oscuro, Tema::Claro, Tema::Html] {
+        let d = svg(fuente, tema).unwrap();
+        let franjas: Vec<&str> = d
+            .marcado
+            .split("<rect ")
+            .skip(1)
+            .filter_map(|r| r.split("/>").next())
+            .filter(|r| r.contains("stroke=\"none\"") && r.contains("fill-opacity"))
+            .map(|r| {
+                r.split("fill=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert!(franjas.len() >= 5, "{tema:?}: {franjas:?}");
+        for f in &franjas {
+            let f = f.to_ascii_lowercase();
+            assert!(
+                !["#ffffff", "#6666ff", "#fff400"].contains(&f.as_str()),
+                "{tema:?}: {franjas:?}"
+            );
+        }
+        for par in franjas[..5].windows(2) {
+            assert_ne!(par[0], par[1], "{tema:?}: {franjas:?}");
+        }
+    }
+}
