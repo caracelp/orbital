@@ -26,3 +26,11 @@ servidor-falso = []
 
 [dev-dependencies]
 orbital-drive = { path = ".", features = ["servidor-falso"] }
+
+[[example]]
+name = "preparar-prueba"
+required-features = ["servidor-falso"]
+
+[[example]]
+name = "medir"
+required-features = ["servidor-falso"]
