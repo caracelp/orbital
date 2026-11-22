@@ -1225,8 +1225,13 @@ impl Reader {
             }
             return;
         }
+        // Como un archivo en disco: `fotos%20ñ/foto-0.png` es «fotos ñ/foto-0.png», sin `#…`.
         let local = (!url.contains("://"))
-            .then(|| s.base_dir.as_ref().map(|d| d.join(url)))
+            .then(|| {
+                let ruta = url.split('#').next().unwrap_or(url);
+                let ruta = orbital_vault::links::percent_decode(ruta);
+                s.base_dir.as_ref().map(|d| d.join(&*ruta))
+            })
             .flatten()
             .filter(|p| p.is_file());
         match local {
