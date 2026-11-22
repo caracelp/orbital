@@ -91,6 +91,11 @@ fn main() {
         rss1.saturating_sub(rss0),
         rss_kb().saturating_sub(rss1)
     );
+    println!(
+        "caras: {} ({} archivos de respaldo para letras que la de la interfaz no tiene)",
+        f.caras(),
+        f.respaldos()
+    );
 }
 
 /// Memoria residente del proceso, en KB.

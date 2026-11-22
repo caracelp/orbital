@@ -243,10 +243,13 @@ impl Imagen {
 /// Dibuja el SVG de un diagrama a `escala` píxeles físicos por lógico (con un tope de tamaño).
 pub fn imagen(d: &Diagrama, escala: f32, fuentes: &Fuentes) -> Result<Imagen, Error> {
     use resvg::{tiny_skia, usvg};
-    let tree = usvg::Tree::from_str(&d.marcado, fuentes.opciones()).map_err(|e| Error {
-        mensaje: format!("no se pudo dibujar el diagrama ({e})"),
-        renglon: None,
-    })?;
+    let tree =
+        usvg::Tree::from_str(&d.marcado, &fuentes.opciones_para(&d.marcado)).map_err(|e| {
+            Error {
+                mensaje: format!("no se pudo dibujar el diagrama ({e})"),
+                renglon: None,
+            }
+        })?;
     let size = tree.size();
     let (w, h) = (size.width().max(1.0), size.height().max(1.0));
     let mut k = escala.max(0.25);
@@ -260,17 +263,61 @@ pub fn imagen(d: &Diagrama, escala: f32, fuentes: &Fuentes) -> Result<Imagen, Er
         mensaje: "el diagrama es demasiado grande".into(),
         renglon: None,
     })?;
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(k, k),
-        &mut pm.as_mut(),
-    );
+    let escala = tiny_skia::Transform::from_scale(k, k);
+    resvg::render(&tree, escala, &mut pm.as_mut());
+    // Los emoji de color (059) son imágenes PNG dentro de la letra, y `resvg` sin sus
+    // decodificadores de imágenes (GIF, WebP y JPEG: ≈ 440 KB) no las dibuja. Acá se dibujan
+    // solo esas, con el decodificador PNG que `tiny-skia` ya trae. Un texto ASCII no tiene.
+    if !d.marcado.is_ascii() {
+        imagenes_png(tree.root(), escala, &mut pm.as_mut());
+    }
     Ok(Imagen {
         ancho: pm.width(),
         alto: pm.height(),
         escala: k,
         rgba: pm.take(),
     })
+}
+
+/// Dibuja las imágenes PNG del árbol (las de los emoji de color, que `resvg` deja sin dibujar).
+fn imagenes_png(
+    grupo: &resvg::usvg::Group,
+    ts: resvg::tiny_skia::Transform,
+    pm: &mut resvg::tiny_skia::PixmapMut,
+) {
+    use resvg::{tiny_skia, usvg};
+    let ts = ts.pre_concat(grupo.transform());
+    for nodo in grupo.children() {
+        match nodo {
+            usvg::Node::Group(g) => imagenes_png(g, ts, pm),
+            usvg::Node::Text(t) => imagenes_png(t.flattened(), ts, pm),
+            usvg::Node::Image(img) if img.is_visible() => {
+                let usvg::ImageKind::PNG(datos) = img.kind() else {
+                    continue;
+                };
+                let Ok(png) = tiny_skia::Pixmap::decode_png(datos) else {
+                    continue;
+                };
+                let Some(rect) = tiny_skia::Size::from_wh(png.width() as f32, png.height() as f32)
+                    .and_then(|s| s.to_rect(0.0, 0.0))
+                else {
+                    continue;
+                };
+                let paint = tiny_skia::Paint {
+                    shader: tiny_skia::Pattern::new(
+                        png.as_ref(),
+                        tiny_skia::SpreadMode::Pad,
+                        tiny_skia::FilterQuality::Bicubic,
+                        1.0,
+                        tiny_skia::Transform::default(),
+                    ),
+                    ..tiny_skia::Paint::default()
+                };
+                pm.fill_rect(rect, &paint, ts, None);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

@@ -14,3 +14,7 @@ publish = false
 [dependencies]
 mermaid-svg = "0.7.0"
 resvg = { version = "0.45.1", default-features = false, features = ["text"] }
+# Respaldo de letras (059): mirar si una cara tiene una letra, y proyectar los archivos en memoria
+# (`fontdb` con `memmap`, como ya lo trae el motor de fórmulas: no suma nada al binario).
+ttf-parser = { version = "0.25.1", default-features = false }
+fontdb = { version = "0.23.0", default-features = false, features = ["memmap"] }

@@ -5,8 +5,14 @@
 //! cargan solo las caras que hacen falta (la letra de la interfaz en normal, negrita, cursiva y
 //! negrita cursiva, la `sans-serif` del sistema como respaldo y la monoespaciada), que se buscan
 //! con fontconfig: GTK ya lo tiene cargado, así que no suma bibliotecas.
+//!
+//! Respaldo (059): si el texto de un diagrama trae letras que ninguna de esas caras tiene (emoji,
+//! CJK, cirílico si la letra no lo trae…), se le pregunta a fontconfig por una cara que las tenga
+//! y se suma, una sola vez por archivo. Un diagrama con texto ASCII no mira nada; uno con letras
+//! ya vistas, solo una tabla.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::collections::HashMap;
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -14,16 +20,38 @@ use resvg::usvg;
 
 /// Las fuentes (y las opciones de `usvg`) para una familia de letra.
 pub struct Fuentes {
-    opciones: usvg::Options<'static>,
     familia: String,
     /// La familia que se pidió (puede no estar instalada y caer en otra).
     pedida: String,
-    caras: usize,
+    estado: Mutex<Estado>,
+}
+
+/// Lo que crece con los respaldos.
+struct Estado {
+    db: Arc<usvg::fontdb::Database>,
+    /// Los archivos ya cargados: los `base` primeros son los de la interfaz.
+    archivos: Vec<PathBuf>,
+    base: usize,
+    /// Si alguna cara cargada tiene cada letra no ASCII vista (después de buscar respaldo).
+    cubiertas: HashMap<char, bool>,
 }
 
 impl Fuentes {
-    pub(crate) fn opciones(&self) -> &usvg::Options<'static> {
-        &self.opciones
+    /// Las opciones de `usvg` para dibujar `marcado`: antes, si su texto trae letras que las
+    /// caras cargadas no tienen, se suman las de respaldo que fontconfig encuentre.
+    pub(crate) fn opciones_para(&self, marcado: &str) -> usvg::Options<'static> {
+        let db = {
+            let mut e = self.estado.lock().unwrap_or_else(|e| e.into_inner());
+            if !marcado.is_ascii() {
+                e.cubrir(marcado, &self.familia);
+            }
+            e.db.clone()
+        };
+        usvg::Options {
+            font_family: self.familia.clone(),
+            fontdb: db,
+            ..usvg::Options::default()
+        }
     }
 
     /// La familia con que se escriben los textos.
@@ -31,9 +59,19 @@ impl Fuentes {
         &self.familia
     }
 
-    /// Cuántas caras se cargaron.
+    /// Cuántas caras hay cargadas (con las de respaldo).
     pub fn caras(&self) -> usize {
-        self.caras
+        self.estado
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .db
+            .len()
+    }
+
+    /// Los archivos de respaldo que se sumaron a las caras de la interfaz.
+    pub fn respaldos(&self) -> usize {
+        let e = self.estado.lock().unwrap_or_else(|e| e.into_inner());
+        e.archivos.len().saturating_sub(e.base)
     }
 
     /// Las fuentes para la familia `familia` (la de la interfaz), cargadas una sola vez por
@@ -76,28 +114,123 @@ impl Fuentes {
             if vistos.contains(&ruta) {
                 continue;
             }
-            if let Ok(datos) = std::fs::read(&ruta) {
-                db.load_font_data(datos);
-            }
+            cargar_archivo(&mut db, &ruta);
             vistos.push(ruta);
         }
         let familia_real = nombre.unwrap_or_else(|| familia.to_owned());
         // Lo que pida el SVG (`sans-serif`, `Inter`, `Arial`…) cae en la letra de la interfaz.
         db.set_sans_serif_family(familia_real.clone());
         db.set_serif_family(familia_real.clone());
-        let caras = db.len();
-        let mut opciones = usvg::Options {
-            font_family: familia_real.clone(),
-            ..usvg::Options::default()
-        };
-        *opciones.fontdb_mut() = db;
         Self {
-            opciones,
             familia: familia_real,
             pedida: familia.to_owned(),
-            caras,
+            estado: Mutex::new(Estado {
+                db: Arc::new(db),
+                base: vistos.len(),
+                archivos: vistos,
+                cubiertas: HashMap::new(),
+            }),
         }
     }
+}
+impl Estado {
+    /// Se asegura de que cada letra del texto de `marcado` tenga una cara: las que falten se
+    /// buscan con fontconfig (una vez por letra; lo encontrado se carga una vez por archivo).
+    fn cubrir(&mut self, marcado: &str, familia: &str) {
+        let mut faltan: Vec<char> = Vec::new();
+        for c in texto_no_ascii(marcado) {
+            if self.cubiertas.contains_key(&c) || faltan.contains(&c) {
+                continue;
+            }
+            if tiene(&self.db, c) {
+                self.cubiertas.insert(c, true);
+            } else {
+                faltan.push(c);
+            }
+        }
+        for c in faltan {
+            // Una cara cargada recién (por otra letra de este diagrama) puede tenerla ya.
+            let mut hay = tiene(&self.db, c);
+            if !hay && let Some(ruta) = respaldo(familia, c) {
+                if !self.archivos.contains(&ruta) {
+                    cargar_archivo(Arc::make_mut(&mut self.db), &ruta);
+                    self.archivos.push(ruta);
+                }
+                hay = tiene(&self.db, c);
+            }
+            self.cubiertas.insert(c, hay);
+        }
+    }
+}
+
+/// Suma las caras de un archivo, proyectado en memoria una sola vez: solo se leen las páginas
+/// que se usan (una letra de emoji o CJK pesa 10–20 MB). Sin `make_shared_face_data`, `fontdb`
+/// volvería a abrir y proyectar el archivo en cada consulta (4 veces más lenta la imagen).
+fn cargar_archivo(db: &mut usvg::fontdb::Database, ruta: &std::path::Path) {
+    if db.load_font_file(ruta).is_err() {
+        return;
+    }
+    let nuevas: Vec<_> = db
+        .faces()
+        .filter(|f| matches!(&f.source, usvg::fontdb::Source::File(p) if p == ruta))
+        .map(|f| f.id)
+        .collect();
+    if let Some(id) = nuevas.first() {
+        // SAFETY: el archivo es una fuente del sistema que fontconfig acaba de dar; si otro
+        // proceso lo cambiara mientras está proyectado, se leería lo nuevo (el mismo riesgo que
+        // corren GTK y Pango, que también proyectan las fuentes). Una llamada comparte la
+        // proyección con todas las caras del archivo.
+        unsafe {
+            db.make_shared_face_data(*id);
+        }
+    }
+}
+
+/// Las letras no ASCII del texto de un SVG (fuera de las etiquetas), sin las que no se dibujan
+/// solas (espacios, controles, selectores de variante, unión de emoji).
+fn texto_no_ascii(marcado: &str) -> impl Iterator<Item = char> + '_ {
+    let mut en_etiqueta = false;
+    marcado.chars().filter(move |&c| {
+        match c {
+            '<' => en_etiqueta = true,
+            '>' => en_etiqueta = false,
+            _ => {}
+        }
+        !en_etiqueta
+            && !c.is_ascii()
+            && !c.is_whitespace()
+            && !c.is_control()
+            && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0020}'..='\u{E007F}')
+    })
+}
+
+/// Si alguna cara de `db` tiene la letra `c`.
+fn tiene(db: &usvg::fontdb::Database, c: char) -> bool {
+    db.faces().any(|f| {
+        db.with_face_data(f.id, |datos, indice| {
+            ttf_parser::Face::parse(datos, indice)
+                .ok()
+                .and_then(|cara| cara.glyph_index(c))
+                .is_some()
+        })
+        .unwrap_or(false)
+    })
+}
+
+/// Una letra que se ve mejor con la cara de emoji del sistema que con una de texto.
+fn es_emoji(c: char) -> bool {
+    matches!(c as u32, 0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF | 0x2300..=0x23FF)
+}
+
+/// El archivo de una cara que tenga `c`, parecida a la letra de la interfaz (los emoji, de la
+/// familia `emoji` del sistema).
+fn respaldo(familia: &str, c: char) -> Option<PathBuf> {
+    if es_emoji(c)
+        && let Some(r) = buscar_con_letra("emoji", c)
+    {
+        return Some(r);
+    }
+    buscar_con_letra(familia, c).or_else(|| buscar_con_letra("sans-serif", c))
 }
 
 // fontconfig: lo justo para «qué archivo tiene esta letra».
@@ -119,6 +252,86 @@ unsafe extern "C" {
         s: *mut *mut u8,
     ) -> c_int;
     fn FcPatternDestroy(p: *mut FcPattern);
+    fn FcCharSetCreate() -> *mut FcCharSet;
+    fn FcCharSetAddChar(fcs: *mut FcCharSet, ucs4: c_uint) -> c_int;
+    fn FcCharSetHasChar(fcs: *const FcCharSet, ucs4: c_uint) -> c_int;
+    fn FcCharSetDestroy(fcs: *mut FcCharSet);
+    fn FcPatternAddCharSet(p: *mut FcPattern, object: *const c_char, c: *const FcCharSet) -> c_int;
+    fn FcPatternGetCharSet(
+        p: *const FcPattern,
+        object: *const c_char,
+        n: c_int,
+        c: *mut *mut FcCharSet,
+    ) -> c_int;
+    fn FcFontSort(
+        config: *mut c_void,
+        p: *mut FcPattern,
+        trim: c_int,
+        csp: *mut *mut FcCharSet,
+        result: *mut c_int,
+    ) -> *mut FcFontSet;
+    fn FcFontSetDestroy(s: *mut FcFontSet);
+}
+
+#[allow(non_camel_case_types)]
+type FcCharSet = c_void;
+
+#[repr(C)]
+struct FcFontSet {
+    nfont: c_int,
+    sfont: c_int,
+    fonts: *mut *mut FcPattern,
+}
+
+/// El archivo de la primera cara que fontconfig ordena para `familia` y que de verdad tiene la
+/// letra `c` (`FcFontMatch` solo la prefiere: puede elegir una que no la tenga).
+fn buscar_con_letra(familia: &str, c: char) -> Option<PathBuf> {
+    let nombre = CString::new(familia).ok()?;
+    // SAFETY: como en `buscar`. El patrón, el conjunto de letras y la lista ordenada se crean y
+    // se destruyen acá; las cadenas y conjuntos que se leen de la lista viven mientras ella vive
+    // y la ruta se copia antes de destruirla.
+    unsafe {
+        let pat = FcNameParse(nombre.as_ptr().cast());
+        if pat.is_null() {
+            return None;
+        }
+        let letras = FcCharSetCreate();
+        if !letras.is_null() {
+            FcCharSetAddChar(letras, c as c_uint);
+            FcPatternAddCharSet(pat, c"charset".as_ptr(), letras);
+            FcCharSetDestroy(letras);
+        }
+        FcConfigSubstitute(std::ptr::null_mut(), pat, FC_MATCH_PATTERN);
+        FcDefaultSubstitute(pat);
+        let mut res = 0;
+        let lista = FcFontSort(std::ptr::null_mut(), pat, 1, std::ptr::null_mut(), &mut res);
+        FcPatternDestroy(pat);
+        if lista.is_null() {
+            return None;
+        }
+        let mut encontrada = None;
+        let n = (*lista).nfont.max(0) as usize;
+        for i in 0..n {
+            let f = *(*lista).fonts.add(i);
+            let mut cs: *mut FcCharSet = std::ptr::null_mut();
+            if FcPatternGetCharSet(f, c"charset".as_ptr(), 0, &mut cs) != FC_RESULT_MATCH
+                || cs.is_null()
+                || FcCharSetHasChar(cs, c as c_uint) == 0
+            {
+                continue;
+            }
+            let mut s: *mut u8 = std::ptr::null_mut();
+            if FcPatternGetString(f, c"file".as_ptr(), 0, &mut s) == FC_RESULT_MATCH && !s.is_null()
+            {
+                encontrada = Some(PathBuf::from(
+                    CStr::from_ptr(s.cast()).to_string_lossy().into_owned(),
+                ));
+                break;
+            }
+        }
+        FcFontSetDestroy(lista);
+        encontrada
+    }
 }
 
 /// El archivo y la familia que fontconfig elige para `patron` (`Adwaita Sans:bold`).
