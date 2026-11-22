@@ -25,7 +25,17 @@ pub fn guardar_version(
     texto_previo: &str,
     actor: &str,
 ) -> Result<bool, crate::VaultError> {
-    let root = vault.root();
+    guardar_version_en(vault.root(), ruta, texto_previo, actor)
+}
+
+/// Lo mismo que [`guardar_version`] sin una `Vault` abierta (el motor de sincronización de la
+/// 061 guarda ahí las versiones que reemplaza o fusiona).
+pub fn guardar_version_en(
+    root: &std::path::Path,
+    ruta: &RelPath,
+    texto_previo: &str,
+    actor: &str,
+) -> Result<bool, crate::VaultError> {
     let dir = carpeta(root, ruta);
     fs::create_dir_all(&dir)?;
     let contenido = texto_previo.as_bytes();

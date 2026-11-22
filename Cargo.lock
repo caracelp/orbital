@@ -1286,6 +1286,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "orbital-drive"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom",
+ "gio",
+ "md-5",
+ "orbital-drive",
+ "orbital-vault",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "soup3",
+]
+
+[[package]]
 name = "orbital-formulas"
 version = "0.1.0"
 dependencies = [
