@@ -569,11 +569,18 @@ fn manejar(
     let mut d = datos.lock().unwrap();
     let campo = |k: &str| p.consulta.get(k).cloned();
     match (p.metodo.as_str(), p.ruta.as_str()) {
-        ("GET", "/drive/v3/about") => json(
-            s,
-            200,
-            &serde_json::json!({"user": {"emailAddress": CUENTA, "displayName": "Prueba"}}),
-        ),
+        ("GET", "/drive/v3/about") => {
+            // Sin cuota: 15 GiB, como una cuenta gratuita.
+            let limite = d.cuota.unwrap_or(15 << 30);
+            json(
+                s,
+                200,
+                &serde_json::json!({
+                    "user": {"emailAddress": CUENTA, "displayName": "Prueba"},
+                    "storageQuota": {"limit": limite.to_string(), "usage": d.usado().to_string()},
+                }),
+            )
+        }
         ("GET", "/drive/v3/changes/startPageToken") => {
             let t = d.cambios.len().to_string();
             json(s, 200, &serde_json::json!({ "startPageToken": t }))

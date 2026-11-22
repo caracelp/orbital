@@ -21,16 +21,24 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::api::{Api, Archivo, ErrorApi, Resultado};
-use crate::estado::{self, Candado, Conflicto, Estado, Nodo, Registro};
+use crate::api::{Api, Archivo, Cuota, ErrorApi, Resultado};
+use crate::estado::{self, Candado, Conflicto, Estado, Marcador, Nodo, Registro};
 pub use crate::local::Papelera;
 use crate::local::{self, EnDisco, Firma};
-use crate::reglas::{self, Conexion};
+use crate::reglas::{self, Conexion, Ubicacion};
 
-/// Tope para guardar una versión de texto en el historial o usarla como base de una fusión.
+/// Tope para guardar una versión de texto en el historial o usarla como base de una fusión, y
+/// para el extracto de lo «solo en Drive» (decisión 3).
 pub const TOPE_TEXTO: u64 = 1024 * 1024;
 
-/// Estado de una ruta para el explorador (FR-011; «solo en Drive» y «bloqueado» son de la 061b).
+/// Tope de la caché de lo «solo en Drive» abierto (los extractos de texto no cuentan).
+pub const TOPE_CACHE: u64 = 1 << 30;
+
+/// Reglas vigentes para la interfaz: las compartidas «solo en este equipo» y las de este equipo.
+pub type Reglas = Vec<(String, Ubicacion)>;
+
+/// Estado de una ruta para el explorador (FR-011; «bloqueado sin conexión» lo deduce la app de
+/// «solo en Drive» y la red).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EstadoArchivo {
     /// En este equipo y en Drive, al día.
@@ -41,13 +49,17 @@ pub enum EstadoArchivo {
     Bajando,
     /// En conflicto: hay dos versiones.
     Conflicto,
+    /// Solo en Drive (061b): un marcador, sin copia en la bóveda.
+    SoloDrive,
+    /// Nuevo en este equipo y sin subir por el predeterminado «Solo en este equipo».
+    Local,
 }
 
 impl EstadoArchivo {
     /// Prioridad para resumir una carpeta (el peor estado de su contenido).
     fn peso(self) -> u8 {
         match self {
-            Self::Ambos => 0,
+            Self::Ambos | Self::SoloDrive | Self::Local => 0,
             Self::Bajando => 1,
             Self::Subiendo => 2,
             Self::Conflicto => 3,
@@ -69,14 +81,25 @@ pub struct Resumen {
     pub error: Option<String>,
     /// Hora de la última sincronización completa (`HH:MM`).
     pub ultima: Option<String>,
+    /// Espacio de la cuenta (se consulta en cada recorrido completo).
+    pub cuota: Option<Cuota>,
+    /// Predeterminados de este equipo para lo nuevo (061b).
+    pub nuevo_local: Ubicacion,
+    pub nuevo_remoto: Ubicacion,
+    /// Cuántos archivos están «solo en Drive».
+    pub solo_drive: usize,
 }
 
 /// Lo que el motor le avisa a la interfaz.
 #[derive(Clone, Debug)]
 pub enum Evento {
     /// Mapa completo ruta → estado (carpetas incluidas, con el peor estado de su contenido) y las
-    /// reglas «solo en este equipo» vigentes.
-    Estados(Arc<HashMap<String, EstadoArchivo>>, Arc<Vec<String>>),
+    /// reglas vigentes (las compartidas «solo en este equipo» y las de este equipo).
+    Estados(Arc<HashMap<String, EstadoArchivo>>, Arc<Reglas>),
+    /// Lo «solo en Drive» cambió (la app lo suma al árbol; también quedó en `marcadores`).
+    Marcadores(Arc<Vec<Marcador>>),
+    /// Respuesta a [`Orden::Traer`]: dónde quedó la copia para abrirla, o por qué no se pudo.
+    Traido(String, Result<PathBuf, String>),
     /// Una ruta cambió de estado (subidas y bajadas largas).
     Uno(String, EstadoArchivo),
     Resumen(Resumen),
@@ -122,6 +145,25 @@ pub enum Orden {
     Enlace(String),
     /// Mandar a la papelera de Drive la copia de una ruta que pasó a «solo en este equipo».
     QuitarDeDrive(String),
+    /// Regla de este equipo para una ruta (carpetas con `/` final): «en ambos» o «solo en Drive».
+    /// `None` la quita. «Solo en este equipo» es compartida y va en `drive.yaml`.
+    Ubicar(String, Option<Ubicacion>),
+    /// Predeterminados para lo nuevo de este equipo y lo nuevo en Drive.
+    Predeterminados {
+        local: Ubicacion,
+        remoto: Ubicacion,
+    },
+    /// Traer a la caché un archivo «solo en Drive» para abrirlo o mostrarlo incrustado.
+    Traer(String),
+    /// La nota abierta en el editor: no se le libera espacio mientras se edita.
+    Abierta(Option<String>),
+    /// Mandar a la papelera de Drive un archivo «solo en Drive» (borrarlo desde el explorador).
+    Borrar(String),
+    /// Renombrar o mover un archivo «solo en Drive» (mismo id).
+    Mover {
+        de: String,
+        a: String,
+    },
     Detener,
 }
 
@@ -137,6 +179,10 @@ pub struct Config {
     pub intervalo_fondo: Duration,
     /// Cada cuánto se recorre la bóveda entera por si algo se escapó al vigilante.
     pub intervalo_completo: Duration,
+    /// Caché de lo «solo en Drive» de este equipo ([`estado::carpeta_cache`]).
+    pub dir_cache: PathBuf,
+    /// Tope de la caché (sin contar los extractos de texto).
+    pub tope_cache: u64,
 }
 
 impl Config {
@@ -149,6 +195,8 @@ impl Config {
             intervalo_activo: Duration::from_secs(30),
             intervalo_fondo: Duration::from_secs(180),
             intervalo_completo: Duration::from_secs(600),
+            dir_cache: estado::carpeta_cache(root),
+            tope_cache: TOPE_CACHE,
         }
     }
 }
@@ -177,6 +225,15 @@ pub struct Sincronizador<A: Api> {
     /// El estado cambió desde la última vez que se guardó (y el mapa, desde que se emitió).
     mutado: bool,
     pendientes_emitidas: BTreeSet<String>,
+    ultimos_marcadores: Option<Arc<Vec<Marcador>>>,
+    /// Lo nuevo de este equipo que no se sube por el predeterminado «Solo en este equipo».
+    locales_defecto: BTreeSet<String>,
+    pub cuota: Option<Cuota>,
+    /// La nota abierta en el editor (no se libera mientras está abierta).
+    pub abierta: Option<String>,
+    /// Solo pruebas: corta «Liberar espacio» justo después de guardar el estado y antes de sacar
+    /// la copia de la bóveda (como un corte de luz).
+    pub cortar_liberar: bool,
 }
 
 fn padre_de(rel: &str) -> &str {
@@ -223,6 +280,11 @@ impl<A: Api> Sincronizador<A> {
             ultima: None,
             mutado: true,
             pendientes_emitidas: BTreeSet::new(),
+            ultimos_marcadores: None,
+            locales_defecto: BTreeSet::new(),
+            cuota: None,
+            abierta: None,
+            cortar_liberar: false,
         };
         s.indexar();
         s
@@ -320,6 +382,9 @@ impl<A: Api> Sincronizador<A> {
         }
         self.mirar_orbital();
         let r = self.ciclo_interno();
+        if self.mutado {
+            self.recortar_cache(None);
+        }
         // Solo si algo cambió: el estado de 5000 notas son ≈ 2 MB (medido en el quickstart).
         if self.mutado {
             let _ = self.estado.guardar(&self.cfg.dir_estado);
@@ -356,7 +421,14 @@ impl<A: Api> Sincronizador<A> {
         let completa = std::mem::take(&mut self.completa);
         let mut disco: HashMap<String, EnDisco> = HashMap::new();
         let rutas: BTreeSet<String> = if completa {
-            let recorrido = local::recorrer(&self.cfg.root, &self.conexion);
+            let recorrido = local::recorrer(&self.cfg.root, &|r| self.excluida(r));
+            self.locales_defecto.clear();
+            // La cuota, una vez por recorrido completo (cada 10 min): para el diálogo.
+            if let Ok(c) = self.api.cuota()
+                && self.cuota != Some(c)
+            {
+                self.cuota = Some(c);
+            }
             let mut todas: BTreeSet<String> = recorrido.keys().cloned().collect();
             todas.extend(self.estado.registros.keys().cloned());
             todas.extend(self.ruta_id.keys().cloned());
@@ -489,8 +561,55 @@ impl<A: Api> Sincronizador<A> {
         Ok(())
     }
 
+    /// Las reglas vigentes: las compartidas «solo en este equipo» y las de este equipo.
+    fn reglas_vigentes(&self) -> impl Iterator<Item = (&str, Ubicacion)> {
+        self.conexion
+            .solo_local
+            .iter()
+            .map(|r| (r.as_str(), Ubicacion::Local))
+            .chain(self.estado.reglas.iter().map(|(r, u)| (r.as_str(), *u)))
+    }
+
+    /// La regla más específica que cubre `rel` (sin regla: `None`).
+    pub fn regla(&self, rel: &str) -> Option<Ubicacion> {
+        if self.conexion.solo_local.is_empty() && self.estado.reglas.is_empty() {
+            return None;
+        }
+        reglas::ubicacion(self.reglas_vigentes(), rel)
+    }
+
     fn excluida(&self, rel: &str) -> bool {
-        !reglas::sincronizable(rel) || self.conexion.es_local(rel)
+        !reglas::sincronizable(rel) || self.regla(rel) == Some(Ubicacion::Local)
+    }
+
+    /// Si un archivo acordado «en ambos» tiene que pasar a «solo en Drive».
+    fn toca_liberar(&self, r: &str, b: &Registro) -> bool {
+        !b.carpeta
+            && !b.solo_drive
+            && !r.starts_with(".orbital/")
+            && self.abierta.as_deref() != Some(r)
+            && match self.regla(r) {
+                Some(u) => u == Ubicacion::SoloDrive,
+                None => b.liberar,
+            }
+    }
+
+    /// Si un marcador tiene que volver a la bóveda (regla «en ambos» o «solo en este equipo»).
+    fn toca_mantener(&self, r: &str) -> bool {
+        matches!(
+            self.regla(r),
+            Some(Ubicacion::Ambos) | Some(Ubicacion::Local)
+        )
+    }
+
+    fn copia(&self, b: &Registro) -> PathBuf {
+        let nombre = self
+            .estado
+            .nodos
+            .get(&b.id)
+            .map(|n| n.nombre.as_str())
+            .unwrap_or("archivo");
+        estado::ruta_copia(&self.cfg.dir_cache, &b.id, nombre)
     }
 
     fn disco(&self, disco: &mut HashMap<String, EnDisco>, rel: &str) -> EnDisco {
@@ -517,11 +636,29 @@ impl<A: Api> Sincronizador<A> {
         disco: &mut HashMap<String, EnDisco>,
     ) -> Resultado<()> {
         let mut rutas: BTreeSet<String> = rutas.into_iter().filter(|r| !r.is_empty()).collect();
+        self.movimientos_de_carpetas(&mut rutas, disco)?;
         self.movimientos_locales(&mut rutas, disco)?;
         self.movimientos_remotos(&mut rutas, disco);
         let mut carpetas = Vec::new();
         for r in &rutas {
             if self.excluida(r) {
+                // Un marcador que pasó a «solo en este equipo»: primero vuelve a la bóveda.
+                if reglas::sincronizable(r)
+                    && self
+                        .estado
+                        .registros
+                        .get(r)
+                        .is_some_and(|b| b.solo_drive && !b.carpeta)
+                {
+                    match self.mantener(r) {
+                        Ok(()) => self.olvidar(r),
+                        Err(e) if e.transitorio() => return Err(e),
+                        Err(e) => self.avisar(
+                            &format!("error:{r}"),
+                            format!("No se pudo traer «{r}» a este equipo: {e}"),
+                        ),
+                    }
+                }
                 continue;
             }
             let es_carpeta = matches!(self.disco(disco, r), EnDisco::Carpeta)
@@ -581,7 +718,7 @@ impl<A: Api> Sincronizador<A> {
             }
             let en = self.disco(disco, r);
             match (self.estado.registros.get(r), en) {
-                (Some(b), EnDisco::Nada) if !b.carpeta => {
+                (Some(b), EnDisco::Nada) if !b.carpeta && !b.solo_drive => {
                     let sigue = self.estado.nodos.get(&b.id).is_some_and(|n| n.md5 == b.md5)
                         && self.id_ruta.get(&b.id) == Some(r);
                     if sigue {
@@ -638,6 +775,7 @@ impl<A: Api> Sincronizador<A> {
                             md5: a.md5.clone().or(b.md5.clone()),
                             tam: f.tam,
                             mtime: f.mtime,
+                            ..Default::default()
                         },
                     );
                     if let Some(s) = self.e().subidas.remove(&vieja) {
@@ -660,6 +798,7 @@ impl<A: Api> Sincronizador<A> {
         disco: &mut HashMap<String, EnDisco>,
     ) {
         let mut mover: Vec<(String, String)> = Vec::new();
+        let mut marcas: Vec<(String, String)> = Vec::new();
         for r in rutas.iter() {
             let Some(b) = self.estado.registros.get(r) else {
                 continue;
@@ -676,7 +815,22 @@ impl<A: Api> Sincronizador<A> {
             if self.estado.registros.contains_key(q) {
                 continue;
             }
-            mover.push((r.clone(), q.clone()));
+            if b.solo_drive {
+                marcas.push((r.clone(), q.clone()));
+            } else {
+                mover.push((r.clone(), q.clone()));
+            }
+        }
+        // Un marcador movido o renombrado en Drive: no hay nada en el disco, solo se cambia la
+        // ruta (y el nombre de su copia en la caché).
+        for (r, q) in marcas {
+            if let Some(b) = self.e().registros.remove(&r) {
+                self.e().registros.insert(q.clone(), b);
+            }
+            if let Some(u) = self.e().reglas.remove(&r) {
+                self.e().reglas.insert(q.clone(), u);
+            }
+            rutas.insert(q);
         }
         for (r, q) in mover {
             if !matches!(self.disco(disco, &r), EnDisco::Archivo(_))
@@ -706,6 +860,15 @@ impl<A: Api> Sincronizador<A> {
         if self.estado.conflictos.contains_key(r) {
             return Ok(());
         }
+        if let Some(b) = self
+            .estado
+            .registros
+            .get(r)
+            .filter(|b| b.solo_drive && !b.carpeta)
+            .cloned()
+        {
+            return self.conciliar_marcador(r, b, disco);
+        }
         let en = self.disco(disco, r);
         let remoto = self
             .ruta_id
@@ -724,8 +887,35 @@ impl<A: Api> Sincronizador<A> {
         };
         match (&base, &local, &remoto) {
             (None, None, None) => Ok(()),
-            (None, Some((f, _)), None) => self.subir(r, None, *f),
-            (None, None, Some((id, n))) => self.bajar(r, id, n, EnDisco::Nada),
+            (None, Some((f, _)), None) => {
+                // Lo nuevo de este equipo: la regla, o el predeterminado.
+                let quiere = self.regla(r);
+                let defecto = quiere.is_none().then_some(self.estado.nuevo_local);
+                if defecto == Some(Ubicacion::Local) {
+                    self.locales_defecto.insert(r.to_owned());
+                    return Ok(());
+                }
+                self.subir(r, None, *f)?;
+                if defecto == Some(Ubicacion::SoloDrive)
+                    && let Some(b) = self.estado.registros.get_mut(r)
+                {
+                    b.liberar = true;
+                    self.mutado = true;
+                }
+                if quiere == Some(Ubicacion::SoloDrive) || defecto == Some(Ubicacion::SoloDrive) {
+                    self.sucio.insert(r.to_owned());
+                }
+                Ok(())
+            }
+            (None, None, Some((id, n))) => {
+                // Lo nuevo en Drive: la regla, o el predeterminado.
+                let quiere = self.regla(r).unwrap_or(self.estado.nuevo_remoto);
+                if quiere == Ubicacion::SoloDrive && !r.starts_with(".orbital/") {
+                    self.crear_marcador(r, id, n)
+                } else {
+                    self.bajar(r, id, n, EnDisco::Nada)
+                }
+            }
             (None, Some((f, md5)), Some((id, n))) => {
                 if md5.is_some() && *md5 == n.md5 {
                     self.acordar(r, id, n.md5.clone(), *f);
@@ -750,6 +940,9 @@ impl<A: Api> Sincronizador<A> {
                             let mut b = b.clone();
                             b.mtime = f.mtime;
                             self.e().registros.insert(r.to_owned(), b);
+                        }
+                        if self.toca_liberar(r, b) && !self.estado.subidas.contains_key(r) {
+                            return self.liberar(r);
                         }
                         Ok(())
                     }
@@ -786,6 +979,8 @@ impl<A: Api> Sincronizador<A> {
     }
 
     fn acordar(&mut self, r: &str, id: &str, md5: Option<String>, f: Firma) {
+        // «Volver a solo en Drive» sobrevive a un conflicto y a una subida.
+        let liberar = self.estado.registros.get(r).is_some_and(|b| b.liberar);
         self.e().registros.insert(
             r.to_owned(),
             Registro {
@@ -794,6 +989,8 @@ impl<A: Api> Sincronizador<A> {
                 md5,
                 tam: f.tam,
                 mtime: f.mtime,
+                liberar,
+                ..Default::default()
             },
         );
         self.guardar_base(r, id);
@@ -808,12 +1005,15 @@ impl<A: Api> Sincronizador<A> {
 
     /// Guarda la versión acordada de una nota de texto como base de futuras fusiones.
     fn guardar_base(&self, r: &str, id: &str) {
+        self.guardar_base_de(r, id, &self.cfg.root.join(r));
+    }
+
+    fn guardar_base_de(&self, r: &str, id: &str, ruta: &Path) {
         if !local::es_texto(r) {
             return;
         }
-        let ruta = self.cfg.root.join(r);
-        if fs::metadata(&ruta).is_ok_and(|m| m.len() <= TOPE_TEXTO)
-            && let Ok(b) = fs::read(&ruta)
+        if fs::metadata(ruta).is_ok_and(|m| m.len() <= TOPE_TEXTO)
+            && let Ok(b) = fs::read(ruta)
         {
             let destino = estado::ruta_base(&self.cfg.dir_estado, id);
             let _ = fs::create_dir_all(destino.parent().expect("carpeta de bases"));
@@ -958,6 +1158,7 @@ impl<A: Api> Sincronizador<A> {
         match resultado {
             Ok((a, padre)) => {
                 self.e().subidas.remove(r);
+                let liberar = self.estado.registros.get(r).is_some_and(|b| b.liberar);
                 let padre = padre
                     .or_else(|| a.padres.first().cloned())
                     .or_else(|| self.estado.nodos.get(&a.id).map(|n| n.padre.clone()))
@@ -971,8 +1172,13 @@ impl<A: Api> Sincronizador<A> {
                         md5: a.md5.clone(),
                         tam: f.tam,
                         mtime: f.mtime,
+                        liberar,
+                        ..Default::default()
                     },
                 );
+                if liberar {
+                    self.sucio.insert(r.to_owned());
+                }
                 // Base: solo si el disco tiene justo lo que se subió.
                 if local::md5_archivo(&ruta).ok() == a.md5 {
                     self.guardar_base(r, &a.id);
@@ -1032,7 +1238,18 @@ impl<A: Api> Sincronizador<A> {
     /// coincide (cambió otra vez en Drive: lo trae el próximo ciclo).
     fn bajar_a_temporal(&mut self, id: &str, n: &Nodo) -> Resultado<Option<PathBuf>> {
         let dir = self.carpeta_temporal();
-        fs::create_dir_all(&dir).map_err(|e| ErrorApi::Local(e.to_string()))?;
+        self.bajar_a_temporal_en(&dir, id, n)
+    }
+
+    /// Como [`Self::bajar_a_temporal`], en otra carpeta (las copias de la caché bajan en la caché:
+    /// un video «solo en Drive» nunca pasa por la bóveda).
+    fn bajar_a_temporal_en(
+        &mut self,
+        dir: &Path,
+        id: &str,
+        n: &Nodo,
+    ) -> Resultado<Option<PathBuf>> {
+        fs::create_dir_all(dir).map_err(|e| ErrorApi::Local(e.to_string()))?;
         let limpio: String = id
             .chars()
             .map(|c| {
@@ -1047,7 +1264,7 @@ impl<A: Api> Sincronizador<A> {
         // prueba de caos encontró una bajada corrupta así), y los de versiones viejas se borran.
         let version = n.md5.as_deref().unwrap_or("sin-suma");
         let tmp = dir.join(format!("{limpio}-{version}.parcial"));
-        if let Ok(rd) = fs::read_dir(&dir) {
+        if let Ok(rd) = fs::read_dir(dir) {
             let prefijo = format!("{limpio}-");
             for e in rd.flatten() {
                 let nombre = e.file_name();
@@ -1155,6 +1372,7 @@ impl<A: Api> Sincronizador<A> {
                     md5: n.md5.clone(),
                     tam: n.tam,
                     mtime: 0,
+                    ..Default::default()
                 },
             );
             self.emitir(Evento::Fusionada(r.to_owned()));
@@ -1278,6 +1496,8 @@ impl<A: Api> Sincronizador<A> {
                 md5: c.md5.clone(),
                 tam: 0,
                 mtime: 0,
+                liberar: self.estado.registros.get(r).is_some_and(|b| b.liberar),
+                ..Default::default()
             };
             self.e().registros.insert(r.to_owned(), b.clone());
             self.e().conflictos.remove(r);
@@ -1401,6 +1621,709 @@ impl<A: Api> Sincronizador<A> {
         Ok(())
     }
 
+    // --- «solo en Drive» (061b) ------------------------------------------------------------------
+
+    /// MD5 de la copia de la caché (con la firma acordada se evita leerla).
+    fn md5_copia(&self, b: &Registro, copia: &Path) -> Option<(Firma, Option<String>)> {
+        let EnDisco::Archivo(f) = local::en_disco(copia) else {
+            return None;
+        };
+        if f.tam == b.tam && f.mtime == b.mtime {
+            return Some((f, b.md5.clone()));
+        }
+        Some((f, local::md5_archivo(copia).ok()))
+    }
+
+    /// Si el nombre en Drive cambió, la copia de la caché sigue al nombre nuevo.
+    fn ubicar_copia(&self, b: &Registro) -> PathBuf {
+        let esperada = self.copia(b);
+        if esperada.exists() {
+            return esperada;
+        }
+        if let Some(dir) = esperada.parent()
+            && let Ok(rd) = fs::read_dir(dir)
+        {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_file() && p.extension().is_none_or(|x| x != "orbital-copiando") {
+                    let _ = fs::rename(&p, &esperada);
+                    break;
+                }
+            }
+        }
+        esperada
+    }
+
+    /// Si el extracto de una nota «solo en Drive» se guarda (decisión 3: `.md` y `.html` hasta 1 MB).
+    fn lleva_extracto(r: &str, tam: u64) -> bool {
+        local::es_texto(r) && tam <= TOPE_TEXTO
+    }
+
+    /// Baja la versión de Drive a la copia de la caché. `false`: la suma no coincidió (el próximo
+    /// ciclo vuelve a probar).
+    fn bajar_copia(&mut self, r: &str, id: &str, n: &Nodo) -> Resultado<bool> {
+        self.emitir(Evento::Uno(r.to_owned(), EstadoArchivo::Bajando));
+        let dir = self.cfg.dir_cache.join("parcial");
+        let Some(tmp) = self.bajar_a_temporal_en(&dir, id, n)? else {
+            return Ok(false);
+        };
+        let copia = estado::ruta_copia(&self.cfg.dir_cache, id, &n.nombre);
+        local::mover(&tmp, &copia).map_err(|e| ErrorApi::Local(e.to_string()))?;
+        let f = match local::en_disco(&copia) {
+            EnDisco::Archivo(f) => f,
+            _ => return Ok(false),
+        };
+        self.e().registros.insert(
+            r.to_owned(),
+            Registro {
+                id: id.to_owned(),
+                md5: n.md5.clone(),
+                tam: f.tam,
+                mtime: f.mtime,
+                solo_drive: true,
+                ..Default::default()
+            },
+        );
+        self.guardar_base_de(r, id, &copia);
+        Ok(true)
+    }
+
+    /// Un archivo nuevo en Drive que queda «solo en Drive»: un marcador, con el extracto si es una
+    /// nota de texto (para la búsqueda, el grafo y las etiquetas).
+    fn crear_marcador(&mut self, r: &str, id: &str, n: &Nodo) -> Resultado<()> {
+        if Self::lleva_extracto(r, n.tam) {
+            self.bajar_copia(r, id, n)?;
+            return Ok(());
+        }
+        self.e().registros.insert(
+            r.to_owned(),
+            Registro {
+                id: id.to_owned(),
+                md5: n.md5.clone(),
+                solo_drive: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    }
+
+    /// Un archivo «solo en Drive»: lo que cambió en Drive, en su copia de la caché o en la regla.
+    fn conciliar_marcador(
+        &mut self,
+        r: &str,
+        b: Registro,
+        disco: &mut HashMap<String, EnDisco>,
+    ) -> Resultado<()> {
+        let copia = self.ubicar_copia(&b);
+        let local = self.md5_copia(&b, &copia);
+        let editada = local.as_ref().is_some_and(|(_, m)| *m != b.md5);
+        // Apareció un archivo en la bóveda en esa ruta (un corte a mitad de «Liberar espacio», o
+        // alguien lo puso): deja de ser un marcador y sigue el camino de siempre con lo acordado
+        // como base. Si además la copia de la caché tenía cambios, se guarda antes (nunca se
+        // pierde).
+        if let EnDisco::Archivo(_) = self.disco(disco, r) {
+            if editada
+                && let Ok(c) = fs::read(&copia)
+                && local::md5_archivo(&self.cfg.root.join(r)).ok().as_deref()
+                    != Some(local::md5_bytes(&c).as_str())
+            {
+                self.al_historial(r, &c);
+            }
+            let _ = fs::remove_file(&copia);
+            let mut b = b;
+            b.solo_drive = false;
+            b.liberar = true; // era «solo en Drive»: vuelve a serlo cuando quede acordado
+            b.tam = 0;
+            b.mtime = 0;
+            self.e().registros.insert(r.to_owned(), b);
+            // En el mismo paso (la prueba de caos lo encontró: si se dejaba para el próximo
+            // ciclo, un cambio que la usuaria hacía antes pisaba esta versión sin subirla).
+            disco.remove(r);
+            return self.conciliar_archivo(r, disco);
+        }
+        let remoto = self
+            .ruta_id
+            .get(r)
+            .filter(|id| **id == b.id)
+            .and_then(|id| self.estado.nodos.get(id).cloned());
+        let Some(n) = remoto else {
+            // Ya no está en Drive (papelera, o fuera de la carpeta). Si la copia tenía cambios
+            // sin subir, vuelve a la bóveda como un archivo nuevo y se sube (no se pierde); si no,
+            // la copia era igual a una versión que Drive guarda en su papelera y se suelta.
+            if editada && matches!(self.disco(disco, r), EnDisco::Nada) {
+                local::mover(&copia, &self.cfg.root.join(r))
+                    .map_err(|e| ErrorApi::Local(e.to_string()))?;
+                disco.remove(r);
+                self.avisar(
+                    &format!("resubida:{r}"),
+                    format!("«{r}» se había borrado en Drive y tenía cambios en este equipo: se volvió a subir."),
+                );
+                self.e().registros.remove(r);
+                return self.conciliar_archivo(r, disco);
+            }
+            let _ = fs::remove_file(&copia);
+            let _ = fs::remove_dir(copia.parent().unwrap_or(Path::new("")));
+            self.olvidar(r);
+            return Ok(());
+        };
+        let cambio_remoto = n.md5 != b.md5;
+        if self.toca_mantener(r) {
+            self.mantener(r)?;
+            disco.remove(r);
+            if self.estado.registros.get(r).is_some_and(|b| !b.solo_drive) {
+                // Si volvió con cambios sin subir, se suben en este mismo paso.
+                return self.conciliar_archivo(r, disco);
+            }
+            return Ok(());
+        }
+        match (cambio_remoto, editada) {
+            (false, false) => {
+                // Al día. Si es una nota de texto sin extracto (la marcó otro equipo, o se
+                // recortó la caché), se baja el extracto.
+                if local.is_none() && Self::lleva_extracto(r, n.tam) {
+                    self.bajar_copia(r, &b.id, &n)?;
+                }
+                Ok(())
+            }
+            (true, false) => {
+                // Cambió en Drive: se renueva la copia si había una o si lleva extracto; si no,
+                // solo cambia lo acordado.
+                if local.is_some() || Self::lleva_extracto(r, n.tam) {
+                    self.bajar_copia(r, &b.id, &n)?;
+                } else {
+                    let mut b = b;
+                    b.md5 = n.md5.clone();
+                    self.e().registros.insert(r.to_owned(), b);
+                }
+                Ok(())
+            }
+            (false, true) => {
+                let (f, _) = local.expect("copia editada");
+                self.subir_copia(r, b, &copia, f)
+            }
+            (true, true) => {
+                // Cambió en los dos lados: la copia de la caché vuelve a la bóveda y sigue el
+                // camino de los conflictos (fusión o las dos versiones). Si la regla es «solo en
+                // Drive», se libera otra vez cuando se resuelva.
+                local::mover(&copia, &self.cfg.root.join(r))
+                    .map_err(|e| ErrorApi::Local(e.to_string()))?;
+                disco.remove(r);
+                let mut b = b;
+                b.solo_drive = false;
+                b.liberar = true;
+                b.tam = 0;
+                b.mtime = 0;
+                self.e().registros.insert(r.to_owned(), b);
+                self.conciliar_archivo(r, disco)
+            }
+        }
+    }
+
+    /// Sube la copia editada de un archivo «solo en Drive» (sigue siendo «solo en Drive»).
+    fn subir_copia(&mut self, r: &str, b: Registro, copia: &Path, f: Firma) -> Resultado<()> {
+        if self.cuota_llena {
+            return Ok(());
+        }
+        self.emitir(Evento::Uno(r.to_owned(), EstadoArchivo::Subiendo));
+        // Justo antes de subir encima: ¿Drive sigue teniendo lo acordado?
+        match self.api.archivo(&b.id) {
+            Ok(a) if !a.papelera && a.md5 == b.md5 => {}
+            Ok(a) if !a.papelera => {
+                let padre = a.padres.first().cloned().unwrap_or_default();
+                self.poner_nodo(&a, &padre);
+                self.sucio.insert(r.to_owned());
+                return Ok(());
+            }
+            Ok(_) | Err(ErrorApi::NoEncontrado) => {
+                self.quitar_nodo(&b.id);
+                self.sucio.insert(r.to_owned());
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        let mut sesion = self.estado.subidas.get(r).cloned();
+        self.mutado = true;
+        let (estado, dir) = (&mut self.estado, &self.cfg.dir_estado);
+        let res = self.api.subir_cambio(&b.id, copia, &mut sesion, &mut |s| {
+            estado.subidas.insert(r.to_owned(), s.clone());
+            let _ = estado.guardar(dir);
+        });
+        match res {
+            Ok(a) => {
+                self.e().subidas.remove(r);
+                let padre = a
+                    .padres
+                    .first()
+                    .cloned()
+                    .or_else(|| self.estado.nodos.get(&a.id).map(|n| n.padre.clone()))
+                    .unwrap_or_else(|| self.estado.raiz.clone());
+                self.poner_nodo(&a, &padre);
+                let mismo = local::md5_archivo(copia).ok() == a.md5;
+                self.e().registros.insert(
+                    r.to_owned(),
+                    Registro {
+                        id: a.id.clone(),
+                        md5: a.md5.clone(),
+                        // Si la copia cambió mientras subía, la firma vieja hace que se vuelva a
+                        // mirar en el próximo ciclo.
+                        tam: if mismo { f.tam } else { 0 },
+                        mtime: if mismo { f.mtime } else { 0 },
+                        solo_drive: true,
+                        ..Default::default()
+                    },
+                );
+                if mismo {
+                    self.guardar_base_de(r, &a.id, copia);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                match sesion {
+                    Some(x) => self.e().subidas.insert(r.to_owned(), x),
+                    None => self.e().subidas.remove(r),
+                };
+                Err(e)
+            }
+        }
+    }
+
+    /// «Liberar espacio»: la copia de la bóveda se saca **solo** después de confirmar que Drive
+    /// tiene esa misma versión. Orden (un corte en cualquier punto no pierde nada):
+    /// 1. la suma del disco, leída de nuevo, es la acordada (si no, hay cambios sin subir);
+    /// 2. Drive tiene esa suma (`files.get`);
+    /// 3. si es una nota de texto, se copia a la caché como extracto;
+    /// 4. el estado dice «solo en Drive» y se guarda;
+    /// 5. recién ahí se saca el archivo de la bóveda. Si se corta entre 4 y 5, el próximo ciclo
+    ///    ve el archivo en la bóveda con la misma suma y vuelve a empezar.
+    fn liberar(&mut self, r: &str) -> Resultado<()> {
+        let Some(b) = self.estado.registros.get(r).cloned() else {
+            return Ok(());
+        };
+        let ruta = self.cfg.root.join(r);
+        let Ok(md5) = local::md5_archivo(&ruta) else {
+            return Ok(());
+        };
+        if Some(md5.as_str()) != b.md5.as_deref() {
+            return Ok(()); // cambios sin subir: primero se suben
+        }
+        let a = match self.api.archivo(&b.id) {
+            Ok(a) => a,
+            Err(ErrorApi::NoEncontrado) => {
+                self.sucio.insert(r.to_owned());
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        if a.papelera || a.md5.as_deref() != Some(md5.as_str()) {
+            // Drive cambió después de traer los cambios: se resuelve en el próximo ciclo.
+            let padre = a.padres.first().cloned().unwrap_or_default();
+            self.poner_nodo(&a, &padre);
+            self.sucio.insert(r.to_owned());
+            return Ok(());
+        }
+        let padre = a.padres.first().cloned().unwrap_or_default();
+        self.poner_nodo(&a, &padre);
+        let tam = fs::metadata(&ruta).map(|m| m.len()).unwrap_or(u64::MAX);
+        let mut nuevo = Registro {
+            id: b.id.clone(),
+            md5: b.md5.clone(),
+            solo_drive: true,
+            ..Default::default()
+        };
+        if Self::lleva_extracto(r, tam) {
+            let copia = estado::ruta_copia(&self.cfg.dir_cache, &b.id, &a.nombre);
+            local::copiar(&ruta, &copia).map_err(|e| ErrorApi::Local(e.to_string()))?;
+            if let EnDisco::Archivo(f) = local::en_disco(&copia) {
+                nuevo.tam = f.tam;
+                nuevo.mtime = f.mtime;
+            }
+        }
+        self.e().registros.insert(r.to_owned(), nuevo);
+        self.estado
+            .guardar(&self.cfg.dir_estado)
+            .map_err(|e| ErrorApi::Local(e.to_string()))?;
+        if self.cortar_liberar {
+            return Err(ErrorApi::SinRed("corte provocado al liberar".into()));
+        }
+        // La bóveda, sin la copia: Drive tiene exactamente esta versión (paso 2).
+        if let Err(e) = fs::remove_file(&ruta) {
+            // No se pudo sacar: se deshace (vuelve a «en ambos» y se reintenta).
+            if let Some(x) = self.e().registros.get_mut(r) {
+                x.solo_drive = false;
+                x.tam = 0;
+                x.mtime = 0;
+            }
+            return Err(ErrorApi::Local(e.to_string()));
+        }
+        Ok(())
+    }
+
+    /// «Mantener en este equipo»: el marcador vuelve a la bóveda. Si la copia de la caché tiene
+    /// cambios sin subir, es esa la que vuelve (y se sube con lo acordado como base).
+    fn mantener(&mut self, r: &str) -> Resultado<()> {
+        let Some(b) = self.estado.registros.get(r).cloned() else {
+            return Ok(());
+        };
+        let destino = self.cfg.root.join(r);
+        if !matches!(local::en_disco(&destino), EnDisco::Nada) {
+            return Ok(());
+        }
+        let copia = self.ubicar_copia(&b);
+        let n = self
+            .ruta_id
+            .get(r)
+            .and_then(|id| self.estado.nodos.get(id).cloned());
+        if let Some((_, md5)) = self.md5_copia(&b, &copia) {
+            let al_dia = n.as_ref().is_some_and(|n| n.md5 == md5);
+            if al_dia || md5 != b.md5 {
+                local::mover(&copia, &destino).map_err(|e| ErrorApi::Local(e.to_string()))?;
+                let _ = fs::remove_dir(copia.parent().unwrap_or(Path::new("")));
+                let f = match local::en_disco(&destino) {
+                    EnDisco::Archivo(f) => f,
+                    _ => Firma { tam: 0, mtime: 0 },
+                };
+                let mut b = b;
+                b.solo_drive = false;
+                b.liberar = false;
+                if al_dia {
+                    b.md5 = md5;
+                    b.tam = f.tam;
+                    b.mtime = f.mtime;
+                } else {
+                    // Cambios sin subir: lo acordado sigue siendo lo de antes; se sube enseguida.
+                    b.tam = 0;
+                    b.mtime = 0;
+                    self.sucio.insert(r.to_owned());
+                }
+                self.e().registros.insert(r.to_owned(), b);
+                return Ok(());
+            }
+        }
+        let Some(n) = n else {
+            self.olvidar(r);
+            return Ok(());
+        };
+        self.bajar(r, &b.id.clone(), &n, EnDisco::Nada)?;
+        let _ = fs::remove_file(&copia);
+        let _ = fs::remove_dir(copia.parent().unwrap_or(Path::new("")));
+        Ok(())
+    }
+
+    /// Trae a la caché un archivo «solo en Drive» para abrirlo (con conexión). Devuelve la ruta de
+    /// la copia. Si la copia tiene cambios sin subir, se devuelve esa.
+    pub fn traer(&mut self, r: &str) -> Result<PathBuf, String> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(r)
+            .filter(|b| b.solo_drive)
+            .cloned()
+        else {
+            let p = self.cfg.root.join(r);
+            return if p.is_file() {
+                Ok(p)
+            } else {
+                Err("no está en Drive".into())
+            };
+        };
+        let copia = self.ubicar_copia(&b);
+        let local = self.md5_copia(&b, &copia);
+        if local.as_ref().is_some_and(|(_, m)| *m != b.md5) {
+            tocar(&copia);
+            return Ok(copia);
+        }
+        let a = self.api.archivo(&b.id).map_err(|e| e.to_string())?;
+        if a.papelera {
+            return Err("se mandó a la papelera de Drive".into());
+        }
+        let padre = a.padres.first().cloned().unwrap_or_default();
+        self.poner_nodo(&a, &padre);
+        if local.as_ref().is_some_and(|(_, m)| *m == a.md5) {
+            tocar(&copia);
+            return Ok(copia);
+        }
+        let n = Nodo::de(&a, &padre);
+        match self.bajar_copia(r, &b.id, &n) {
+            Ok(true) => {}
+            Ok(false) => return Err("cambió en Drive mientras bajaba; probá otra vez".into()),
+            Err(e) => return Err(e.to_string()),
+        }
+        let copia = self.ubicar_copia(&b);
+        tocar(&copia);
+        self.recortar_cache(Some(r));
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(copia)
+    }
+
+    /// Manda a la papelera de Drive un archivo «solo en Drive». Si la copia de la caché tenía
+    /// cambios sin subir, van antes al historial (o al respaldo).
+    pub fn borrar_marcador(&mut self, r: &str) -> Resultado<()> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(r)
+            .filter(|b| b.solo_drive)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let copia = self.ubicar_copia(&b);
+        if self.md5_copia(&b, &copia).is_some_and(|(_, m)| m != b.md5)
+            && let Ok(c) = fs::read(&copia)
+        {
+            self.al_historial(r, &c);
+        }
+        self.api.a_papelera(&b.id)?;
+        let _ = fs::remove_file(&copia);
+        let _ = fs::remove_dir(copia.parent().unwrap_or(Path::new("")));
+        self.quitar_nodo(&b.id);
+        self.olvidar(r);
+        self.e().reglas.remove(r);
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(())
+    }
+
+    /// Renombra o mueve un archivo «solo en Drive» (en Drive, mismo id).
+    pub fn mover_marcador(&mut self, de: &str, a: &str) -> Resultado<()> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(de)
+            .filter(|b| b.solo_drive)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        if self.estado.registros.contains_key(a) || self.cfg.root.join(a).exists() {
+            return Err(ErrorApi::Local(format!("ya hay algo en «{a}»")));
+        }
+        let padre_nuevo = self.carpeta_remota(padre_de(a))?;
+        let padre_viejo = self.estado.nodos.get(&b.id).map(|n| n.padre.clone());
+        let cambia_nombre = nombre_de(de) != nombre_de(a);
+        let cambia_padre = padre_viejo.as_deref() != Some(padre_nuevo.as_str());
+        let x = self.api.actualizar(
+            &b.id,
+            cambia_nombre.then_some(nombre_de(a)),
+            cambia_padre.then_some(padre_nuevo.as_str()),
+            if cambia_padre {
+                padre_viejo.as_deref()
+            } else {
+                None
+            },
+        )?;
+        self.poner_nodo(&x, &padre_nuevo);
+        self.e().registros.remove(de);
+        self.e().registros.insert(a.to_owned(), b.clone());
+        if let Some(u) = self.e().reglas.remove(de) {
+            self.e().reglas.insert(a.to_owned(), u);
+        }
+        self.ubicar_copia(&b);
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(())
+    }
+
+    /// Pone o quita la regla de este equipo de una ruta y marca lo que cubre para el próximo ciclo.
+    pub fn ubicar(&mut self, ruta: &str, u: Option<Ubicacion>) {
+        let ruta = ruta.to_owned();
+        match u {
+            Some(Ubicacion::Local) => {} // compartida: la escribe la app en `drive.yaml`
+            Some(u) => {
+                self.e().reglas.insert(ruta.clone(), u);
+            }
+            None => {
+                self.e().reglas.remove(&ruta);
+            }
+        }
+        let base = ruta.trim_end_matches('/');
+        let cubiertas: Vec<String> = self
+            .estado
+            .registros
+            .keys()
+            .filter(|r| reglas::cubre(base, r))
+            .cloned()
+            .collect();
+        self.sucio.extend(cubiertas);
+        self.sucio.insert(base.to_owned());
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+    }
+
+    pub fn predeterminados(&mut self, local: Ubicacion, remoto: Ubicacion) {
+        if self.estado.nuevo_local != local || self.estado.nuevo_remoto != remoto {
+            self.e().nuevo_local = local;
+            self.e().nuevo_remoto = remoto;
+            let _ = self.estado.guardar(&self.cfg.dir_estado);
+        }
+    }
+
+    /// Recorta la caché de lo abierto (no los extractos de texto ni las copias con cambios sin
+    /// subir) hasta el tope, sacando primero lo que hace más que no se usa. `menos` no se saca
+    /// (lo que se acaba de traer).
+    fn recortar_cache(&mut self, menos: Option<&str>) {
+        let mut copias: Vec<(std::time::SystemTime, u64, String, PathBuf)> = Vec::new();
+        let mut total = 0u64;
+        for (r, b) in &self.estado.registros {
+            if !b.solo_drive || b.tam == 0 || Some(r.as_str()) == menos {
+                continue;
+            }
+            if Self::lleva_extracto(r, b.tam) {
+                continue;
+            }
+            let copia = self.copia(b);
+            let Ok(m) = fs::metadata(&copia) else {
+                continue;
+            };
+            let f = local::firma(&m);
+            if f.tam != b.tam || f.mtime != b.mtime {
+                continue; // cambios sin subir
+            }
+            total += f.tam;
+            let uso = copia
+                .parent()
+                .and_then(|d| fs::metadata(d).ok())
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            copias.push((uso, f.tam, r.clone(), copia));
+        }
+        if total <= self.cfg.tope_cache {
+            return;
+        }
+        copias.sort();
+        for (_, tam, r, copia) in copias {
+            if total <= self.cfg.tope_cache {
+                break;
+            }
+            if fs::remove_file(&copia).is_ok() {
+                total -= tam;
+                if let Some(b) = self.e().registros.get_mut(&r) {
+                    b.tam = 0;
+                    b.mtime = 0;
+                }
+            }
+        }
+    }
+
+    /// Una carpeta renombrada o movida en el disco: si en la ruta nueva está todo lo acordado de
+    /// la vieja (mismo tamaño y fecha: renombrar no cambia la fecha), se renombra en Drive la
+    /// misma carpeta (conserva su id) en vez de mover archivo por archivo.
+    fn movimientos_de_carpetas(
+        &mut self,
+        rutas: &mut BTreeSet<String>,
+        disco: &mut HashMap<String, EnDisco>,
+    ) -> Resultado<()> {
+        let mut faltan: Vec<(String, String)> = Vec::new();
+        let mut nuevas: Vec<String> = Vec::new();
+        for r in rutas.iter() {
+            if self.excluida(r) {
+                continue;
+            }
+            match (self.estado.registros.get(r), self.disco(disco, r)) {
+                (Some(b), EnDisco::Nada)
+                    if b.carpeta && self.id_ruta.get(&b.id).map(String::as_str) == Some(r) =>
+                {
+                    faltan.push((r.clone(), b.id.clone()));
+                }
+                (None, EnDisco::Carpeta) if !self.ruta_id.contains_key(r) => nuevas.push(r.clone()),
+                _ => {}
+            }
+        }
+        if faltan.is_empty() || nuevas.is_empty() {
+            return Ok(());
+        }
+        // Las de más arriba primero: al renombrar una carpeta, sus subcarpetas van con ella.
+        faltan.sort_by_key(|(r, _)| r.matches('/').count());
+        for (vieja, id) in faltan {
+            if !self.estado.registros.contains_key(&vieja) {
+                continue; // ya se movió con una carpeta de más arriba
+            }
+            let prefijo = format!("{vieja}/");
+            let hijos: Vec<(String, Registro)> = self
+                .estado
+                .registros
+                .range(prefijo.clone()..)
+                .take_while(|(r, _)| r.starts_with(&prefijo))
+                .map(|(r, b)| (r.clone(), b.clone()))
+                .collect();
+            let archivos: Vec<&(String, Registro)> = hijos
+                .iter()
+                .filter(|(_, b)| !b.carpeta && !b.solo_drive)
+                .collect();
+            if archivos.is_empty() {
+                continue;
+            }
+            let Some(pos) = nuevas.iter().position(|nueva| {
+                archivos.iter().all(|(r, b)| {
+                    let resto = &r[prefijo.len()..];
+                    matches!(
+                        local::en_disco(&self.cfg.root.join(format!("{nueva}/{resto}"))),
+                        EnDisco::Archivo(f) if f.tam == b.tam && f.mtime == b.mtime
+                    )
+                })
+            }) else {
+                continue;
+            };
+            let nueva = nuevas.remove(pos);
+            let padre_nuevo = self.carpeta_remota(padre_de(&nueva))?;
+            let padre_viejo = self.estado.nodos.get(&id).map(|n| n.padre.clone());
+            let cambia_nombre = nombre_de(&vieja) != nombre_de(&nueva);
+            let cambia_padre = padre_viejo.as_deref() != Some(padre_nuevo.as_str());
+            match self.api.actualizar(
+                &id,
+                cambia_nombre.then_some(nombre_de(&nueva)),
+                cambia_padre.then_some(padre_nuevo.as_str()),
+                if cambia_padre {
+                    padre_viejo.as_deref()
+                } else {
+                    None
+                },
+            ) {
+                Ok(a) => {
+                    self.e()
+                        .nodos
+                        .insert(a.id.clone(), Nodo::de(&a, &padre_nuevo));
+                    let cambiar = |r: &str| format!("{nueva}{}", &r[vieja.len()..]);
+                    let mover: Vec<String> = std::iter::once(vieja.clone())
+                        .chain(hijos.iter().map(|(r, _)| r.clone()))
+                        .collect();
+                    for r in mover {
+                        let q = cambiar(&r);
+                        if let Some(b) = self.e().registros.remove(&r) {
+                            self.e().registros.insert(q.clone(), b);
+                        }
+                        if let Some(x) = self.e().subidas.remove(&r) {
+                            self.e().subidas.insert(q.clone(), x);
+                        }
+                        if let Some(x) = self.e().conflictos.remove(&r) {
+                            self.e().conflictos.insert(q.clone(), x);
+                        }
+                        rutas.remove(&r);
+                        rutas.insert(q);
+                    }
+                    let reglas: Vec<String> = self
+                        .estado
+                        .reglas
+                        .keys()
+                        .filter(|r| reglas::cubre(&vieja, r))
+                        .cloned()
+                        .collect();
+                    for r in reglas {
+                        if let Some(u) = self.e().reglas.remove(&r) {
+                            self.e().reglas.insert(cambiar(&r), u);
+                        }
+                    }
+                    self.indexar();
+                    disco.clear();
+                }
+                Err(e) if e.transitorio() => return Err(e),
+                Err(_) => {} // se resuelve archivo por archivo
+            }
+        }
+        Ok(())
+    }
+
     // --- estados para la interfaz ----------------------------------------------------------------
 
     /// Mapa ruta → estado, con las carpetas resumidas.
@@ -1408,7 +2331,9 @@ impl<A: Api> Sincronizador<A> {
         let mut m: HashMap<String, EstadoArchivo> =
             HashMap::with_capacity(self.estado.registros.len());
         for (r, b) in &self.estado.registros {
-            if !b.carpeta {
+            if b.solo_drive && !b.carpeta {
+                m.insert(r.clone(), EstadoArchivo::SoloDrive);
+            } else if !b.carpeta {
                 m.insert(r.clone(), EstadoArchivo::Ambos);
             } else {
                 m.entry(r.clone()).or_insert(EstadoArchivo::Ambos);
@@ -1421,6 +2346,9 @@ impl<A: Api> Sincronizador<A> {
         }
         for r in self.estado.conflictos.keys() {
             m.insert(r.clone(), EstadoArchivo::Conflicto);
+        }
+        for r in &self.locales_defecto {
+            m.insert(r.clone(), EstadoArchivo::Local);
         }
         // Carpetas: el peor estado de su contenido.
         let hojas: Vec<(String, EstadoArchivo)> = m
@@ -1451,8 +2379,18 @@ impl<A: Api> Sincronizador<A> {
         let m = Arc::new(self.mapa());
         if self.ultimo_mapa.as_deref() != Some(&*m) {
             self.ultimo_mapa = Some(m.clone());
-            let reglas = Arc::new(self.conexion.solo_local.clone());
-            self.emitir(Evento::Estados(m, reglas));
+            let reglas: Reglas = self
+                .reglas_vigentes()
+                .map(|(r, u)| (r.to_owned(), u))
+                .collect();
+            self.emitir(Evento::Estados(m, Arc::new(reglas)));
+        }
+        let marcas = self.estado.marcadores();
+        if self.ultimos_marcadores.as_deref() != Some(&marcas) {
+            let marcas = Arc::new(marcas);
+            let _ = estado::guardar_marcadores(&self.cfg.dir_estado, &marcas);
+            self.ultimos_marcadores = Some(marcas.clone());
+            self.emitir(Evento::Marcadores(marcas));
         }
         let c: Vec<InfoConflicto> = self
             .estado
@@ -1728,6 +2666,10 @@ fn bucle<F>(
             pausa: pausa.clone(),
             error: error.clone(),
             ultima: s.ultima.clone(),
+            cuota: s.cuota,
+            nuevo_local: s.estado.nuevo_local,
+            nuevo_remoto: s.estado.nuevo_remoto,
+            solo_drive: s.estado.registros.values().filter(|b| b.solo_drive).count(),
         })
     };
     s.emitir_estados();
@@ -1785,6 +2727,49 @@ fn bucle<F>(
                 }
                 continue;
             }
+            Ok(Orden::Abierta(r)) => {
+                // La que se cerró puede liberarse ahora.
+                if let Some(vieja) = std::mem::replace(&mut s.abierta, r) {
+                    s.marcar([vieja]);
+                }
+                continue;
+            }
+            Ok(Orden::Ubicar(r, u)) => {
+                s.ubicar(&r, u);
+                proximo = Instant::now();
+                continue;
+            }
+            Ok(Orden::Predeterminados { local, remoto }) => {
+                s.predeterminados(local, remoto);
+                emitir(resumen(&s, en_linea, false, &pausa, &error));
+                continue;
+            }
+            Ok(Orden::Traer(r)) => {
+                let res = if en_linea {
+                    s.traer(&r)
+                } else {
+                    Err("no hay conexión".into())
+                };
+                emitir(Evento::Traido(r, res));
+                continue;
+            }
+            Ok(Orden::Borrar(r)) => {
+                if let Err(e) = s.borrar_marcador(&r) {
+                    emitir(Evento::Aviso(format!(
+                        "No se pudo mandar «{r}» a la papelera de Drive: {e}"
+                    )));
+                }
+                emitir(resumen(&s, en_linea, false, &pausa, &error));
+                continue;
+            }
+            Ok(Orden::Mover { de, a }) => {
+                if let Err(e) = s.mover_marcador(&de, &a) {
+                    emitir(Evento::Aviso(format!(
+                        "No se pudo mover «{de}» en Drive: {e}"
+                    )));
+                }
+                continue;
+            }
             Ok(Orden::Detener) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = s.estado.guardar(&cfg.dir_estado);
                 emitir(Evento::Detenido(None));
@@ -1837,6 +2822,16 @@ fn bucle<F>(
             }
         }
         emitir(resumen(&s, en_linea, false, &pausa, &error));
+    }
+}
+
+/// Marca una copia de la caché como recién usada (la carpeta de la copia lleva la fecha de uso:
+/// la del archivo es parte de su firma y no se toca).
+fn tocar(copia: &Path) {
+    if let Some(d) = copia.parent()
+        && let Ok(f) = fs::File::open(d)
+    {
+        let _ = f.set_modified(std::time::SystemTime::now());
     }
 }
 

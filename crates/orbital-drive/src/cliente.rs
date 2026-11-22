@@ -16,7 +16,7 @@ use gio::prelude::*;
 use soup::prelude::*;
 
 use crate::api::{
-    Api, Archivo, CAMPOS_ARCHIVO, Cambio, ErrorApi, MIME_CARPETA, PaginaCambios, Resultado,
+    Api, Archivo, CAMPOS_ARCHIVO, Cambio, Cuota, ErrorApi, MIME_CARPETA, PaginaCambios, Resultado,
     SesionSubida,
 };
 
@@ -420,6 +420,20 @@ impl Api for Cliente {
             .and_then(|e| e.as_str())
             .unwrap_or_default()
             .to_owned())
+    }
+
+    fn cuota(&mut self) -> Resultado<Cuota> {
+        let url = self.url("/drive/v3/about?fields=storageQuota(limit,usage)");
+        let v = self.json("GET", &url, None)?;
+        let num = |k: &str| {
+            v.pointer(&format!("/storageQuota/{k}"))
+                .and_then(|x| x.as_str())
+                .and_then(|x| x.parse::<u64>().ok())
+        };
+        Ok(Cuota {
+            usado: num("usage").unwrap_or(0),
+            limite: num("limit"),
+        })
     }
 
     fn token_inicio(&mut self) -> Resultado<String> {
