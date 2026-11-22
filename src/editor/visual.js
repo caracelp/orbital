@@ -259,15 +259,31 @@
     while ((n = walker.nextNode())) {
       // Los medios de un carrusel (032) los muestra su propia figura.
       if (n.parentElement && n.parentElement.closest('code.language-carrusel, code.language-media-slider, code.language-galeria, code.language-gallery')) continue;
-      for (const k of keys) if (n.data.includes(k)) hits.push([n, k]);
+      // Cada aparición, en el orden del texto: varios `![[…]]` en un mismo renglón salen en
+      // ese orden (antes, invertidos y una sola vez por clave).
+      const enNodo = [];
+      for (const k of keys) {
+        let at = n.data.indexOf(k);
+        while (at >= 0) {
+          enNodo.push([at, k]);
+          at = n.data.indexOf(k, at + k.length);
+        }
+      }
+      enNodo.sort((a, b) => a[0] - b[0]);
+      for (const [, k] of enNodo) hits.push([n, k]);
     }
+    // La última tarjeta insertada después de cada bloque: la siguiente va detrás de ella.
+    const ultima = new Map();
     for (const [node, k] of hits) {
       let top = node.parentNode;
       while (top && top.parentNode && top.parentNode !== document.body) top = top.parentNode;
       if (!top || top === document.body) continue;
       const tpl = document.createElement('template');
       tpl.innerHTML = map[k];
-      top.after(tpl.content);
+      const fin = tpl.content.lastChild;
+      if (!fin) continue;
+      (ultima.get(top) || top).after(tpl.content);
+      ultima.set(top, fin);
     }
   }
 

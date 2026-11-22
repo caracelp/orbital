@@ -906,6 +906,53 @@ fn medios_en_visual_html() {
     });
 }
 
+/// Varios `![[…]]` en un mismo párrafo de una nota `.html`: cada uno sale en el orden del texto,
+/// también los repetidos (antes, invertidos y uno solo por destino).
+#[test]
+#[ignore = "requiere una sesión gráfica"]
+fn varios_medios_en_un_renglon_visual_html() {
+    glib::set_prgname(Some("orbital"));
+    adw::init().expect("Se necesita acceso a una sesión gráfica GTK");
+    glib::MainContext::default().block_on(async {
+        let root = std::env::temp_dir().join(format!(
+            "orbital-embeds-renglon-ñ-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("wiki/medios")).unwrap();
+        fs::write(
+            root.join("wiki/medios/tono ñ.wav"),
+            crate::medios::tests::wav_de_prueba(1.0),
+        )
+        .unwrap();
+        let source = "<!doctype html><html><head></head><body><p>![[falta.mp3]] ![[tono ñ.wav]] ![[falta.mp3]]</p><p>Fin.</p></body></html>";
+        fs::write(root.join("wiki/r.html"), source).unwrap();
+        let path = orbital_vault::RelPath::new("wiki/r.html").unwrap();
+        let vault = Arc::new(orbital_vault::open(&root).unwrap());
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .default_width(1000)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&path).unwrap());
+        let web = editor.0.visual.web();
+        ready(&web).await;
+        let orden = "[...document.querySelectorAll('[data-orbital-embed]')].map(e => e.querySelector('audio') ? 'A' : (e.textContent.includes('Archivo inexistente') ? 'F' : '?')).join('')";
+        let mut visto = String::new();
+        for _ in 0..50 {
+            visto = eval(&web, orden).await;
+            if visto.len() == 3 {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(100)).await;
+        }
+        assert_eq!(visto, "FAF");
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}
+
 /// 032: un carrusel en una nota `.html` se ve en la Visual como la grilla estática de sus medios
 /// (resueltos contra la bóveda, con la imagen cargada) y el archivo conserva el bloque. Con
 /// `ORBITAL_CAPTURA_DIR`, guarda `032-visual-html.png`.

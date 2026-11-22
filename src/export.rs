@@ -127,7 +127,14 @@ fn medio_html(
 pub fn html_md_con(texto: &str, nombre_archivo: &str, medios: &Medios) -> String {
     // Los ids de bloque (`^id`, 026) no se exportan.
     let cuerpo = orbital_vault::bloques::sin_ids(cuerpo_sin_frontmatter(texto));
-    let cuerpo = cuerpo.as_ref();
+    pagina(
+        &fragmento_html(cuerpo.as_ref(), medios),
+        &titulo(texto, nombre_archivo),
+    )
+}
+
+/// Markdown a HTML con los medios (057), las fórmulas (050), los gráficos y el código resaltado.
+fn fragmento_html(cuerpo: &str, medios: &Medios) -> String {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -145,7 +152,7 @@ pub fn html_md_con(texto: &str, nombre_archivo: &str, medios: &Medios) -> String
             ),
         ),
     );
-    pagina(&body, &titulo(texto, nombre_archivo))
+    body
 }
 
 /// Los medios (057): un párrafo que es solo `![[clip.mp3]]` y las imágenes `![](clip.mp4)` que
@@ -208,7 +215,8 @@ fn con_medios<'a>(
         }
         let (html, fin) = match &ev {
             Event::Start(Tag::Paragraph) => (
-                medio_de_parrafo(&cuerpo[rango.clone()], medios),
+                medio_de_parrafo(&cuerpo[rango.clone()], medios)
+                    .or_else(|| parrafo_con_medios(&cuerpo[rango.clone()], medios)),
                 TagEnd::Paragraph,
             ),
             Event::Start(Tag::Image { dest_url, .. }) => {
@@ -293,6 +301,60 @@ fn medio_de_parrafo(fuente: &str, medios: &Medios) -> Option<String> {
         ancla.as_deref(),
         medios.reproducibles,
     ))
+}
+
+/// Un párrafo con algún `![[medio]]` entre otras cosas (varios en un renglón, o con texto):
+/// cada medio en su lugar y lo de alrededor como Markdown, igual que en la Lectura. Antes
+/// quedaban como texto («![[a.png]] ![[b.png]]»). `None` si no tiene ninguno.
+fn parrafo_con_medios(fuente: &str, medios: &Medios) -> Option<String> {
+    let adjunto = medios.adjunto?;
+    if !fuente.contains("![[") {
+        return None;
+    }
+    let mut out = String::new();
+    let (mut desde, mut buscar, mut alguno) = (0, 0, false);
+    while let Some(r) = fuente[buscar..].find("![[") {
+        let ini = buscar + r;
+        let Some(fin_rel) = fuente[ini + 3..].find("]]") else {
+            break;
+        };
+        let fin = ini + 3 + fin_rel + 2;
+        let inner = &fuente[ini + 3..fin - 2];
+        let t = orbital_vault::links::parse_link_target(inner);
+        // Escapado o dentro de un `código`: queda como texto.
+        let literal = (ini > 0 && fuente.as_bytes()[ini - 1] == b'\\')
+            || fuente[desde..ini].matches('`').count() % 2 == 1
+            || inner.contains('\n')
+            || inner.contains("[[");
+        let tipo = (!literal)
+            .then(|| orbital_vault::medios::tipo_de(&t.path))
+            .flatten();
+        let Some(tipo) = tipo else {
+            buscar = ini + 3;
+            continue;
+        };
+        if !fuente[desde..ini].trim().is_empty() {
+            out.push_str(&fragmento_html(&fuente[desde..ini], medios));
+        }
+        out.push_str(&medio_html(
+            &t.path,
+            adjunto(&t.path).as_deref(),
+            tipo,
+            t.anchor.as_deref().filter(|a| !a.is_empty()),
+            medios.reproducibles,
+        ));
+        out.push('\n');
+        alguno = true;
+        desde = fin;
+        buscar = fin;
+    }
+    if !alguno {
+        return None;
+    }
+    if !fuente[desde..].trim().is_empty() {
+        out.push_str(&fragmento_html(&fuente[desde..], medios));
+    }
+    Some(out)
 }
 
 /// `![](clip.mp4#t=30)`: audio o video local escrito como imagen.
@@ -807,6 +869,23 @@ mod tests {
             pdf.contains("<p class=\"medio\">Audio: <a href=\"file://"),
             "{pdf}"
         );
+        // Varios en un renglón, y uno entre texto (antes quedaban como texto).
+        let m = Medios {
+            carpeta: Some(dir.clone()),
+            adjunto: Some(&adjunto),
+            reproducibles: true,
+            carrusel: None,
+            galeria: None,
+        };
+        let out = html_md_con(
+            "![[voz.mp3]] ![[falta.png]]\n![[voz.mp3]]\n\nOí ![[voz.mp3]] y `![[voz.mp3]]` fin.\n",
+            "r.md",
+            &m,
+        );
+        assert_eq!(out.matches("<audio").count(), 3, "{out}");
+        assert!(out.contains("Archivo inexistente: «falta.png»"), "{out}");
+        assert!(out.contains("<p>Oí</p>"), "{out}");
+        assert!(out.contains("<code>![[voz.mp3]]</code> fin.</p>"), "{out}");
         // Sin medios, lo de siempre.
         assert_eq!(
             html_md("# A\n", "a.md"),
