@@ -33,6 +33,9 @@ mod switcher;
 mod tag_panel;
 mod visor_pdf;
 mod watcher;
+// WebKit al primer uso (060): trampolines en ensamblador x86-64. En otra arquitectura, WebKit se
+// enlaza como siempre.
+#[cfg(target_arch = "x86_64")]
 mod webkit_perezoso;
 mod window;
 mod write_ctx;
@@ -320,6 +323,7 @@ fn activate(
                 // Sale después del próximo cuadro: la lista ya está dibujada.
                 window.after_next_frame(move || {
                     medir_arranque::marca("cuadro dibujado");
+                    #[cfg(target_arch = "x86_64")]
                     if webkit_perezoso::cargado() {
                         medir_arranque::marca("aviso: WebKit se cargó antes del primer cuadro");
                     }
