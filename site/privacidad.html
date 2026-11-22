@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Política de privacidad · Orbital</title>
+<meta name="description" content="Orbital no recoge ni envía datos a nadie. La única conexión con terceros es la sincronización opcional con tu propio Google Drive.">
+<meta name="theme-color" content="#fffafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icono.svg" type="image/svg+xml">
+<link rel="stylesheet" href="estilo.css">
+<link rel="canonical" href="https://caracelp.github.io/orbital/privacidad.html">
+</head>
+<body>
+<a class="saltar" href="#contenido">Saltar al contenido</a>
+<header class="sitio">
+  <div class="contenedor">
+    <a class="marca" href="./"><img src="icono.svg" alt="" width="32" height="32">Orbital</a>
+    <nav aria-label="Principal">
+      <ul>
+        <li><a href="./">Inicio</a></li>
+        <li><a href="privacidad.html" aria-current="page">Privacidad</a></li>
+        <li><a href="condiciones.html">Condiciones</a></li>
+        <li><a href="https://github.com/caracelp/orbital">Código</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<main id="contenido" class="contenedor">
+<h1>Política de privacidad</h1>
+<p class="fecha">Vigente desde el 22 de noviembre de 2026.</p>
+
+<div class="nota">
+<p><strong>En resumen:</strong> Orbital no recoge, no guarda en servidores y no envía a nadie
+ningún dato tuyo. No tiene cuentas, ni analíticas, ni telemetría, ni servidores propios. Tus notas
+quedan en tu computadora. La única conexión con un tercero es la sincronización
+<strong>opcional</strong> con <strong>tu propio</strong> Google Drive, que activás vos.</p>
+</div>
+
+<h2>Quién es responsable</h2>
+<p>Orbital es una aplicación de escritorio de software libre, mantenida por una persona
+(<a href="https://github.com/caracelp">caracelp</a> en GitHub). Esta política cubre la aplicación
+Orbital y este sitio. Para consultas sobre privacidad, escribí en
+<a href="https://github.com/caracelp/orbital/issues">los issues del repositorio</a> o, si es algo
+privado, por el <a href="https://github.com/caracelp/orbital/security/advisories/new">reporte
+privado</a> del repositorio.</p>
+
+<h2>Qué datos maneja Orbital</h2>
+<p>Orbital corre en tu computadora y trabaja con estos datos, todos guardados en ella:</p>
+<ul>
+  <li><strong>Tus notas y archivos</strong>, en la carpeta de la bóveda que elegiste, y lo que
+  Orbital guarda junto a ellas en <code>.orbital/</code> (historial de versiones, papelera,
+  búsquedas, listas).</li>
+  <li><strong>Su configuración</strong> (bóvedas recientes, tamaño de la ventana, preferencias),
+  en <code>~/.config/orbital/</code>, y una caché en <code>~/.cache/orbital/</code>.</li>
+  <li>Si usás Google Drive, <strong>el estado de la sincronización</strong> en
+  <code>~/.local/state/orbital/</code> y <strong>las credenciales</strong> en el llavero del
+  sistema (ver más abajo).</li>
+</ul>
+<p>Nada de esto sale de tu computadora, salvo lo que se describe en las secciones siguientes.
+Orbital no tiene acceso a estos datos: no hay ningún servidor de Orbital que los reciba.</p>
+
+<h2>Cuándo Orbital usa la red</h2>
+<p>Orbital funciona sin conexión. Solo se conecta a internet en estos casos, y siempre porque lo
+pediste:</p>
+<ul>
+  <li><strong>Sincronización con Google Drive</strong>, si la activaste (detalles abajo).</li>
+  <li><strong>Páginas web que vos indicás</strong>: al crear una tarjeta de un enlace, Orbital
+  descarga esa página para leer su título, descripción e imagen; al asociar una dirección web a
+  un archivo, la muestra dentro de la app. La conexión va directo de tu computadora a ese sitio,
+  con una sesión efímera: no quedan cookies ni caché en el disco. Lo que ese sitio registre de la
+  visita depende de su propia política.</li>
+  <li><strong>Enlaces</strong>: al hacer clic en un enlace externo, se abre en tu navegador.</li>
+</ul>
+<p>Las notas HTML se muestran con todas las cargas externas bloqueadas y sin ejecutar su
+JavaScript, así que abrir una nota no avisa a ningún sitio.</p>
+
+<h2>Sincronización con Google Drive</h2>
+<p>Es una función opcional para tener la bóveda espejada en una carpeta de tu Google Drive. Para
+usarla, creás tu propio proyecto de Google Cloud y le das a Orbital su identificador y su secreto
+de cliente (<a href="https://github.com/caracelp/orbital/blob/main/docs/google-drive-proyecto.md">guía
+paso a paso</a>). Orbital habla directamente con las API de Google desde tu computadora; ningún
+servidor de Orbital interviene.</p>
+
+<h3>Qué permiso pide y para qué</h3>
+<p>Orbital pide el permiso de Google Drive <code>https://www.googleapis.com/auth/drive</code>
+(ver, editar, crear y borrar archivos de tu Drive). Lo usa solo para mantener el espejo de la
+carpeta de la bóveda que elegís:</p>
+<ul>
+  <li>listar, descargar y subir los archivos de esa carpeta, crear sus subcarpetas y mandar a la
+  papelera de Drive lo que borrás en la bóveda (Orbital nunca borra en forma definitiva);</li>
+  <li>consultar la lista de cambios de tu Drive para enterarse de lo que cambió en la carpeta. De
+  esos cambios llegan metadatos (nombre, carpeta, tipo, tamaño, suma de verificación, fecha, si
+  podés editarlo, su enlace y el nombre de quien lo modificó por última vez); Orbital usa los de
+  los archivos de la bóveda y descarta el resto;</li>
+  <li>leer el correo de la cuenta, para mostrarte con qué cuenta está conectada la bóveda. Se
+  guarda en <code>.orbital/drive.yaml</code>, dentro de la bóveda.</li>
+</ul>
+<p>Orbital no lee, descarga ni modifica archivos de tu Drive que estén fuera de la carpeta de la
+bóveda.</p>
+
+<h3>Dónde quedan los datos de Google</h3>
+<ul>
+  <li>El contenido de tus archivos se guarda solo en la bóveda de tu computadora y en tu Drive.</li>
+  <li>El identificador y el secreto de cliente y el token de renovación se guardan en el llavero
+  del sistema (Secret Service, por ejemplo el de GNOME). Nunca en archivos de Orbital ni en la
+  bóveda. El token de acceso vive solo en memoria mientras la app está abierta.</li>
+  <li>El estado de la sincronización (identificadores, sumas y la última versión acordada de cada
+  nota de texto, para unir cambios) queda en <code>~/.local/state/orbital/</code>.</li>
+</ul>
+
+<h3>Uso limitado</h3>
+<p>El uso y la transferencia a cualquier otra aplicación de la información recibida de las API de
+Google por parte de Orbital se ajustan a la
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Política de datos de
+usuario de los servicios de las API de Google</a> (<em>Google API Services User Data Policy</em>),
+incluidos los requisitos de Uso limitado (<em>Limited Use</em>). En concreto:</p>
+<ul>
+  <li>los datos de Google se usan solo para ofrecerte la sincronización que ves en la app;</li>
+  <li>no se transfieren a nadie: no hay servidores de Orbital que los reciban;</li>
+  <li>no se usan para publicidad, ni se venden, ni se usan para entrenar modelos de inteligencia
+  artificial o aprendizaje automático;</li>
+  <li>ninguna persona los lee: no hay nadie más que vos con acceso a ellos.</li>
+</ul>
+<p lang="en"><em>Orbital's use and transfer to any other app of information received from Google
+APIs will adhere to the Google API Services User Data Policy, including the Limited Use
+requirements.</em></p>
+
+<h3>Cómo quitarle el acceso</h3>
+<ul>
+  <li>En <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>,
+  elegí la app de tu proyecto y tocá «Quitar acceso». Orbital pausa la sincronización y no borra
+  nada.</li>
+  <li>Para borrar las credenciales de tu computadora, eliminá las entradas de Orbital del llavero
+  (por ejemplo con la app Contraseñas y claves de GNOME) y la carpeta
+  <code>~/.local/state/orbital/</code>.</li>
+</ul>
+
+<h2>Este sitio</h2>
+<p>Este sitio está alojado en GitHub Pages. No usa cookies, analíticas ni recursos de terceros.
+GitHub puede registrar datos técnicos de las visitas (como la dirección IP) según su
+<a href="https://docs.github.com/es/site-policy/privacy-policies/github-general-privacy-statement">declaración
+de privacidad</a>.</p>
+
+<h2>Menores</h2>
+<p>Orbital no recoge datos de nadie, tampoco de menores.</p>
+
+<h2>Cambios en esta política</h2>
+<p>Si esta política cambia, la versión nueva se publica en esta misma página con su fecha. El
+historial completo está en el
+<a href="https://github.com/caracelp/orbital/commits/main/site/privacidad.html">repositorio</a>.</p>
+</main>
+<footer class="sitio">
+  <div class="contenedor">
+    <ul>
+      <li><a href="https://github.com/caracelp/orbital">Repositorio</a></li>
+      <li><a href="privacidad.html">Política de privacidad</a></li>
+      <li><a href="condiciones.html">Condiciones de servicio</a></li>
+      <li><a href="https://github.com/caracelp/orbital/blob/main/LICENSE">Licencia GPL-3.0-or-later</a></li>
+    </ul>
+    <p>Orbital es software libre. Este sitio no usa cookies ni analíticas.</p>
+  </div>
+</footer>
+</body>
+</html>

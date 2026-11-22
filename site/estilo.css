@@ -1,0 +1,153 @@
+/* Sitio de Orbital: rosa y negro, sin dependencias. Claro u oscuro según el sistema. */
+:root {
+  color-scheme: light dark;
+  --fondo: #fffafc;
+  --superficie: #fdf0f6;
+  --borde: #ecd3df;
+  --texto: #1a1a1e;
+  --tenue: #5c5c66;
+  --acento: #a3336a;
+  --acento-fondo: #ffd2e6;
+  --acento-texto: #1a1a1e;
+  --codigo: #f6e6ee;
+  --ancho: 46rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #111113;
+    --superficie: #1b1b1f;
+    --borde: #303036;
+    --texto: #ececf0;
+    --tenue: #a1a1ab;
+    --acento: #ff8cc6;
+    --acento-fondo: #402336;
+    --acento-texto: #ffd2e6;
+    --codigo: #232328;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--texto);
+  font: 1.0625rem/1.65 system-ui, -apple-system, "Cantarell", "Segoe UI", Roboto, sans-serif;
+  overflow-wrap: break-word;
+}
+
+.saltar {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  padding: 0.5rem 0.9rem;
+  background: var(--acento-fondo);
+  color: var(--acento-texto);
+  border-radius: 0.5rem;
+  z-index: 10;
+}
+.saltar:focus { top: 1rem; }
+
+.contenedor { max-width: var(--ancho); margin: 0 auto; padding: 0 1rem; }
+
+header.sitio { border-bottom: 1px solid var(--borde); }
+header.sitio .contenedor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+.marca {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--texto);
+  font-weight: 700;
+  font-size: 1.15rem;
+  text-decoration: none;
+}
+.marca img { width: 2rem; height: 2rem; }
+nav ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0; padding: 0; list-style: none; }
+nav a { color: var(--tenue); text-decoration: none; }
+nav a:hover { color: var(--texto); text-decoration: underline; }
+nav a[aria-current="page"] { color: var(--acento); font-weight: 600; }
+
+main.contenedor { padding-top: 2.5rem; padding-bottom: 3.5rem; }
+
+h1, h2, h3 { line-height: 1.25; text-wrap: balance; }
+h1 { font-size: clamp(1.9rem, 1.4rem + 2.2vw, 2.6rem); margin: 0 0 0.75rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; margin: 2.5rem 0 0.75rem; }
+h3 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
+p, ul, ol { margin: 0 0 1rem; }
+li + li { margin-top: 0.35rem; }
+nav li + li, footer li + li, .puntos li + li { margin-top: 0; }
+
+a { color: var(--acento); text-underline-offset: 0.18em; }
+a:focus-visible, .boton:focus-visible { outline: 3px solid var(--acento); outline-offset: 3px; border-radius: 0.25rem; }
+
+code {
+  font-family: ui-monospace, "JetBrains Mono", "Source Code Pro", monospace;
+  font-size: 0.9em;
+  background: var(--codigo);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3rem;
+}
+
+.bajada { font-size: 1.2rem; color: var(--tenue); max-width: 38rem; }
+.fecha { color: var(--tenue); font-size: 0.95rem; }
+
+.acciones { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.75rem 0 2.25rem; }
+.boton {
+  display: inline-block;
+  padding: 0.65rem 1.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--borde);
+  color: var(--texto);
+  text-decoration: none;
+  font-weight: 600;
+}
+.boton.principal { background: var(--acento-fondo); border-color: transparent; color: var(--acento-texto); }
+.boton:hover { border-color: var(--acento); }
+
+figure { margin: 0 0 2rem; }
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.9rem;
+  border: 1px solid var(--borde);
+}
+figcaption { color: var(--tenue); font-size: 0.95rem; margin-top: 0.6rem; }
+
+.puntos { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; padding: 0; list-style: none; }
+.puntos li {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: 0.8rem;
+}
+.puntos strong { display: block; margin-bottom: 0.25rem; }
+
+.nota {
+  padding: 1rem 1.2rem;
+  border-left: 4px solid var(--acento);
+  background: var(--superficie);
+  border-radius: 0 0.6rem 0.6rem 0;
+  margin: 1.5rem 0;
+}
+.nota p:last-child { margin-bottom: 0; }
+
+footer.sitio { border-top: 1px solid var(--borde); color: var(--tenue); font-size: 0.95rem; }
+footer.sitio .contenedor { padding-top: 1.5rem; padding-bottom: 2rem; }
+footer.sitio ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; padding: 0; margin: 0 0 0.5rem; list-style: none; }
+footer.sitio a { color: var(--tenue); }
+
+@media (prefers-reduced-motion: no-preference) {
+  a, .boton { transition: color 0.15s, border-color 0.15s; }
+}
