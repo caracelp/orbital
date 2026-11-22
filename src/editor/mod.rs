@@ -39,6 +39,7 @@ mod guardado;
 pub mod html;
 mod ids_bloque;
 mod insertar_galeria;
+mod insertar_toc;
 mod medicion;
 pub mod multi_cursor;
 pub mod notas_al_pie;
@@ -53,6 +54,9 @@ pub mod props;
 pub mod reader;
 pub mod right_sidebar;
 mod sugerencias;
+#[cfg(test)]
+#[path = "toc_tests.rs"]
+mod toc_tests;
 mod vista_previa;
 mod vistas;
 

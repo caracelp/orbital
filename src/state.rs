@@ -39,6 +39,9 @@ pub struct AppState {
     pub window_height: Option<i32>,
     /// Números de línea apagados en la vista Código (054; por defecto se ven).
     pub hide_line_numbers: bool,
+    /// Valores por defecto de la tabla de contenidos (035): los toma un ` ```toc ` que no
+    /// escribe esa opción.
+    pub toc: orbital_vault::toc::TocDefaults,
 }
 
 fn state_file() -> PathBuf {
@@ -112,6 +115,7 @@ impl AppState {
             PropValue::Text(s) => s == "false",
             _ => false,
         });
+        let toc = toc_from(&entries);
         Self {
             last_vault,
             recent,
@@ -122,6 +126,7 @@ impl AppState {
             window_width,
             window_height,
             hide_line_numbers,
+            toc,
         }
     }
 
@@ -207,7 +212,74 @@ impl AppState {
         if self.hide_line_numbers {
             entries.push(("line_numbers", PropValue::Bool(false)));
         }
+        toc_entries(&self.toc, &mut entries);
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
+    }
+}
+
+/// Los valores por defecto de la tabla de contenidos guardados (035): `toc_title`, `toc_style`,
+/// `toc_min_level`, `toc_max_level`, `toc_links` y `toc_hide_empty`. Lo que falta o no se
+/// entiende queda con el valor de fábrica.
+fn toc_from(entries: &[orbital_vault::props::PropEntry]) -> orbital_vault::toc::TocDefaults {
+    use orbital_vault::toc::{TocDefaults, TocStyle};
+    let mut d = TocDefaults::default();
+    let texto = |k: &str| {
+        find(entries, k).and_then(|e| match &e.value {
+            PropValue::Text(s) | PropValue::Number(s) => Some(s.clone()),
+            PropValue::Bool(b) => Some(b.to_string()),
+            _ => None,
+        })
+    };
+    if let Some(t) = texto("toc_title") {
+        d.title = t;
+    }
+    if let Some(s) = texto("toc_style").and_then(|s| TocStyle::from_name(&s)) {
+        d.style = s;
+    }
+    if let Some(n) = texto("toc_min_level").and_then(|s| s.parse::<u8>().ok()) {
+        d.min_level = n.min(6);
+    }
+    if let Some(n) = texto("toc_max_level").and_then(|s| s.parse::<u8>().ok()) {
+        d.max_level = n.min(6);
+    }
+    if let Some(b) = texto("toc_links").and_then(|s| s.parse::<bool>().ok()) {
+        d.include_links = b;
+    }
+    if let Some(b) = texto("toc_hide_empty").and_then(|s| s.parse::<bool>().ok()) {
+        d.hide_when_empty = b;
+    }
+    d
+}
+
+/// Escribe solo lo que difiere del valor de fábrica.
+fn toc_entries(
+    toc: &orbital_vault::toc::TocDefaults,
+    entries: &mut Vec<(&'static str, PropValue)>,
+) {
+    let fabrica = orbital_vault::toc::TocDefaults::default();
+    if toc.title != fabrica.title {
+        entries.push(("toc_title", PropValue::Text(toc.title.clone())));
+    }
+    if toc.style != fabrica.style {
+        entries.push(("toc_style", PropValue::Text(toc.style.alias().to_owned())));
+    }
+    if toc.min_level != fabrica.min_level {
+        entries.push((
+            "toc_min_level",
+            PropValue::Number(toc.min_level.to_string()),
+        ));
+    }
+    if toc.max_level != fabrica.max_level {
+        entries.push((
+            "toc_max_level",
+            PropValue::Number(toc.max_level.to_string()),
+        ));
+    }
+    if toc.include_links != fabrica.include_links {
+        entries.push(("toc_links", PropValue::Bool(toc.include_links)));
+    }
+    if toc.hide_when_empty != fabrica.hide_when_empty {
+        entries.push(("toc_hide_empty", PropValue::Bool(toc.hide_when_empty)));
     }
 }
 
@@ -241,6 +313,32 @@ mod tests {
                 .contains("line_numbers: false")
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Los valores por defecto de la tabla de contenidos (035) van y vuelven; los de fábrica no
+    /// se escriben.
+    #[test]
+    fn toc_defaults_roundtrip() {
+        use orbital_vault::toc::{TocDefaults, TocStyle};
+        let dir = std::env::temp_dir().join(format!("orbital-state-toc-{}", std::process::id()));
+        let file = dir.join("estado.yaml");
+        AppState::default().save_to(&file).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("toc_"));
+        let mut s = AppState::default();
+        s.toc = TocDefaults {
+            title: "En esta nota: índice".into(),
+            style: TocStyle::NestedOrderedList,
+            min_level: 2,
+            max_level: 3,
+            include_links: false,
+            hide_when_empty: true,
+        };
+        s.save_to(&file).unwrap();
+        assert_eq!(AppState::load_from(&file).toc, s.toc);
+        // Un valor que no se entiende queda con el de fábrica.
+        fs::write(&file, "toc_style: arbol\ntoc_max_level: x\n").unwrap();
+        assert_eq!(AppState::load_from(&file).toc, TocDefaults::default());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

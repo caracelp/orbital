@@ -73,9 +73,120 @@ impl Expr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvalidOption(pub String);
 
-/// Lee las opciones del cuerpo del codeblock. Las claves desconocidas se ignoran.
+/// Valores por defecto de las opciones que se eligen en Preferencias (035): las que no son
+/// expresiones. Un bloque que no escribe una opción toma la de acá.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TocDefaults {
+    pub title: String,
+    pub style: TocStyle,
+    pub min_level: u8,
+    pub max_level: u8,
+    pub include_links: bool,
+    pub hide_when_empty: bool,
+}
+
+impl Default for TocDefaults {
+    fn default() -> Self {
+        let o = TocOptions::default();
+        Self {
+            title: o.title,
+            style: o.style,
+            min_level: o.min_level,
+            max_level: o.max_level,
+            include_links: o.include_links,
+            hide_when_empty: o.hide_when_empty,
+        }
+    }
+}
+
+impl TocDefaults {
+    /// Las opciones de un bloque vacío con estos valores.
+    pub fn options(&self) -> TocOptions {
+        TocOptions {
+            title: self.title.clone(),
+            style: self.style,
+            min_level: self.min_level,
+            max_level: self.max_level,
+            include: None,
+            exclude: None,
+            include_links: self.include_links,
+            hide_when_empty: self.hide_when_empty,
+        }
+    }
+}
+
+impl TocStyle {
+    /// Los tres estilos, en el orden en que se ofrecen.
+    pub const TODOS: [TocStyle; 3] = [
+        TocStyle::NestedList,
+        TocStyle::NestedOrderedList,
+        TocStyle::InlineFirstLevel,
+    ];
+
+    /// El nombre en español que se escribe en el bloque (`lista`, `lista-ordenada`,
+    /// `linea-primer-nivel`).
+    pub fn alias(self) -> &'static str {
+        match self {
+            TocStyle::NestedList => "lista",
+            TocStyle::NestedOrderedList => "lista-ordenada",
+            TocStyle::InlineFirstLevel => "linea-primer-nivel",
+        }
+    }
+
+    /// Cualquiera de los dos nombres de un estilo.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "nestedList" | "lista" => Some(TocStyle::NestedList),
+            "nestedOrderedList" | "lista-ordenada" => Some(TocStyle::NestedOrderedList),
+            "inlineFirstLevel" | "linea-primer-nivel" => Some(TocStyle::InlineFirstLevel),
+            _ => None,
+        }
+    }
+}
+
+/// El texto de un bloque ` ```toc ` con las opciones de `elegidas` que difieren de `base` (los
+/// valores por defecto vigentes): lo que coincide no se escribe, así el bloque sigue a
+/// Preferencias. Sin salto de línea al final (lo pone quien lo inserta).
+pub fn bloque(elegidas: &TocDefaults, base: &TocDefaults) -> String {
+    let mut s = String::from("```toc\n");
+    if elegidas.title != base.title {
+        // Un título vacío frente a uno por defecto: `''` lo borra.
+        let t = elegidas.title.trim();
+        if t.is_empty() {
+            s.push_str("title: ''\n");
+        } else {
+            s.push_str(&format!("title: {t}\n"));
+        }
+    }
+    if elegidas.style != base.style {
+        s.push_str(&format!("style: {}\n", elegidas.style.alias()));
+    }
+    if elegidas.min_level != base.min_level {
+        s.push_str(&format!("minLevel: {}\n", elegidas.min_level));
+    }
+    if elegidas.max_level != base.max_level {
+        s.push_str(&format!("maxLevel: {}\n", elegidas.max_level));
+    }
+    if elegidas.include_links != base.include_links {
+        s.push_str(&format!("includeLinks: {}\n", elegidas.include_links));
+    }
+    if elegidas.hide_when_empty != base.hide_when_empty {
+        s.push_str(&format!("hideWhenEmpty: {}\n", elegidas.hide_when_empty));
+    }
+    s.push_str("```");
+    s
+}
+
+/// Lee las opciones del cuerpo del codeblock con los valores por defecto de fábrica. Las claves
+/// desconocidas se ignoran.
 pub fn parse_options(body: &str) -> Result<TocOptions, InvalidOption> {
-    let mut o = TocOptions::default();
+    parse_options_with(body, TocOptions::default())
+}
+
+/// Como [`parse_options`], partiendo de `base` (los valores por defecto de Preferencias): lo que
+/// el bloque escribe manda.
+pub fn parse_options_with(body: &str, base: TocOptions) -> Result<TocOptions, InvalidOption> {
+    let mut o = base;
     for line in body.lines() {
         if line.starts_with('#') {
             continue;
@@ -84,11 +195,15 @@ pub fn parse_options(body: &str) -> Result<TocOptions, InvalidOption> {
         let Some((key, value)) = split_key(line) else {
             continue;
         };
-        if value.is_empty() {
+        let raw = value.trim();
+        // Un valor vacío (o solo un comentario, salvo en el título y las expresiones, donde `#`
+        // es parte del valor) deja el valor por defecto.
+        if raw.is_empty()
+            || (!matches!(key, "title" | "include" | "exclude") && strip_comment(raw).is_empty())
+        {
             continue;
         }
         let invalid = || InvalidOption(key.to_owned());
-        let raw = value.trim();
         let plain = || strip_comment(raw);
         match key {
             "title" => {
@@ -97,14 +212,7 @@ pub fn parse_options(body: &str) -> Result<TocOptions, InvalidOption> {
                     t => t.to_owned(),
                 }
             }
-            "style" => {
-                o.style = match plain() {
-                    "nestedList" | "lista" => TocStyle::NestedList,
-                    "nestedOrderedList" | "lista-ordenada" => TocStyle::NestedOrderedList,
-                    "inlineFirstLevel" | "linea-primer-nivel" => TocStyle::InlineFirstLevel,
-                    _ => return Err(invalid()),
-                }
-            }
+            "style" => o.style = TocStyle::from_name(plain()).ok_or_else(invalid)?,
             "minLevel" | "maxLevel" => {
                 let n = parse_int(plain()).ok_or_else(invalid)?;
                 let n = n.min(u8::MAX as u64) as u8;
@@ -125,7 +233,7 @@ pub fn parse_options(body: &str) -> Result<TocOptions, InvalidOption> {
                     o.exclude = Some(re);
                 }
             }
-            // Depuración de otros programas: se acepta con cualquier valor y no hace nada.
+            // Depuración: se acepta con cualquier valor y no hace nada.
             "debugInConsole" => {}
             "includeLinks" | "hideWhenEmpty" => {
                 let b = match plain() {
@@ -332,6 +440,66 @@ mod tests {
         );
         // Claves desconocidas y líneas sin `:` se ignoran.
         assert!(parse_options("otra: cosa\n# comentario\nsuelto").is_ok());
+    }
+
+    #[test]
+    fn el_bloque_manda_sobre_los_valores_por_defecto() {
+        let base = TocDefaults {
+            title: "En esta nota".into(),
+            style: TocStyle::NestedOrderedList,
+            max_level: 2,
+            hide_when_empty: true,
+            ..TocDefaults::default()
+        };
+        let o = parse_options_with("", base.options()).unwrap();
+        assert_eq!(o.title, "En esta nota");
+        assert_eq!(o.style, TocStyle::NestedOrderedList);
+        assert_eq!(o.max_level, 2);
+        assert!(o.hide_when_empty);
+        let o = parse_options_with(
+            "style: lista\nmaxLevel: 0\ntitle: ''\nhideWhenEmpty: false",
+            base.options(),
+        )
+        .unwrap();
+        assert_eq!(o.title, "");
+        assert_eq!(o.style, TocStyle::NestedList);
+        assert_eq!(o.max_level, 0);
+        assert!(!o.hide_when_empty);
+        // Un valor vacío deja el de Preferencias.
+        let o = parse_options_with("maxLevel: \nstyle: # nada", base.options()).unwrap();
+        assert_eq!((o.max_level, o.style), (2, TocStyle::NestedOrderedList));
+    }
+
+    #[test]
+    fn bloque_escribe_solo_lo_distinto() {
+        let base = TocDefaults::default();
+        assert_eq!(bloque(&base, &base), "```toc\n```");
+        let elegidas = TocDefaults {
+            title: "Índice ñ".into(),
+            style: TocStyle::InlineFirstLevel,
+            min_level: 2,
+            max_level: 4,
+            include_links: false,
+            hide_when_empty: true,
+        };
+        let b = bloque(&elegidas, &base);
+        assert_eq!(
+            b,
+            "```toc\ntitle: Índice ñ\nstyle: linea-primer-nivel\nminLevel: 2\nmaxLevel: 4\nincludeLinks: false\nhideWhenEmpty: true\n```"
+        );
+        // Y se lee igual.
+        let cuerpo = b.trim_start_matches("```toc\n").trim_end_matches("```");
+        let o = parse_options(cuerpo).unwrap();
+        assert_eq!(o.title, "Índice ñ");
+        assert_eq!(o.style, TocStyle::InlineFirstLevel);
+        assert_eq!((o.min_level, o.max_level), (2, 4));
+        assert!(!o.include_links && o.hide_when_empty);
+        // Sin título frente a uno por defecto.
+        let con_titulo = TocDefaults {
+            title: "X".into(),
+            ..TocDefaults::default()
+        };
+        assert_eq!(bloque(&base, &con_titulo), "```toc\ntitle: ''\n```");
     }
 
     fn sel(o: &str, h: &[(u8, &str)]) -> Vec<usize> {

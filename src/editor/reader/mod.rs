@@ -492,7 +492,7 @@ mod resaltar;
 #[path = "resaltar_tests.rs"]
 mod resaltar_tests;
 use bloques::*;
-pub use generado::complete_generated;
+pub use generado::{complete_generated, set_toc_defaults, toc_defaults};
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]

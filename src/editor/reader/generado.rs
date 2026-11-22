@@ -3,6 +3,27 @@
 
 use super::*;
 
+/// Valores por defecto de la tabla de contenidos (035), los de Preferencias. Se leen en el hilo
+/// del análisis; sin nada guardado, los de fábrica (no se arma nada al arrancar).
+static TOC_DEFAULTS: std::sync::RwLock<Option<orbital_vault::toc::TocDefaults>> =
+    std::sync::RwLock::new(None);
+
+/// Los valores por defecto vigentes de la tabla de contenidos.
+pub fn toc_defaults() -> orbital_vault::toc::TocDefaults {
+    TOC_DEFAULTS
+        .read()
+        .ok()
+        .and_then(|d| d.clone())
+        .unwrap_or_default()
+}
+
+/// Cambia los valores por defecto de la tabla de contenidos (Preferencias y el arranque).
+pub fn set_toc_defaults(d: orbital_vault::toc::TocDefaults) {
+    if let Ok(mut g) = TOC_DEFAULTS.write() {
+        *g = (d != orbital_vault::toc::TocDefaults::default()).then_some(d);
+    }
+}
+
 /// Completa los codeblocks generados del doc (005, T015 y T019): `toc` con los encabezados del
 /// propio doc, `indice` con las notas de cada tag desde el índice y `consulta` (048) con su
 /// resultado (`raiz`, la carpeta de la bóveda, la usa la vista de coincidencias). Reemplaza cada bloque
@@ -17,6 +38,8 @@ pub fn complete_generated(
 ) -> bool {
     let encabezados = headings_flat(&doc.blocks);
     let mut completado = false;
+    // Los valores por defecto se leen una vez, y solo si hay una tabla de contenidos.
+    let mut defaults: Option<orbital_vault::toc::TocDefaults> = None;
     for (n, block) in doc.blocks.iter_mut().enumerate() {
         // Los generados dentro de transclusiones (a cualquier profundidad) se completan con los
         // encabezados y la ruta de la nota incrustada; el hash del bloque ya incluye la huella
@@ -39,7 +62,8 @@ pub fn complete_generated(
         };
         let items = match g.kind {
             orbital_vault::render::GeneratedKind::Toc => {
-                block.kind = toc_block(&g.raw, &encabezados, path);
+                let d = defaults.get_or_insert_with(toc_defaults);
+                block.kind = toc_block(&g.raw, &encabezados, path, d);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -231,6 +255,7 @@ pub(super) fn toc_block(
     raw: &str,
     encabezados: &[(u8, String)],
     path: Option<&orbital_vault::RelPath>,
+    defaults: &orbital_vault::toc::TocDefaults,
 ) -> BlockKind {
     use orbital_vault::toc::TocStyle;
     let parrafo = |inlines: Vec<Inline>| Block {
@@ -239,7 +264,7 @@ pub(super) fn toc_block(
         source: 0..0,
         kind: BlockKind::Paragraph(inlines),
     };
-    let o = match orbital_vault::toc::parse_options(raw) {
+    let o = match orbital_vault::toc::parse_options_with(raw, defaults.options()) {
         Ok(o) => o,
         Err(e) => {
             return BlockKind::Paragraph(vec![Inline::Emph(vec![Inline::Text(format!(
@@ -595,11 +620,13 @@ mod tests {
     fn toc_bloque_con_opciones() {
         let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
         let h = enc(&[(2, "A"), (3, "B"), (2, "C")]);
+        let d = orbital_vault::toc::TocDefaults::default();
         // Título y lista numerada, con enlaces a la propia nota.
         let BlockKind::Group(g) = toc_block(
             "title: **Índice**\nstyle: nestedOrderedList # numerada",
             &h,
             Some(&path),
+            &d,
         ) else {
             panic!("se esperaba un grupo");
         };
@@ -618,19 +645,64 @@ mod tests {
             "style: inlineFirstLevel\nincludeLinks: false",
             &h,
             Some(&path),
+            &d,
         ) else {
             panic!()
         };
         assert_eq!(plain_text(&p), "A | C");
         assert!(p.iter().all(|i| !matches!(i, Inline::Link { .. })));
         // Sin encabezados: aviso u oculto; opción inválida: el error.
-        assert!(matches!(toc_block("", &[], Some(&path)), BlockKind::Group(g) if g.len() == 1));
+        assert!(matches!(toc_block("", &[], Some(&path), &d), BlockKind::Group(g) if g.len() == 1));
         assert!(
-            matches!(toc_block("hideWhenEmpty: true", &[], Some(&path)), BlockKind::Group(g) if g.is_empty())
+            matches!(toc_block("hideWhenEmpty: true", &[], Some(&path), &d), BlockKind::Group(g) if g.is_empty())
         );
         assert!(matches!(
-            toc_block("style: arbol", &h, Some(&path)),
+            toc_block("style: arbol", &h, Some(&path), &d),
             BlockKind::Paragraph(_)
         ));
+    }
+
+    /// Los valores por defecto de Preferencias (035): un bloque sin opciones los usa y lo que el
+    /// bloque escribe manda.
+    #[test]
+    fn toc_con_valores_por_defecto() {
+        use orbital_vault::toc::{TocDefaults, TocStyle};
+        let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
+        let h = enc(&[(1, "A"), (2, "B"), (3, "C"), (1, "D")]);
+        let d = TocDefaults {
+            title: "En esta nota".into(),
+            style: TocStyle::NestedOrderedList,
+            max_level: 2,
+            include_links: false,
+            ..TocDefaults::default()
+        };
+        let BlockKind::Group(g) = toc_block("", &h, Some(&path), &d) else {
+            panic!("se esperaba un grupo");
+        };
+        assert!(matches!(&g[0].kind, BlockKind::Paragraph(p) if plain_text(p) == "En esta nota"));
+        let BlockKind::List { start, items } = &g[1].kind else {
+            panic!("se esperaba la lista");
+        };
+        assert_eq!(*start, Some(1));
+        assert_eq!(forma(items), "A(B) D");
+        let BlockKind::Paragraph(p) = &items[0].blocks[0].kind else {
+            panic!()
+        };
+        assert!(matches!(&p[0], Inline::Text(_)), "sin enlaces por defecto");
+        // El bloque manda.
+        let BlockKind::Group(g) = toc_block(
+            "title: ''\nstyle: lista\nmaxLevel: 0\nincludeLinks: true",
+            &h,
+            Some(&path),
+            &d,
+        ) else {
+            panic!("se esperaba un grupo");
+        };
+        assert_eq!(g.len(), 1, "sin título");
+        let BlockKind::List { start, items } = &g[0].kind else {
+            panic!("se esperaba la lista");
+        };
+        assert_eq!(*start, None);
+        assert_eq!(forma(items), "A(B(C)) D");
     }
 }
