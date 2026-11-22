@@ -50,6 +50,7 @@ mod propiedades;
 #[cfg(test)]
 mod tests;
 mod util;
+pub use boveda::LecturaAnticipada;
 use util::*;
 
 struct Inner {
@@ -229,6 +230,7 @@ impl Window {
             backlinks_button,
             note_menu,
         } = centro::construir_centro();
+        crate::medir_arranque::marca("Window::new: centro");
         let izquierda::Izquierda {
             list_view,
             search_panel,
@@ -242,6 +244,7 @@ impl Window {
             gone_banner,
             listas_panel,
         } = izquierda::construir_izquierda();
+        crate::medir_arranque::marca("Window::new: izquierda");
         let esqueleto::Esqueleto {
             split,
             status,
@@ -252,6 +255,7 @@ impl Window {
             sidebar_stack.clone(),
             sidebar_view.clone(),
         );
+        crate::medir_arranque::marca("Window::new: esqueleto");
         // --- Pantalla inicial ---
         let start = start_page();
 
@@ -314,7 +318,9 @@ impl Window {
 
         // OnStage (014): ventana separada, oculta hasta «Presentar con OnStage». El material
         // vivo (texto de la nota y bóveda) lo arma la ventana en cada refresco.
+        crate::medir_arranque::marca("Window::new: ventana");
         let onstage = std::rc::Rc::new(crate::onstage::OnStage::new(&window));
+        crate::medir_arranque::marca("Window::new: OnStage");
 
         // Visor PDF (016): página del stack; el webview y el esquema se crean al primer uso.
         let visor = std::rc::Rc::new(crate::visor_pdf::VisorPdf::new());
@@ -414,6 +420,7 @@ impl Window {
             plegado_pendiente: Cell::new(false),
             plegado_acciones: RefCell::new(Vec::new()),
         }));
+        crate::medir_arranque::marca("Window::new: Inner");
         conexiones::conectar(&this, app);
         this.setup_bases();
         this
@@ -431,8 +438,8 @@ impl Window {
     }
 
     /// Medición del arranque (desarrollo): fases del próximo cuadro.
-    pub fn fases_del_proximo_cuadro(&self) {
-        crate::medir_arranque::fases_del_proximo_cuadro(&self.0.window);
+    pub fn fases_del_proximo_cuadro(&self, etiqueta: &'static str) {
+        crate::medir_arranque::fases_del_proximo_cuadro(&self.0.window, etiqueta);
     }
 
     fn remember(&self, path: PathBuf) {

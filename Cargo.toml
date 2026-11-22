@@ -21,6 +21,8 @@ orbital-vault = { version = "0.1.0", path = "crates/orbital-vault" }
 sourceview5 = "0.11.2"
 webkit6 = "0.6.1"
 gstreamer = { version = "0.25", default-features = false }
+# Canal de un solo uso (060): ya lo compilan glib y gio, no suma compilación.
+futures-channel = "0.3.34"
 
 # Máximo rendimiento en las compilaciones de release
 [profile.release]

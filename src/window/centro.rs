@@ -79,13 +79,18 @@ pub(super) fn construir_centro() -> Centro {
         .title("Ninguna nota abierta")
         .description("Elegí una nota de la lista para leerla.")
         .build();
+    // No homogénea (060): homogénea, el primer cuadro mide y dispone todas las páginas (el
+    // editor, el grafo, la brújula, las vistas de archivos…) aunque se vea una sola.
     let content_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
+        .hhomogeneous(false)
+        .vhomogeneous(false)
         .build();
     content_stack.add_named(&empty, Some("vacio"));
     content_stack.add_named(&editor_scroll, Some("nota"));
     // Editor de notas (002): Código, Lectura y Dividida, con guardado automático.
     let code_editor = Editor::new();
+    crate::medir_arranque::marca("centro: Editor");
     code_editor.switcher().set_visible(false);
     content_stack.add_named(code_editor.widget(), Some("codigo"));
     // Página de notas HTML: propiedades arriba y la vista web (que se crea al usarla) abajo.
@@ -179,6 +184,7 @@ pub(super) fn construir_centro() -> Centro {
     // Grafo de enlaces (008, 030): página a pantalla completa con el canvas propio y controles
     // discretos de simulación física (Pausar/Reanudar y Recalcular).
     let grafo_vista = crate::grafo::VistaGrafo::new();
+    crate::medir_arranque::marca("centro: grafo");
     let grafo_aviso = gtk::Label::builder()
         .label("")
         .xalign(0.0)
@@ -243,6 +249,7 @@ pub(super) fn construir_centro() -> Centro {
 
     // Brújula de la nota abierta (017): página en el centro activada desde el riel izquierdo.
     let brujula_vista = crate::grafo::brujula::VistaBrujula::new();
+    crate::medir_arranque::marca("centro: brújula");
     content_stack.add_named(brujula_vista.widget(), Some("brujula"));
 
     // Editor de Canvas (038): página en el centro para archivos `.canvas`.
@@ -255,6 +262,7 @@ pub(super) fn construir_centro() -> Centro {
 
     // Ramas libres de la nota abierta (040).
     let ramas_libres_vista = crate::grafo::ramas_libres::VistaRamasLibres::new();
+    crate::medir_arranque::marca("centro: canvas, mapa, ramas");
     content_stack.add_named(ramas_libres_vista.widget(), Some("ramas-libres"));
 
     let content_title = adw::WindowTitle::new("", "");
@@ -353,6 +361,7 @@ pub(super) fn construir_centro() -> Centro {
     let content_view = adw::ToolbarView::new();
     // Pestañas de notas (025) arriba de la barra de la nota.
     let pestanas = crate::pestanas::Pestanas::new();
+    crate::medir_arranque::marca("centro: pestañas");
     let note_actions = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(4)
@@ -380,6 +389,7 @@ pub(super) fn construir_centro() -> Centro {
     let right = crate::editor::right_sidebar::RightSidebar::new();
     // Barra derecha de tres modos (025): Propiedades, Contexto (los retroenlaces) y Grafo.
     let panel = crate::panel_derecho::PanelDerecho::new(&right);
+    crate::medir_arranque::marca("centro: barra derecha");
     // La barra derecha va al lado de toda la columna central (pestañas y barra de la nota
     // incluidas): llega hasta la barra superior.
     content_view.set_content(Some(&content_stack));

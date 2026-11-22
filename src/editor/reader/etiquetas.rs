@@ -322,9 +322,14 @@ impl Reader {
                     t.set_right_margin(side + 16 + n * super::capas::INCRUSTADO_DER);
                 }
             }
-            // La flechita y su espacio cuelgan a la izquierda del renglón.
-            let flecha = i.view.create_pango_layout(Some("\u{25be} ")).pixel_size().0;
-            i.ancho_flecha.set(flecha);
+            // La flechita y su espacio cuelgan a la izquierda del renglón. Sin ancho todavía (al
+            // armar la ventana) no se mide (060): medirla carga la letra de la Lectura en el hilo
+            // de GTK antes del primer cuadro; vale la estimada hasta la primera disposición.
+            if width > 0.0 {
+                let flecha = i.view.create_pango_layout(Some("\u{25be} ")).pixel_size().0;
+                i.ancho_flecha.set(flecha);
+            }
+            let flecha = i.ancho_flecha.get();
             for (tag, extra) in i.colgados.borrow().iter() {
                 tag.set_left_margin(side + extra - flecha);
                 tag.set_indent(-flecha);

@@ -2,6 +2,40 @@
 
 use super::*;
 
+/// Resultado de leer una bóveda en otro hilo (`None`: el hilo no terminó).
+type Leida = Result<(Vault, Tree, NoteMeta), Option<orbital_vault::VaultError>>;
+
+/// Una bóveda que se empieza a leer en otro hilo apenas arranca el proceso (060), mientras GTK
+/// se inicia y la ventana se arma. «Abrir»: no escribe nada en la bóveda.
+pub struct LecturaAnticipada {
+    ruta: PathBuf,
+    rx: futures_channel::oneshot::Receiver<Leida>,
+}
+
+impl LecturaAnticipada {
+    pub fn empezar(ruta: PathBuf) -> Self {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let en_hilo = ruta.clone();
+        let hilo = std::thread::Builder::new()
+            .name("orbital-boveda".into())
+            .spawn(move || {
+                let r = orbital_vault::open(&en_hilo).map(prepare).map_err(Some);
+                crate::medir_arranque::marca("bóveda leída (en su hilo)");
+                let _ = tx.send(r);
+            });
+        if let Err(e) = hilo {
+            // Sin hilo, `rx` queda cancelado y la apertura avisa el error.
+            eprintln!("No se pudo crear el hilo de lectura de la bóveda: {e}");
+        }
+        Self { ruta, rx }
+    }
+
+    /// La carpeta que se está leyendo.
+    pub fn ruta(&self) -> &Path {
+        &self.ruta
+    }
+}
+
 impl Window {
     /// Diálogo del sistema para elegir una carpeta.
     pub(super) async fn choose_folder(&self, title: &str) -> Option<PathBuf> {
@@ -66,6 +100,37 @@ impl Window {
             }
             Ok(Err(e)) => self.toast(&format!("No se pudo crear la estructura: {e}")),
             Err(_) => self.toast("No se pudo crear la estructura"),
+        }
+    }
+
+    /// Abre una bóveda que se empezó a leer al entrar a `main` ([`LecturaAnticipada`], 060).
+    /// Si la lectura ya terminó, la muestra en el acto (antes de `present`, así el primer cuadro
+    /// ya sale con la lista) y devuelve `None`; si no, devuelve lo que falta esperar.
+    pub fn abrir_anticipada(
+        &self,
+        mut lectura: LecturaAnticipada,
+    ) -> Option<impl std::future::Future<Output = ()> + 'static> {
+        if let Ok(Some(r)) = lectura.rx.try_recv() {
+            crate::medir_arranque::marca("bóveda leída (antes de present)");
+            self.mostrar_leida(lectura.ruta, r);
+            return None;
+        }
+        let this = self.clone();
+        Some(async move {
+            let r = lectura.rx.await.unwrap_or(Err(None));
+            crate::medir_arranque::marca("bóveda leída");
+            this.mostrar_leida(lectura.ruta, r);
+        })
+    }
+
+    fn mostrar_leida(&self, path: PathBuf, r: Leida) {
+        match r {
+            Ok((vault, tree, meta)) => {
+                self.show_vault(vault, tree, meta);
+                self.remember(path);
+            }
+            Err(Some(e)) => self.toast(&format!("No se pudo abrir la bóveda: {e}")),
+            Err(None) => self.toast("No se pudo abrir la bóveda"),
         }
     }
 

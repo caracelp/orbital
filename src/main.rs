@@ -33,6 +33,10 @@ mod switcher;
 mod tag_panel;
 mod visor_pdf;
 mod watcher;
+// WebKit al primer uso (060): trampolines en ensamblador x86-64. En otra arquitectura, WebKit se
+// enlaza como siempre.
+#[cfg(target_arch = "x86_64")]
+mod webkit_perezoso;
 mod window;
 mod write_ctx;
 
@@ -43,7 +47,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use state::AppState;
-use window::Window;
+use window::{LecturaAnticipada, Window};
 
 const APP_ID: &str = "io.github.caracelp.Orbital";
 
@@ -102,6 +106,18 @@ fn main() -> glib::ExitCode {
         None
     };
     let argv0 = std::env::args().next().unwrap_or_default();
+    // La bóveda se empieza a leer ya, en otro hilo, mientras GTK se inicia y la ventana se arma
+    // (060): la carpeta pedida o, en el uso normal, la última abierta.
+    let lectura = if capture.is_some() {
+        None
+    } else {
+        let ruta = match &folder {
+            Some((p, _)) => Some(std::path::absolute(p).unwrap_or_else(|_| p.clone())),
+            None => AppState::load().last_vault.filter(|p| p.is_dir()),
+        };
+        ruta.map(LecturaAnticipada::empezar)
+    };
+    let lectura = std::cell::RefCell::new(lectura);
 
     // Modos de desarrollo (captura y medición): instancia propia que sale sola.
     if capture.is_some() || folder.as_ref().is_some_and(|f| f.1) {
@@ -109,13 +125,25 @@ fn main() -> glib::ExitCode {
             .application_id(APP_ID)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
-        app.connect_startup(|_| style::apply());
+        app.connect_startup(|_| {
+            medir_arranque::marca("startup (GTK y libadwaita iniciados)");
+            style::apply();
+            medir_arranque::marca("startup: CSS");
+        });
         let capture = std::cell::RefCell::new(capture);
         let folder = std::cell::RefCell::new(folder);
         app.connect_activate(move |app| {
-            activate(app, capture.borrow_mut().take(), folder.borrow_mut().take())
+            activate(
+                app,
+                capture.borrow_mut().take(),
+                folder.borrow_mut().take().map(|f| f.1),
+                lectura.borrow_mut().take(),
+            )
         });
-        return app.run_with_args(&[argv0]);
+        medir_arranque::marca("main: aplicación armada");
+        let salida = app.run_with_args(&[argv0]);
+        medir_arranque::marca("fin de run");
+        return salida;
     }
 
     // Uso normal: una sola instancia, como las apps de GNOME. Lanzar Orbital otra vez trae al
@@ -131,8 +159,10 @@ fn main() -> glib::ExitCode {
         .build();
     app.connect_startup(|_| style::apply());
     let main_window: std::rc::Rc<std::cell::RefCell<Option<Window>>> = std::rc::Rc::default();
+    let lectura = std::rc::Rc::new(lectura);
     {
         let main_window = main_window.clone();
+        let lectura = lectura.clone();
         app.connect_activate(move |app| {
             if let Some(w) = main_window.borrow().as_ref() {
                 w.present();
@@ -140,9 +170,16 @@ fn main() -> glib::ExitCode {
             }
             let w = Window::new(app);
             w.maximize();
+            // Sin carpeta pedida, la lectura anticipada es la de la última bóveda.
+            let espera = lectura
+                .borrow_mut()
+                .take()
+                .and_then(|l| w.abrir_anticipada(l));
             w.present();
             *main_window.borrow_mut() = Some(w.clone());
-            reopen_last(w);
+            if let Some(espera) = espera {
+                glib::spawn_future_local(espera);
+            }
         });
     }
     app.connect_open(move |app, files, _| {
@@ -156,8 +193,21 @@ fn main() -> glib::ExitCode {
             *main_window.borrow_mut() = Some(w.clone());
             w
         });
-        w.present();
-        glib::spawn_future_local(async move { w.open_path(path).await });
+        // La primera vez, la carpeta pedida ya se está leyendo (060).
+        let anticipada = lectura.borrow_mut().take();
+        match anticipada {
+            Some(l) if l.ruta() == path => {
+                let espera = w.abrir_anticipada(l);
+                w.present();
+                if let Some(espera) = espera {
+                    glib::spawn_future_local(espera);
+                }
+            }
+            _ => {
+                w.present();
+                glib::spawn_future_local(async move { w.open_path(path).await });
+            }
+        }
     });
     let mut args = vec![argv0];
     if let Some((path, _)) = folder {
@@ -179,16 +229,27 @@ fn reopen_last(window: Window) {
     });
 }
 
-fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(PathBuf, bool)>) {
+/// Modos de desarrollo: `exit_when_shown` es `Some` con `orbital [--salir-al-mostrar] <carpeta>`
+/// (la carpeta llega como `lectura`).
+fn activate(
+    app: &adw::Application,
+    capture: Option<Capture>,
+    exit_when_shown: Option<bool>,
+    lectura: Option<LecturaAnticipada>,
+) {
     medir_arranque::marca("activate");
     let window = Window::new(app);
     medir_arranque::marca("Window::new");
+    // Si la bóveda ya se leyó, el primer cuadro sale con ella (060).
+    let espera = lectura.and_then(|l| window.abrir_anticipada(l));
+    let ya_abierta = exit_when_shown.is_some() && espera.is_none();
     // Maximizada como en el uso normal (056), salvo que la captura pida un tamaño fijo.
     if capture.is_none() || std::env::var_os("ORBITAL_CAPTURA_TAMANO").is_none() {
         window.maximize();
     }
     window.present();
     medir_arranque::marca("present");
+    window.fases_del_proximo_cuadro("primer cuadro");
     if let Some(cap) = capture {
         window.set_persist(false);
         let app = app.clone();
@@ -245,23 +306,40 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
         });
         return;
     }
-    if let Some((path, exit_when_shown)) = folder {
+    if let Some(exit_when_shown) = exit_when_shown {
         if exit_when_shown {
             window.set_persist(false);
         }
         let app = app.clone();
-        glib::spawn_future_local(async move {
-            window.open_path(path).await;
+        let mostrada = move |window: Window| {
             medir_arranque::marca("bóveda abierta");
             if exit_when_shown {
-                window.fases_del_proximo_cuadro();
+                if ya_abierta {
+                    // La bóveda salió en el primer cuadro: sus fases son las de «primer cuadro».
+                    medir_arranque::marca("cuadro: es el primero");
+                } else {
+                    window.fases_del_proximo_cuadro("cuadro");
+                }
                 // Sale después del próximo cuadro: la lista ya está dibujada.
                 window.after_next_frame(move || {
                     medir_arranque::marca("cuadro dibujado");
+                    #[cfg(target_arch = "x86_64")]
+                    if webkit_perezoso::cargado() {
+                        medir_arranque::marca("aviso: WebKit se cargó antes del primer cuadro");
+                    }
                     app.quit()
                 });
             }
-        });
+        };
+        match espera {
+            None => mostrada(window),
+            Some(espera) => {
+                glib::spawn_future_local(async move {
+                    espera.await;
+                    mostrada(window);
+                });
+            }
+        }
         return;
     }
     reopen_last(window);

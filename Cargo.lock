@@ -1263,6 +1263,7 @@ dependencies = [
 name = "orbital"
 version = "0.1.0"
 dependencies = [
+ "futures-channel",
  "gstreamer",
  "gtk4",
  "libadwaita",

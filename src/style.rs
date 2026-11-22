@@ -280,7 +280,7 @@ fn v13_css() -> String {
         "headerbar.orbital-top {{ min-height: 48px; background: {top}; box-shadow: inset 0 -1px {line}; padding-left: 0; }}\n\
          headerbar.orbital-top > windowhandle > box {{ padding-left: 0; margin-left: 0; }}\n\
          headerbar.orbital-top box.start {{ padding-left: 0; margin-left: 0; }}\n\
-         .orbital-left-slot {{ min-width: 58px; max-width: 58px; padding: 0; margin: 0; }}\n\
+         .orbital-left-slot {{ min-width: 58px; padding: 0; margin: 0; }}\n\
          .orbital-left-slot button.orbital-iconbtn, button.orbital-rail-toggle {{ min-width: 38px; min-height: 38px; margin: 0 10px; }}\n\
          .orbital-brand {{ font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }}\n\
          .orbital-planet {{ color: {pink}; }}\n\
