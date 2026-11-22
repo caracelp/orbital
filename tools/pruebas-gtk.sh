@@ -26,6 +26,7 @@ excluir=(
     "medir_graficos_3d"       # medición de los gráficos 3D (053)
     "medir_lectura_codigo"    # medición del resaltado de código (055; también la cubre medir_lectura)
     "medir_medios"            # medición de los reproductores (057)
+    "medir_galeria_lateral"   # medición de la galería lateral (034)
     "us4_webkit"              # maneja la barra de formato por AT-SPI (tools/verificar-us4.sh)
 )
 

@@ -424,6 +424,42 @@ impl Window {
         }
     }
 
+    /// Muestra `rel` en el explorador sin abrirlo (034, «Mostrar en explorador»): la barra
+    /// izquierda a la vista, las carpetas hasta él expandidas y el foco en su fila, sin cambiar
+    /// la fila elegida (elegirla abriría el archivo).
+    pub(super) fn mostrar_en_explorador(&self, rel: &str) {
+        let i = &self.0;
+        let Some(selection) = i.list_view.model().and_downcast::<gtk::SingleSelection>() else {
+            return;
+        };
+        i.split.set_show_sidebar(true);
+        i.sidebar_stack.set_visible_child_name("archivos");
+        let find = |path: &str| -> Option<(u32, gtk::TreeListRow)> {
+            (0..selection.n_items()).find_map(|n| {
+                let row = selection.item(n).and_downcast::<gtk::TreeListRow>()?;
+                let item = row.item().and_downcast::<gtk::StringObject>()?;
+                (item.string() == path).then_some((n, row))
+            })
+        };
+        let parts: Vec<&str> = rel.split('/').collect();
+        let mut prefix = String::new();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            if let Some((_, row)) = find(&prefix) {
+                row.set_expanded(true);
+            }
+        }
+        match find(rel) {
+            Some((pos, _)) => i
+                .list_view
+                .scroll_to(pos, gtk::ListScrollFlags::FOCUS, None),
+            None => self.toast("El archivo no está en el explorador"),
+        }
+    }
+
     /// Expande las carpetas hasta `rel` y elige su fila. Devuelve si cambió la selección (y con
     /// eso `selection-changed` abre la nota).
     pub(super) fn reveal(&self, rel: &str) -> bool {

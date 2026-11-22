@@ -211,6 +211,16 @@ fn css() -> String {
          .orbital-galeria-video { background: #000000; }\n\
          .orbital-galeria-marca { padding: 10px; }\n\
          .orbital-galeria-vacia { background: var(--card-bg-color); border-radius: 10px; padding: 14px; }\n\
+         .orbital-galeria-lateral-cabecera { padding: 10px 12px 8px 12px; }\n\
+         .orbital-galeria-lateral-lienzo { margin: 0 12px 12px 12px; }\n\
+         .orbital-galeria-lateral-titulo { padding: 4px 6px; min-height: 0; border-radius: 6px; }\n\
+         .orbital-galeria-lateral-fijo { margin: 0 12px; padding: 4px 6px; border-radius: 0 0 6px 6px; background: var(--window-bg-color); box-shadow: 0 1px 0 alpha(currentColor, 0.12); }\n\
+         .orbital-galeria-lateral-mosaico { padding: 0; min-width: 0; min-height: 0; border-radius: 6px; }\n\
+         .orbital-galeria-lateral-mosaico:focus-visible { outline: 3px solid var(--accent-color); outline-offset: 1px; }\n\
+         .orbital-galeria-lateral-cuadro { border-radius: 6px; background: alpha(currentColor, 0.08); }\n\
+         .orbital-galeria-lateral-video .orbital-galeria-lateral-cuadro { background: #000000; }\n\
+         .orbital-galeria-lateral-rota .orbital-galeria-lateral-cuadro { border: 1px dashed alpha(currentColor, 0.4); }\n\
+         .orbital-galeria-lateral-nombre { padding: 0 2px; }\n\
          .orbital-visor-info { background: rgba(0,0,0,0.75); color: #ffffff; border-radius: 10px; padding: 12px 16px; }\n",
     );
     out.push_str(&props_css());

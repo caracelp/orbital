@@ -137,6 +137,7 @@ pub(super) fn conectar(this: &Window, app: &adw::Application) {
     this.setup_list();
     this.setup_status_counts();
     this.setup_pestanas();
+    this.setup_galeria_lateral();
     {
         let weak = Rc::downgrade(&this.0);
         this.0.pie_boveda.connect_elegir(move |ruta| {

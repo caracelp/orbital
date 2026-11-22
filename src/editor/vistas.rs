@@ -202,6 +202,45 @@ impl Editor {
         true
     }
 
+    /// Lleva al embed de un medio de la galería lateral (034): lo deja a la vista, lo resalta un
+    /// momento y pone el foco en el editor. Si la nota cambió, lo busca cerca del renglón
+    /// guardado. Devuelve si lo encontró.
+    pub fn ir_al_embed(&self, u: &orbital_vault::medios_nota::Ubicacion) -> bool {
+        let i = &self.0;
+        let b = &i.buffer;
+        let text = b.text(&b.start_iter(), &b.end_iter(), true);
+        let Some((linea, rango)) = orbital_vault::medios_nota::ubicar(&text, u) else {
+            return false;
+        };
+        drop(text);
+        self.revelar_linea(linea as u32);
+        let (a, z) = match rango {
+            Some((a, z)) => (
+                b.iter_at_line_index(linea as i32, a as i32),
+                b.iter_at_line_index(linea as i32, z as i32),
+            ),
+            None => {
+                let fin = linea + u.lineas.saturating_sub(1);
+                let mut z = b.iter_at_line(fin as i32);
+                if let Some(z) = z.as_mut()
+                    && !z.ends_line()
+                {
+                    z.forward_to_line_end();
+                }
+                (b.iter_at_line(linea as i32), z)
+            }
+        };
+        if let (Some(a), Some(z)) = (a, z) {
+            resaltar(b, &a, &z);
+        }
+        self.reveal_line(linea + 1);
+        if matches!(i.mode.get(), View::Lectura | View::Dividida) {
+            i.reader.resaltar_linea(linea);
+        }
+        self.grab_focus();
+        true
+    }
+
     /// Vuelve a dibujar la vista formateada con el texto actual (análisis en otro hilo).
     pub fn render_now(&self) {
         let i = &self.0;

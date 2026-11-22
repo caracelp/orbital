@@ -4,6 +4,8 @@
 //!   de la maqueta se quitó en la 049: repetía las mismas notas que Retroenlaces (salían de los
 //!   mismos retroenlaces del grafo).
 //! - **Grafo**: la nota abierta y sus vecinos (decisión de la usuaria: grafo local real).
+//! - **Galería** (034): las imágenes y los videos de la nota abierta ([`GaleriaLateral`]), que
+//!   se arma recién la primera vez que se elige.
 //!
 //! Solo muestra: los datos los arma la ventana. El grafo local se pide solo con su modo a la vista.
 
@@ -12,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::editor::right_sidebar::RightSidebar;
+use crate::galeria_lateral::GaleriaLateral;
 use crate::grafo::{GrafoDatos, VistaGrafo};
 
 /// Datos de «Metadatos de la nota».
@@ -25,6 +28,7 @@ pub struct Metadatos {
 
 type ModoFn = Box<dyn Fn(&str)>;
 type AbrirFn = Box<dyn Fn(&str)>;
+type CrearGaleriaFn = Box<dyn Fn(&GaleriaLateral)>;
 
 struct Inner {
     root: gtk::Box,
@@ -39,6 +43,10 @@ struct Inner {
     al_abrir: RefCell<Option<AbrirFn>>,
     /// Páginas que todavía no están en el `Stack` (se agregan al elegirlas).
     pendientes: RefCell<Vec<(&'static str, gtk::Box)>>,
+    /// La galería lateral, creada al elegir su modo por primera vez.
+    galeria: RefCell<Option<GaleriaLateral>>,
+    al_crear_galeria: RefCell<Option<CrearGaleriaFn>>,
+    boton_galeria: gtk::ToggleButton,
 }
 
 #[derive(Clone)]
@@ -96,12 +104,15 @@ impl PanelDerecho {
         let b_prop = crate::iconos::boton_alternable("archivo", "Propiedades YAML");
         let b_ctx = crate::iconos::boton_alternable("red", "Contexto");
         let b_graf = crate::iconos::boton_alternable("estrella", "Grafo de conexiones");
+        let b_gal = crate::iconos::boton_alternable("tipo-imagen", "Galería de la nota");
         b_ctx.set_group(Some(&b_prop));
         b_graf.set_group(Some(&b_prop));
+        b_gal.set_group(Some(&b_prop));
         b_prop.set_active(true);
         cabecera.append(&b_prop);
         cabecera.append(&b_ctx);
         cabecera.append(&b_graf);
+        cabecera.append(&b_gal);
 
         // Propiedades: metadatos y etiquetas.
         let valores: [gtk::Label; 4] = std::array::from_fn(|_| {
@@ -241,6 +252,9 @@ impl PanelDerecho {
             al_cambiar_modo: RefCell::new(None),
             al_abrir: RefCell::new(None),
             pendientes,
+            galeria: RefCell::new(None),
+            al_crear_galeria: RefCell::new(None),
+            boton_galeria: b_gal.clone(),
         }));
         for (idx, b) in this.0.botones_saltos.iter().enumerate() {
             let n_saltos = (idx + 1) as u8;
@@ -259,11 +273,21 @@ impl PanelDerecho {
             (b_prop, "propiedades"),
             (b_ctx, "contexto"),
             (b_graf, "grafo"),
+            (b_gal, "galeria"),
         ] {
             let weak = Rc::downgrade(&this.0);
             b.connect_toggled(move |b| {
                 let Some(i) = weak.upgrade() else { return };
                 if b.is_active() {
+                    if modo == "galeria" && i.galeria.borrow().is_none() {
+                        // La galería tiene su propio desplazamiento.
+                        let g = GaleriaLateral::new();
+                        i.stack.add_named(g.widget(), Some("galeria"));
+                        *i.galeria.borrow_mut() = Some(g.clone());
+                        if let Some(f) = i.al_crear_galeria.borrow().as_ref() {
+                            f(&g);
+                        }
+                    }
                     let pagina = {
                         let mut p = i.pendientes.borrow_mut();
                         p.iter().position(|(m, _)| *m == modo).map(|n| p.remove(n))
@@ -294,7 +318,22 @@ impl PanelDerecho {
         &self.0.root
     }
 
-    /// Modo a la vista: `propiedades`, `contexto` o `grafo`.
+    /// La galería lateral, si ya se eligió su modo alguna vez.
+    pub fn galeria(&self) -> Option<GaleriaLateral> {
+        self.0.galeria.borrow().clone()
+    }
+
+    /// Lo que se hace con la galería lateral al crearla (conectar sus pedidos).
+    pub fn connect_galeria(&self, f: impl Fn(&GaleriaLateral) + 'static) {
+        *self.0.al_crear_galeria.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Muestra el modo Galería (el atajo de la galería lateral).
+    pub fn mostrar_galeria(&self) {
+        self.0.boton_galeria.set_active(true);
+    }
+
+    /// Modo a la vista: `propiedades`, `contexto`, `grafo` o `galeria`.
     pub fn modo(&self) -> String {
         self.0
             .stack
@@ -318,7 +357,7 @@ impl PanelDerecho {
     /// Elige un modo como lo haría la usuaria (para las pruebas y capturas).
     #[cfg(test)]
     pub fn set_modo(&self, modo: &str) {
-        let indice = ["propiedades", "contexto", "grafo"]
+        let indice = ["propiedades", "contexto", "grafo", "galeria"]
             .iter()
             .position(|m| *m == modo);
         let mut hijo = self.0.root.first_child().and_then(|c| c.first_child());

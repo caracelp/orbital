@@ -100,6 +100,10 @@ impl Window {
                 let s = &w.0.right_split;
                 s.set_show_sidebar(!s.shows_sidebar());
             }),
+            simple("galeria-lateral", |w| {
+                w.0.right_split.set_show_sidebar(true);
+                w.0.panel.mostrar_galeria();
+            }),
             simple("toggle-left", |w| {
                 let s = &w.0.split;
                 s.set_show_sidebar(!s.shows_sidebar());
@@ -223,6 +227,7 @@ impl Window {
         app.set_accels_for_action("win.backlinks", &["<Control><Shift>b"]);
         app.set_accels_for_action("win.toggle-left", &["<Control>bracketleft"]);
         app.set_accels_for_action("win.toggle-right", &["<Control>bracketright"]);
+        app.set_accels_for_action("win.galeria-lateral", &["<Control><Alt>g"]);
         app.set_accels_for_action("win.journal", &["<Control><Alt>d"]);
         app.set_accels_for_action("win.archive", &["<Control><Shift>a"]);
         app.set_accels_for_action("win.paste-image", &["<Control><Shift>v"]);
@@ -292,6 +297,10 @@ impl Window {
             "Mostrar u ocultar la barra derecha",
             "<Control>bracketright",
         ));
+        section.add(adw::ShortcutsItem::new(
+            "Galería de la nota en la barra derecha",
+            "<Control><Alt>g",
+        ));
         section.add(adw::ShortcutsItem::new("Diario de hoy", "<Control><Alt>d"));
         section.add(adw::ShortcutsItem::new(
             "Archivar la nota",
@@ -325,6 +334,25 @@ impl Window {
             "<Control>question",
         ));
         dialog.add(section);
+        // La galería lateral (034): con el foco en la grilla o en el visor.
+        let galeria = adw::ShortcutsSection::new(Some("Galería de la nota"));
+        galeria.add(adw::ShortcutsItem::new(
+            "Recorrer títulos y mosaicos",
+            "Left Right Up Down",
+        ));
+        galeria.add(adw::ShortcutsItem::new(
+            "Plegar o desplegar un grupo; abrir el visor",
+            "Return",
+        ));
+        galeria.add(adw::ShortcutsItem::new("Ir al embed", "<Control>Return"));
+        galeria.add(adw::ShortcutsItem::new("Menú del mosaico", "<Shift>F10"));
+        galeria.add(adw::ShortcutsItem::new("Ir al embed desde el visor", "e"));
+        galeria.add(adw::ShortcutsItem::new(
+            "Información del archivo en el visor",
+            "i",
+        ));
+        galeria.add(adw::ShortcutsItem::new("Cerrar el visor", "Escape"));
+        dialog.add(galeria);
         dialog.present(Some(&self.0.window));
     }
 
@@ -414,6 +442,12 @@ impl Window {
             "Alternar la barra derecha",
             "toggle-right",
             Some("Ctrl+]"),
+            false,
+        ),
+        (
+            "Galería de la nota",
+            "galeria-lateral",
+            Some("Ctrl+Alt+G"),
             false,
         ),
         ("Crear carpeta", "new-folder", None, false),
