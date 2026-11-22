@@ -391,6 +391,15 @@ generado; en Código queda el texto plano.
   | `hideWhenEmpty` | `false` | Sin encabezados: no se muestra nada (si no, un aviso) |
   | `debugInConsole` | — | Se acepta con cualquier valor y se ignora |
 
+  Una opción vacía, o con solo un comentario, toma el valor por defecto.
+
+  Los valores «por defecto» de `title`, `style`, `minLevel`, `maxLevel`, `includeLinks` y
+  `hideWhenEmpty` se cambian en Preferencias → «Tabla de contenidos» (valen para todas las
+  bóvedas; se guardan en `estado.yaml` de la configuración del usuario, nunca en la bóveda). Lo
+  que escribe el bloque manda; `title: ''` deja sin título aunque Preferencias tenga uno. El
+  comando «Insertar índice…» de la paleta arma el bloque en el cursor con las opciones elegidas y
+  escribe solo las que difieren de Preferencias (`style` con el nombre en español).
+
   Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
   encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
   lugar de la tabla. Con la bandera `i`, un patrón escrito en minúsculas

@@ -211,8 +211,14 @@ fn preferencia_en_el_dialogo() {
     win.present();
     glib::MainContext::default().block_on(async {
         pausa(300).await;
-        let dialog =
-            crate::preferences::show(&win, root.clone(), vault.config().clone(), false, |_| {});
+        let dialog = crate::preferences::show(
+            &win,
+            root.clone(),
+            vault.config().clone(),
+            false,
+            || {},
+            |_| {},
+        );
         pausa(500).await;
         let fila = descendientes(dialog.upcast_ref())
             .into_iter()

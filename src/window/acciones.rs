@@ -156,6 +156,9 @@ impl Window {
             simple("insertar-galeria", |w| {
                 w.0.code_editor.insertar_galeria();
             }),
+            simple("insertar-toc", |w| {
+                w.0.code_editor.insertar_toc();
+            }),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
             simple("importar-md", Window::importar_md),
@@ -495,6 +498,7 @@ impl Window {
         ("Insertar ecuación", "insertar-ecuacion", None, true),
         ("Insertar gráfico", "insertar-grafico", None, true),
         ("Insertar galería…", "insertar-galeria", None, true),
+        ("Insertar índice…", "insertar-toc", None, true),
         (
             "Editar o insertar ecuación",
             "ecuacion",
@@ -559,6 +563,16 @@ impl Window {
             vault.root().to_path_buf(),
             vault.config().clone(),
             self.0.persist.get(),
+            {
+                // La tabla de contenidos cambió (035): la nota abierta se vuelve a dibujar si
+                // tiene bloques generados.
+                let this = self.clone();
+                move || {
+                    if this.0.code_editor.has_generated() {
+                        this.0.code_editor.render_now();
+                    }
+                }
+            },
             move |r| {
                 let (this, current) = (this.clone(), current.clone());
                 glib::spawn_future_local(async move {

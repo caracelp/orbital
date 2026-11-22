@@ -1,5 +1,6 @@
-//! Preferencias: las de la bóveda (`.orbital/config.yaml`, FR-018) y las del editor, que valen
-//! para todas las bóvedas y se guardan con el estado de la app (`estado.yaml`, 054).
+//! Preferencias: las de la bóveda (`.orbital/config.yaml`, FR-018) y las del editor y de la
+//! tabla de contenidos (035), que valen para todas las bóvedas y se guardan con el estado de la
+//! app (`estado.yaml`, 054).
 
 use std::path::PathBuf;
 
@@ -9,12 +10,15 @@ use orbital_vault::{LinkStyle, VaultConfig};
 
 /// Muestra el diálogo. Al cerrarlo, si algo de la bóveda cambió, guarda su configuración
 /// (creando `.orbital/` recién ahora, FR-004) y llama a `on_saved`. Lo del editor se aplica y se
-/// guarda en el acto (con `persist` en falso, como en las capturas, solo se aplica).
+/// guarda en el acto (con `persist` en falso, como en las capturas, solo se aplica); `on_lectura`
+/// avisa que cambió algo de lo que muestra la Lectura (la tabla de contenidos), para volver a
+/// dibujar la nota abierta.
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     root: PathBuf,
     current: VaultConfig,
     persist: bool,
+    on_lectura: impl Fn() + 'static,
     on_saved: impl Fn(Result<(), String>) + 'static,
 ) -> adw::PreferencesDialog {
     let dialog = adw::PreferencesDialog::builder()
@@ -22,6 +26,7 @@ pub fn show(
         .build();
     let page = adw::PreferencesPage::new();
     page.add(&editor_group(persist));
+    page.add(&toc_group(persist, std::rc::Rc::new(on_lectura)));
     let group = adw::PreferencesGroup::builder()
         .title("Notas")
         .description("Se guardan en .orbital/config.yaml, dentro de la bóveda.")
@@ -129,5 +134,157 @@ fn editor_group(persist: bool) -> adw::PreferencesGroup {
         }
     });
     group.add(&numbers);
+    group
+}
+
+/// Grupo «Tabla de contenidos» (035): los valores que toma un ` ```toc ` que no escribe esa
+/// opción. Se aplican en el acto (la nota abierta se vuelve a dibujar) y se guardan con el estado
+/// de la app; el título, con una pausa, para no escribir en cada tecla.
+fn toc_group(persist: bool, on_lectura: std::rc::Rc<dyn Fn()>) -> adw::PreferencesGroup {
+    use orbital_vault::toc::{TocDefaults, TocStyle};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let group = adw::PreferencesGroup::builder()
+        .title("Tabla de contenidos")
+        .description(
+            "Valores por defecto de los bloques toc. Lo que escribe cada bloque manda sobre estos.",
+        )
+        .build();
+    let actual = Rc::new(RefCell::new(crate::editor::reader::toc_defaults()));
+    let aplicar = {
+        let (actual, on_lectura) = (actual.clone(), on_lectura.clone());
+        Rc::new(move |cambiar: &dyn Fn(&mut TocDefaults)| {
+            let d = {
+                let mut d = actual.borrow_mut();
+                let antes = d.clone();
+                cambiar(&mut d);
+                if *d == antes {
+                    return;
+                }
+                d.clone()
+            };
+            crate::editor::reader::set_toc_defaults(d.clone());
+            on_lectura();
+            if persist {
+                glib::spawn_future_local(async move {
+                    let _ = gio::spawn_blocking(move || {
+                        let mut s = crate::state::AppState::load();
+                        s.toc = d;
+                        s.save()
+                    })
+                    .await;
+                });
+            }
+        })
+    };
+    let d = actual.borrow().clone();
+    let estilo = adw::ComboRow::builder()
+        .title("Estilo")
+        .model(&gtk::StringList::new(&[
+            "Lista con viñetas",
+            "Lista numerada",
+            "Primer nivel en una línea",
+        ]))
+        .selected(
+            TocStyle::TODOS
+                .iter()
+                .position(|s| *s == d.style)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        estilo.connect_selected_notify(move |row| {
+            let style = TocStyle::TODOS
+                .get(row.selected() as usize)
+                .copied()
+                .unwrap_or(TocStyle::NestedList);
+            aplicar(&|d| d.style = style);
+        });
+    }
+    let nivel = |titulo: &str, subtitulo: &str, valor: u8| {
+        adw::SpinRow::builder()
+            .title(titulo)
+            .subtitle(subtitulo)
+            .adjustment(&gtk::Adjustment::new(valor as f64, 0.0, 6.0, 1.0, 1.0, 0.0))
+            .digits(0)
+            .numeric(true)
+            .build()
+    };
+    let minimo = nivel(
+        "Nivel mínimo",
+        "Desde qué nivel de encabezado; 0: el menor de la nota",
+        d.min_level,
+    );
+    let maximo = nivel(
+        "Nivel máximo",
+        "Hasta qué nivel de encabezado; 0: sin límite",
+        d.max_level,
+    );
+    {
+        let aplicar = aplicar.clone();
+        minimo.connect_value_notify(move |row| {
+            let n = row.value().round().clamp(0.0, 6.0) as u8;
+            aplicar(&|d| d.min_level = n);
+        });
+    }
+    {
+        let aplicar = aplicar.clone();
+        maximo.connect_value_notify(move |row| {
+            let n = row.value().round().clamp(0.0, 6.0) as u8;
+            aplicar(&|d| d.max_level = n);
+        });
+    }
+    let titulo = adw::EntryRow::builder()
+        .title("Título antes de la tabla (vacío: sin título)")
+        .text(&d.title)
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        let pausa: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+        titulo.connect_changed(move |row| {
+            if let Some(id) = pausa.borrow_mut().take() {
+                id.remove();
+            }
+            let (aplicar, texto, p) =
+                (aplicar.clone(), row.text().trim().to_owned(), pausa.clone());
+            let id =
+                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                    p.borrow_mut().take();
+                    aplicar(&|d| d.title = texto.clone());
+                });
+            *pausa.borrow_mut() = Some(id);
+        });
+    }
+    let enlaces = adw::SwitchRow::builder()
+        .title("Enlaces a los encabezados")
+        .subtitle("Si se apaga, la tabla es texto sin clic")
+        .active(d.include_links)
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        enlaces.connect_active_notify(move |row| {
+            let on = row.is_active();
+            aplicar(&|d| d.include_links = on);
+        });
+    }
+    let ocultar = adw::SwitchRow::builder()
+        .title("Ocultar si no hay encabezados")
+        .subtitle("Si no, un aviso ocupa el lugar de la tabla")
+        .active(d.hide_when_empty)
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        ocultar.connect_active_notify(move |row| {
+            let on = row.is_active();
+            aplicar(&|d| d.hide_when_empty = on);
+        });
+    }
+    group.add(&estilo);
+    group.add(&minimo);
+    group.add(&maximo);
+    group.add(&titulo);
+    group.add(&enlaces);
+    group.add(&ocultar);
     group
 }
