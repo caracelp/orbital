@@ -33,6 +33,7 @@ mod switcher;
 mod tag_panel;
 mod visor_pdf;
 mod watcher;
+mod webkit_perezoso;
 mod window;
 mod write_ctx;
 
@@ -319,6 +320,9 @@ fn activate(
                 // Sale después del próximo cuadro: la lista ya está dibujada.
                 window.after_next_frame(move || {
                     medir_arranque::marca("cuadro dibujado");
+                    if webkit_perezoso::cargado() {
+                        medir_arranque::marca("aviso: WebKit se cargó antes del primer cuadro");
+                    }
                     app.quit()
                 });
             }
