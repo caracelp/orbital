@@ -1,21 +1,23 @@
-<!-- Mensaje de commit, interfaz y documentos en español; identificadores de código en inglés. -->
+<!-- Interfaz, documentación y mensajes de commit en español; identificadores del código en inglés.
+Guía completa: CONTRIBUTING.md -->
 
 ## Qué cambia
 
-<!-- Resumen del cambio y por qué. Si implementa una spec, nombrala: specs/NNN-nombre/. -->
+<!-- Resumen del cambio y por qué. Si resuelve un issue: «Cierra #123». -->
 
 ## Cómo se verificó
 
-<!-- Gate completo antes de cerrar: cargo fmt, cargo clippy --all-targets -- -D warnings,
-cargo test, cargo deny check. Si toca interfaz: script AT-SPI correspondiente
-(tools/verificar-NNN-us*.sh). Afirmaciones de rendimiento con medición. -->
+<!-- Si toca la interfaz, una prueba GTK en proceso o una verificación por AT-SPI
+(tools/verificar-*.sh). Si toca algo medido, la medición antes y después. -->
 
-- [ ] `cargo fmt`
+- [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] `cargo test`
 - [ ] `cargo deny check`
-- [ ] Verificación AT-SPI / manual (si aplica)
+- [ ] `tools/pruebas-gtk.sh`
+- [ ] Prueba manual o por AT-SPI (si aplica), con una bóveda temporal
+- [ ] `docs/formato-boveda.md` actualizado (si cambia lo que se lee o escribe en la bóveda)
 
 ## Notas
 
-<!-- Decisiones de alcance tomadas, rendimiento medido, lo que quedó pendiente. -->
+<!-- Decisiones tomadas, mediciones, lo que quedó pendiente. -->

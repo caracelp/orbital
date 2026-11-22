@@ -17,7 +17,10 @@ trabajo="$(cd "$trabajo" && pwd)"
 id=io.github.caracelp.Orbital
 
 rm -rf "$trabajo/app" "$trabajo/repo" "$trabajo/src"
-rsync -a --exclude target --exclude .git --exclude build-aux/flatpak/build "$raiz/" "$trabajo/src/"
+# Sin lo que no es parte del repo (lo ignorado en .gitignore, como target/ o el material de
+# desarrollo local).
+rsync -a --exclude .git --exclude build-aux/flatpak/build --filter=':- .gitignore' \
+    "$raiz/" "$trabajo/src/"
 flatpak build-init --sdk-extension=org.freedesktop.Sdk.Extension.rust-stable \
     "$trabajo/app" "$id" org.gnome.Sdk//51 org.gnome.Platform//51
 

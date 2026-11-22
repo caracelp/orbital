@@ -1,12 +1,14 @@
-# CI de Orbital: el mismo gate que en local (CLAUDE.md), en un contenedor de Arch
+# CI de Orbital: las mismas verificaciones que CONTRIBUTING.md, en un contenedor de Arch
 # porque webkitgtk-6.0 (WebKitGTK para GTK4) no está en los runners de Ubuntu.
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore: ["site/**"]
   pull_request:
     branches: [main]
+    paths-ignore: ["site/**"]
 
 env:
   CARGO_TERM_COLOR: always

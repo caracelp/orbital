@@ -1,6 +1,6 @@
 # Contrato: formato en disco de una bóveda de Orbital (versión 1)
 
-Documento público del formato (FR-032). Es la fuente de verdad: si el código y este documento no coinciden,
+Documento público del formato. Es la fuente de verdad: si el código y este documento no coinciden,
 el error está en el código. Define lo que cualquier herramienta
 (otro editor, un agente, un script) puede esperar de una bóveda de Orbital y lo que tiene que respetar.
 
@@ -79,7 +79,7 @@ tags: [fisica]
 
 Para que el HTML se mantenga limpio y legible tanto en la vista Código como en editores externos o
 navegadores, Orbital nunca inserta atributos `style="..."` en línea al aplicar formatos desde la vista
-Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas reglas se agrupan en una
+Visual. En su lugar, utiliza clases semánticas con prefijo `o-` cuyas reglas se agrupan en una
 única etiqueta `<style data-orbital>` dentro del `<head>`:
 
 ```html
@@ -104,7 +104,7 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
 - **Regla de edición**: Al guardar desde la vista Visual, el bloque `<style data-orbital>` es la **única**
   parte de `<head>` que Orbital puede agregar o actualizar (solo incluyendo las reglas de las clases
   efectivamente utilizadas en el documento). Todo el resto de `<head>` (metadatos, estilos propios de la
-  nota, scripts) y el bloque de propiedades se conservan byte a byte (FR-015).
+  nota, scripts) y el bloque de propiedades se conservan byte a byte.
 
 
 ## 5. Propiedades
@@ -118,7 +118,7 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
   aviso de que falta `type`. Orbital no le agrega `type` y, si cambia el tipo (por ejemplo desde Bases),
   escribe en `tipo`. Si una nota tiene las dos claves, **gana `type`** y `tipo` se conserva sin usarse.
   Las notas nuevas se crean con `type`.
-- `id` (040/041): identificador de la nota, `<PREFIJO>-NNN` (`AT-001`). El prefijo sale del tipo: tabla
+- `id`: identificador de la nota, `<PREFIJO>-NNN` (`AT-001`). El prefijo sale del tipo: tabla
   fija (`atomo` → `AT`, `apunte` → `AP`, `concepto` → `CO`, `cuaderno` → `CU`…) o, para un tipo libre,
   su primera letra y la siguiente que no forme un prefijo de la tabla (`cosa` → `CS`, `cuento` → `CE`).
   El prefijo depende solo del nombre del tipo; dos tipos libres pueden compartirlo. El número es el
@@ -142,7 +142,7 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
   formateada. Se resuelven como los wikilinks. Se anidan hasta 3 niveles; una referencia circular se muestra
   como aviso. En las notas `.html` el archivo guarda solo el texto `![[…]]`: la tarjeta la dibuja Orbital y
   nunca se escribe en el archivo.
-- Identificadores de bloque (026): al guardar una nota de `wiki/`, Orbital le pone un id a cada bloque que
+- Identificadores de bloque: al guardar una nota de `wiki/`, Orbital le pone un id a cada bloque que
   no lo tiene (párrafos, cada ítem de lista, citas, callouts, tablas, bloques de código y `$$`). El bloque
   donde está el cursor lo recibe al guardar con el cursor en otro bloque o al dejar la nota. Abrir y dejar
   una nota sin cambios no la modifica; `raw/` nunca se toca. En Código y en el archivo se ven; en Lectura,
@@ -219,9 +219,9 @@ Formato de OKF v0.2 §8 y §9.
   entero. Si falta o el archivo tiene errores, Orbital lo muestra y no lo sobrescribe sin confirmación. Su
   contenido se especifica en sus propias funciones.
 - `.orbital/config.yaml`: `format_version`, `link_style` (`wikilink` | `markdown`), `journal_name`, `actor`.
-- `.orbital/busquedas.yaml` (004): búsquedas guardadas, una lista de mapas `name`/`query`. Escritura
+- `.orbital/busquedas.yaml`: búsquedas guardadas, una lista de mapas `name`/`query`. Escritura
   atómica con respaldo; si el YAML tiene errores, Orbital avisa y no lo sobrescribe.
-- `.orbital/enlaces.yaml` (009): archivos de `raw/` asociados a una URL, una lista de mapas
+- `.orbital/enlaces.yaml`: archivos de `raw/` asociados a una URL, una lista de mapas
   `ruta`/`url`. La ruta es relativa a la raíz de la bóveda y la URL es `http` o `https`. Al
   renombrar o mover el archivo, la entrada se actualiza.
 
@@ -230,13 +230,13 @@ Formato de OKF v0.2 §8 y §9.
     url: https://ejemplo.com/termodinamica
   ```
 
-- `.orbital/historial/<ruta>/` (010): versiones automáticas del contenido **previo** a cada guardado,
+- `.orbital/historial/<ruta>/`: versiones automáticas del contenido **previo** a cada guardado,
   un archivo de texto por versión con nombre `AAAA-MM-DD_HH-MM-SS.txt` (milisegundos y sufijo
   incremental si hace falta). Máximo 20 versiones por nota: se descartan las más viejas. Un guardado
   que no cambia el contenido no crea versión duplicada. Las versiones nunca son notas: no entran en
   la búsqueda, el grafo ni las listas.
 
-- `.orbital/listas.yaml` (027): Favoritos y Guardados de la bóveda. Viaja con la carpeta:
+- `.orbital/listas.yaml`: Favoritos y Guardados de la bóveda. Viaja con la carpeta:
   sincronizarla o copiarla los lleva.
 
   ```yaml
@@ -282,7 +282,7 @@ Formato de OKF v0.2 §8 y §9.
     como faltante.
   - Ninguna nota ni archivo de `raw/` se modifica.
 
-- `.orbital/plegado.yaml` (028): qué partes de cada nota están plegadas (outliner plegable). Viaja
+- `.orbital/plegado.yaml`: qué partes de cada nota están plegadas (outliner plegable). Viaja
   con la carpeta: sincronizarla o copiarla lo lleva. Las notas nunca cambian por plegar.
 
   ```yaml
@@ -309,7 +309,7 @@ Formato de OKF v0.2 §8 y §9.
   - `plegados`: lista (no vacía) de pliegues, en el orden en que aparecen en la nota. Cada pliegue
     es un mapa con **una** de estas claves:
     - `bloque: <id>`: el ítem de lista cuya primera línea termina en `^<id>` (el identificador de
-      bloque de la 026). Es la forma preferida: sobrevive a cambios en el texto del ítem.
+      bloque). Es la forma preferida: sobrevive a cambios en el texto del ítem.
     - `item: <texto>`: un ítem de lista sin identificador, por el texto de su primera línea (sin el
       marcador `-`/`*`/`+`/`1.`, sin la casilla `[ ]` y recortado).
     - `encabezado: <texto>`: una sección, por el texto de su encabezado (sin los `#`, recortado).
@@ -338,7 +338,7 @@ Formato de OKF v0.2 §8 y §9.
     quita las entradas (y «Deshacer» las repone). Lo que se borra o mueve por fuera se descarta al
     escribir.
   - El enfoque (ver solo un elemento) no se guarda.
-- `.orbital/drive.yaml` (061a): la conexión de la bóveda con una carpeta de Google Drive. Viaja con
+- `.orbital/drive.yaml`: la conexión de la bóveda con una carpeta de Google Drive. Viaja con
   la bóveda (también se sincroniza) y **no tiene secretos**: las credenciales están en el llavero del
   sistema y el estado de sincronización de cada equipo, fuera de la bóveda
   (`$XDG_STATE_HOME/orbital/drive/<id>/`). Si no existe, la bóveda no está conectada y Orbital no
@@ -359,12 +359,12 @@ Formato de OKF v0.2 §8 y §9.
   - Lo que se reemplaza o se saca por la sincronización nunca se borra: si Drive no lo tenía, va al
     historial (notas de texto) o a `.orbital/respaldo/<fecha>/<ruta>`; lo borrado en Drive va a la
     papelera; lo borrado acá va a la papelera de Drive.
-- `.orbital/conflictos/<ruta>/<fecha>.<ext>` (061a): la versión de Drive de un archivo que cambió en
+- `.orbital/conflictos/<ruta>/<fecha>.<ext>`: la versión de Drive de un archivo que cambió en
   este equipo y en Drive a la vez. Mientras exista el conflicto no se sube nada encima. Al resolverlo
   («Conservar la de este equipo» o «Usar la de Drive»), la versión descartada pasa al historial o al
   respaldo y la copia se quita. Si los cambios de los dos lados de una nota `.md` o `.html` no tocan
   los mismos renglones, se unen solos y las dos originales quedan en el historial.
-- `.orbital/sincronizacion/` (061a): bajadas a medio hacer (`<id>-<suma>.parcial`); se pueden borrar.
+- `.orbital/sincronizacion/`: bajadas a medio hacer (`<id>-<suma>.parcial`); se pueden borrar.
 
 ## 10. Borrar y papelera
 
@@ -376,7 +376,7 @@ repone tal como estaba.
 
 Este contrato tiene `format_version: 1`. Un cambio incompatible sube la versión y trae una guía de migración.
 
-## 12. Contenido generado (005)
+## 12. Contenido generado
 
 Texto del archivo que la vista expande al leer: el disco siempre tiene el fuente, y la generación es
 solo de vista (no entra en la búsqueda ni en el grafo). En Lectura y Visual se muestra el contenido
@@ -397,7 +397,7 @@ generado; en Código queda el texto plano.
 
 ### Codeblocks generados
 
-- ` ```indice ` (036): lista las notas de una etiqueta y de sus sub-etiquetas, anidadas por
+- ` ```indice `: lista las notas de una etiqueta y de sus sub-etiquetas, anidadas por
   sub-etiqueta (cada una con su cantidad), en orden alfabético por nombre y con las prioritarias
   arriba y en negrita. **Solo vista**: nunca escribe en el disco y el grafo no lo ve. Sale del
   índice de búsqueda en memoria (las etiquetas del frontmatter y del cuerpo), nunca del disco, y
@@ -448,14 +448,14 @@ generado; en Código queda el texto plano.
   comando «Insertar índice…» de la paleta arma el bloque en el cursor con las opciones elegidas y
   escribe solo las que difieren de Preferencias (`style` con el nombre en español).
   En OnStage se ve como en Lectura (con los encabezados de la diapositiva) y al exportar, como
-  una lista estática sin enlaces (036).
+  una lista estática sin enlaces.
 
   Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
   encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
   lugar de la tabla. Con la bandera `i`, un patrón escrito en minúsculas
   encuentra también las mayúsculas acentuadas (`/módulo/i` encuentra «MÓDULO»); uno con mayúsculas
   acentuadas solo las iguala en ASCII.
-- ` ```cardlink ` (013): tarjeta de una URL. El cuerpo es YAML con `url` más los metadatos
+- ` ```cardlink `: tarjeta de una URL. El cuerpo es YAML con `url` más los metadatos
   (`title`, `description`, `host`, `favicon`, `image`); Lectura lo muestra como tarjeta clicable y
   el archivo conserva el fuente.
 
@@ -468,9 +468,9 @@ generado; en Código queda el texto plano.
   ```
   ````
 
-- ` ```consulta ` (048): consulta viva. Las líneas que empiezan con `vista:`, `columnas:` u
-  `orden:` son opciones; el resto es una consulta en el lenguaje de la búsqueda (004): `tag:`,
-  `path:`, `file:`, `line:( … )`, `section:( … )`, `[clave]`, `[clave:valor]`, `rel:` (049), `OR`,
+- ` ```consulta `: consulta viva. Las líneas que empiezan con `vista:`, `columnas:` u
+  `orden:` son opciones; el resto es una consulta en el lenguaje de la búsqueda: `tag:`,
+  `path:`, `file:`, `line:( … )`, `section:( … )`, `[clave]`, `[clave:valor]`, `rel:`, `OR`,
   `-` y paréntesis. Solo vista, como el `indice`: el disco conserva el bloque y el grafo no ve el
   resultado, que se recalcula ante cada cambio de la bóveda. Cuentan las notas `.md` y `.html` fuera
   de `raw/`.
@@ -497,7 +497,7 @@ generado; en Código queda el texto plano.
   su ` ```toc ` lista los encabezados de esa nota (o de la parte incrustada) y enlaza a ella. En la
   tarjeta HTML de una nota `.html` se sigue viendo el codeblock fuente.
 
-### Tarjetas de estudio (024)
+### Tarjetas de estudio
 
 Una tarjeta de estudio va entre `:::flashcard` y `:::`, cada uno en su renglón; un renglón `---`
 separa la pregunta de la respuesta. Las dos partes son Markdown común (negrita, listas, `$…$` y
@@ -520,7 +520,7 @@ Respuesta, con $$…$$ y varias líneas.
   pregunta destacada y la respuesta oculta hasta «Mostrar respuesta» (clic, o Tab e Intro). Varias
   seguidas forman un mazo numerado («Tarjeta 3 de 16»). La vista Código muestra el texto tal cual.
 
-### Fórmulas LaTeX (050)
+### Fórmulas LaTeX
 
 Las fórmulas son LaTeX de modo matemático escrito en la nota; el archivo guarda solo el LaTeX y
 Orbital nunca lo reescribe.
@@ -550,8 +550,8 @@ $$
   bloques de código; tampoco cuentan las etiquetas (`#…`) que aparezcan dentro de una fórmula.
 - **Entornos**: `aligned`/`align`/`align*`, `gather`, `cases`, `matrix`, `pmatrix`, `bmatrix`,
   `vmatrix`, `Vmatrix`, `array`, `split` y los demás del modo matemático de KaTeX. La química
-  (`\ce`, `\pu`) y las unidades (`\qty`, `\SI`, `\unit`…) también, desde la 051 (abajo).
-- **Ids de bloque** (026): `^id` en el renglón siguiente al `$$` de cierre, como en tablas y código.
+  (`\ce`, `\pu`) y las unidades (`\qty`, `\SI`, `\unit`…) también (ver abajo).
+- **Ids de bloque**: `^id` en el renglón siguiente al `$$` de cierre, como en tablas y código.
 - **Con error**: se ve el fuente (con sus delimitadores) subrayado, y el motivo en el tooltip.
 - **Notas `.html`**: las mismas reglas sobre el texto visible de la página (no en `<code>`, `<pre>`,
   `<script>`, `<style>`, `<textarea>`, `<title>`, atributos ni comentarios; una fórmula no cruza
@@ -559,12 +559,12 @@ $$
   Visual se ven dibujadas y no se editan en el lugar: un clic las vuelve a su fuente. Al guardar, el
   archivo conserva el texto original. En la tarjeta de una nota `.md` incrustada en una `.html`, las
   fórmulas quedan como su fuente.
-- **Exportar** (007) las dibuja como SVG con nombre accesible, en `.md` y en `.html`.
+- **Exportar** las dibuja como SVG con nombre accesible, en `.md` y en `.html`.
 
-### Química y unidades (051)
+### Química y unidades
 
 Dentro de una fórmula (`$…$`, `$$…$$`, ` ```math `, también en las `.html`) valen la química de
-mhchem y los comandos de unidades de siunitx. Se dibujan en todos los lugares de la 050 (Lectura,
+mhchem y los comandos de unidades de siunitx. Se dibujan en los mismos lugares que las fórmulas (Lectura,
 Dividida, Visual de las `.html`, globito de Código, exportar y OnStage); el archivo guarda solo lo
 escrito.
 
@@ -601,7 +601,7 @@ $$\Delta H = \pu{-285.8 kJ/mol}$$
   (`$…$`) o en bloque (`$$` en su propio párrafo). La página «Convertir unidades» convierte la
   cantidad bajo el cursor del editor y escribe el resultado como `\qty{…}{…}`.
 
-### Gráficos 2D y polares (052)
+### Gráficos 2D y polares
 
 Un codeblock ` ```grafico ` es un gráfico: el archivo guarda el bloque tal cual y Orbital lo dibuja
 en Lectura y Dividida (interactivo), en el globito de Código, en OnStage, al exportar (SVG) y en la
@@ -680,7 +680,7 @@ datos: líneas
   renglones de adentro. Sin bloque bajo el cursor, la página «Gráfico» (o «Insertar gráfico» de la
   paleta de comandos) inserta uno nuevo en su propio párrafo.
 
-### Gráficos 3D (053)
+### Gráficos 3D
 
 El mismo bloque ` ```grafico ` es un gráfico 3D en cuanto tiene una serie del espacio (una
 expresión con z, `z = f(x, y)`, una curva o superficie paramétrica de tres coordenadas, puntos de
@@ -749,7 +749,7 @@ cámara: -60, 28
 - **Estático** (exportar, `.html`, OnStage, globito): la vista de la cámara del bloque. El SVG
   dibuja de atrás para adelante con mallas más gruesas y los colores para papel blanco.
 
-### Diagramas Mermaid (058)
+### Diagramas Mermaid
 
 Un codeblock ` ```mermaid ` es un diagrama: el archivo guarda el bloque tal cual (la sintaxis de
 Mermaid) y Orbital lo dibuja en Lectura y Dividida, en OnStage, en el globito de Código, en la
@@ -774,7 +774,7 @@ flowchart TD
   rellenos son rosas translúcidos. Un tema pedido por el propio diagrama (`%%{init: {theme: …}}%%`)
   se respeta.
 - **Tamaño**: el natural; si no entra en la columna, se achica (sin deformarse).
-- **Ampliar y copiar** (059): en la Lectura, un clic (o Tab e Intro) abre el diagrama ampliado a
+- **Ampliar y copiar**: en la Lectura, un clic (o Tab e Intro) abre el diagrama ampliado a
   pantalla completa, con zoom y arrastre; el menú contextual (clic derecho, Menú o Mayús+F10)
   lo copia como imagen PNG o como SVG, con los colores de papel (Ctrl+C y Ctrl+Mayús+C).
 - **Letras**: los emoji y las escrituras que no están en la letra de la interfaz (CJK, por
@@ -785,7 +785,7 @@ flowchart TD
   de Markdown convertido a HTML). En Visual se ve el SVG; un clic muestra el fuente para editarlo;
   al guardar, el archivo conserva el `pre` tal cual.
 
-### Carrusel de medios (032)
+### Carrusel de medios
 
 Un codeblock ` ```carrusel ` (o ` ```media-slider `, el nombre heredado, que Orbital acepta como
 propio) junta varios medios de la bóveda en un carrusel: en Lectura, Dividida y OnStage se ven de a
@@ -854,7 +854,7 @@ vistaAmpliada: true
 - **Exportar**: la grilla estática (HTML con audio y video reproducibles; PDF con su nombre y un
   enlace).
 
-### Galería en la nota (033)
+### Galería en la nota
 
 Un codeblock ` ```galeria ` (también ` ```galería ` o ` ```gallery `, nombres que Orbital acepta
 como propios) muestra las imágenes y los videos de una carpeta de la bóveda como una grilla dentro
@@ -900,7 +900,7 @@ paginar: 100
 - **Disposiciones**: `miniaturas` (celdas cuadradas, la foto recortada), `masonry` (columnas con
   el alto natural de cada foto, sin recorte), `justificadas` (filas de alto parejo que llenan el
   ancho, las proporciones respetadas; la última fila no se estira) y `carrusel` (una foto grande
-  a la vez, con flechas y miniaturas: el carrusel de la 032). La misma carpeta da siempre la misma
+  a la vez, con flechas y miniaturas: el carrusel). La misma carpeta da siempre la misma
   grilla. Un video se ve como un cuadro negro con el marcador de reproducción (sin reproducir en
   la grilla); el GIF muestra su primer cuadro.
 - **Teclado**: Tab entra a una sola foto de la grilla; las flechas la recorren, Inicio y Fin van
@@ -920,7 +920,7 @@ paginar: 100
 - **Exportar**: la grilla estática con todas las fotos (sin páginas); en HTML los videos con
   controles, en PDF su nombre y un enlace.
 
-## 13. Etiquetas, campos y búsqueda (004)
+## 13. Etiquetas, campos y búsqueda
 
 ### Etiquetas
 
@@ -939,11 +939,11 @@ paginar: 100
 - Cuenta como propiedad de la nota para la búsqueda (`[clave]`, `[clave:valor]`) y queda disponible para
   las bases. Si la misma clave está en el bloque de propiedades, manda el bloque.
 - Orbital no reescribe los campos: siguen siendo texto normal de la nota.
-- Dentro de la parte Conexiones (`<!-- connections ID -->`, 041) un renglón `clave:: [[nota]]` **no**
+- Dentro de la parte Conexiones (`<!-- connections ID -->`) un renglón `clave:: [[nota]]` **no**
   es un campo sino una relación con tipo (ver abajo): no cuenta para `[clave]`, `[%clave]` ni las
   bases. Se busca con `rel:`.
 
-### Conexiones con tipo y motivo (049)
+### Conexiones con tipo y motivo
 
 Solo en notas `.md`, dentro de la parte Conexiones, un ítem de lista (`-`, `*`, `+`, `1.`) puede declarar
 el tipo de la relación con la forma de los campos y, opcionalmente, un motivo:
@@ -986,7 +986,7 @@ el tipo de la relación con la forma de los campos y, opcionalmente, un motivo:
   | se opone a | se opone a (simétrica) |
   | complementa | complementa (simétrica) |
 
-- En notas `.html` no hay partes de la 041: sus enlaces cuentan siempre sin tipo.
+- En notas `.html` no hay partes: sus enlaces cuentan siempre sin tipo.
 - Orbital nunca reescribe estos renglones; el índice de tipos es derivado y vive en memoria.
 
 ### Sintaxis de búsqueda
@@ -1010,11 +1010,11 @@ Una consulta mal escrita muestra un aviso con la columna del problema y no borra
 resultados de `raw/` llevan la marca «fuente» y se pueden ocultar. Las búsquedas guardadas viven en
 `.orbital/busquedas.yaml` (sección 9), nunca en las notas.
 
-## Bases sobre notas (029)
+## Bases sobre notas
 
 Una base es un archivo `.base` de definición de vistas sobre notas Markdown/HTML. Los valores
 siguen en las notas; el archivo de base guarda filtros, columnas, tipos esperados y orden.
-El contrato completo está en [`specs/029-bases/contracts/formato-base.md`](../specs/029-bases/contracts/formato-base.md).
+El formato completo está en [formato-base.md](formato-base.md).
 
 ```yaml
 format_version: 1
