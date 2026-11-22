@@ -7,6 +7,10 @@ use super::*;
 
 use orbital_drive::{EstadoArchivo, Evento, InfoConflicto, Motor, Orden, Resumen};
 
+/// Lo que crea la API dentro del hilo del motor.
+type Fabrica =
+    Box<dyn FnOnce(&orbital_drive::Estado) -> Result<Box<dyn orbital_drive::Api>, String> + Send>;
+
 /// Lo que la ventana sabe de Drive.
 #[derive(Default)]
 pub(super) struct DriveUi {
@@ -109,10 +113,7 @@ impl Window {
         #[allow(unused_mut)]
         let mut cfg = orbital_drive::motor::Config::new(root);
         #[allow(unused_mut)]
-        let mut fabrica: Box<
-            dyn FnOnce(&orbital_drive::Estado) -> Result<Box<dyn orbital_drive::Api>, String>
-                + Send,
-        > = Box::new(orbital_drive::api_del_equipo);
+        let mut fabrica: Fabrica = Box::new(orbital_drive::api_del_equipo);
         #[cfg(test)]
         if let Some((url, dir)) = PRUEBA.lock().unwrap().clone() {
             cfg.dir_estado = dir;

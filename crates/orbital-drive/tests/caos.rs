@@ -72,7 +72,7 @@ fn texto(n: u64, quien: &str, r: &str) -> Vec<u8> {
         // Varios renglones: a veces se tocan renglones distintos (fusión), a veces el mismo.
         let mut s = String::from("# Nota\n\n");
         for k in 0..6 {
-            if (n + k) % 3 == 0 {
+            if (n + k).is_multiple_of(3) {
                 s.push_str(&format!("renglón {k} de {quien} v{n}\n"));
             } else {
                 s.push_str(&format!("renglón {k}\n"));
@@ -243,7 +243,7 @@ fn caos_nunca_pierde_nada() {
             0..=4 => actuar_local(&mut a, &mut az, &mut n, "a"),
             5..=9 => actuar_local(&mut b, &mut az, &mut n, "b"),
             10..=11 => actuar_web(&srv, &raiz, &mut az, &mut n),
-            12..=14 | 15..=16 => {
+            12..=16 => {
                 let (e, q) = if az.hasta(2) == 0 {
                     (&mut a, "a")
                 } else {

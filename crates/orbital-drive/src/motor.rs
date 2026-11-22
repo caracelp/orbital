@@ -354,19 +354,18 @@ impl<A: Api> Sincronizador<A> {
             self.traer_cambios()?;
         }
         let completa = std::mem::take(&mut self.completa);
-        let rutas: BTreeSet<String>;
         let mut disco: HashMap<String, EnDisco> = HashMap::new();
-        if completa {
+        let rutas: BTreeSet<String> = if completa {
             let recorrido = local::recorrer(&self.cfg.root, &self.conexion);
             let mut todas: BTreeSet<String> = recorrido.keys().cloned().collect();
             todas.extend(self.estado.registros.keys().cloned());
             todas.extend(self.ruta_id.keys().cloned());
             todas.extend(std::mem::take(&mut self.sucio));
             disco.extend(recorrido);
-            rutas = todas;
+            todas
         } else {
-            rutas = std::mem::take(&mut self.sucio);
-        }
+            std::mem::take(&mut self.sucio)
+        };
         let res = self.conciliar(rutas.clone(), &mut disco);
         if res.is_err() {
             // Lo que no se hizo vuelve a quedar marcado para el próximo ciclo.
