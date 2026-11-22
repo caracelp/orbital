@@ -31,15 +31,23 @@ fn rss_kb() -> u64 {
 }
 
 fn main() {
-    let n: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(5000);
+    let n: usize = std::env::args()
+        .nth(1)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(5000);
     let base = std::env::temp_dir().join(format!("orbital-061-medir-{}", std::process::id()));
     let root = base.join("boveda");
     let dir_estado = base.join("estado");
     for i in 0..n {
         let p = root.join(format!("wiki/carpeta-{:02}/nota-{i:05}.md", i % 50));
         fs::create_dir_all(p.parent().unwrap()).unwrap();
-        let cuerpo = "Texto de relleno para que la nota tenga un tamaño parecido al real. ".repeat(20 + i % 40);
-        fs::write(p, format!("---\ntype: atomo\ntitle: Nota {i}\n---\n\n# Nota {i}\n\n{cuerpo}\n")).unwrap();
+        let cuerpo = "Texto de relleno para que la nota tenga un tamaño parecido al real. "
+            .repeat(20 + i % 40);
+        fs::write(
+            p,
+            format!("---\ntype: atomo\ntitle: Nota {i}\n---\n\n# Nota {i}\n\n{cuerpo}\n"),
+        )
+        .unwrap();
     }
     let srv = ServidorFalso::iniciar();
     let cliente = || {
@@ -53,7 +61,14 @@ fn main() {
         )
     };
     let mut c = cliente();
-    conectar(&mut c, &root, &dir_estado, CUENTA, Destino::Nueva("Medir".into())).unwrap();
+    conectar(
+        &mut c,
+        &root,
+        &dir_estado,
+        CUENTA,
+        Destino::Nueva("Medir".into()),
+    )
+    .unwrap();
     let cfg = Config {
         papelera: Papelera::Boveda,
         dir_estado: dir_estado.clone(),
@@ -76,22 +91,20 @@ fn main() {
         srv.datos().pedidos - p0
     );
     let rss1 = rss_kb();
-    // Ciclos sin cambios.
+    // Ciclos sin cambios (el primero guarda el estado de la subida: se descarta).
+    s.ciclo().unwrap();
     let mut tiempos = Vec::new();
-    let mut cpus = Vec::new();
-    for _ in 0..30 {
-        let (t, c0) = (Instant::now(), cpu_ms());
+    let c0 = cpu_ms();
+    for _ in 0..100 {
+        let t = Instant::now();
         s.ciclo().unwrap();
         tiempos.push(t.elapsed().as_secs_f64() * 1000.0);
-        cpus.push(cpu_ms() - c0);
     }
+    let cpu = (cpu_ms() - c0) / 100.0;
     tiempos.sort_by(f64::total_cmp);
-    let cpu_total: f64 = cpus.iter().sum();
     println!(
-        "Ciclo sin cambios (solo `changes`): mediana {:.2} ms, máx {:.2} ms; CPU {:.2} ms por ciclo (promedio de 30, reloj de 10 ms)",
-        tiempos[15],
-        tiempos[29],
-        cpu_total / 30.0
+        "Ciclo sin cambios (solo `changes`): mediana {:.2} ms, p99 {:.2} ms; CPU {:.2} ms por ciclo (100 ciclos, motor y servidor juntos)",
+        tiempos[50], tiempos[98], cpu
     );
     let mut tiempos = Vec::new();
     for _ in 0..10 {

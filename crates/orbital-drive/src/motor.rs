@@ -174,6 +174,9 @@ pub struct Sincronizador<A: Api> {
     /// Firma de los archivos compartidos de `.orbital/` (el vigilante no mira `.orbital/`).
     firmas_orbital: BTreeMap<String, EnDisco>,
     pub ultima: Option<String>,
+    /// El estado cambió desde la última vez que se guardó (y el mapa, desde que se emitió).
+    mutado: bool,
+    pendientes_emitidas: BTreeSet<String>,
 }
 
 fn padre_de(rel: &str) -> &str {
@@ -218,9 +221,17 @@ impl<A: Api> Sincronizador<A> {
             ultimos_conflictos: None,
             firmas_orbital: BTreeMap::new(),
             ultima: None,
+            mutado: true,
+            pendientes_emitidas: BTreeSet::new(),
         };
         s.indexar();
         s
+    }
+
+    /// El estado para cambiarlo (lo marca para guardar).
+    fn e(&mut self) -> &mut Estado {
+        self.mutado = true;
+        &mut self.estado
     }
 
     pub fn api(&mut self) -> &mut A {
@@ -249,7 +260,7 @@ impl<A: Api> Sincronizador<A> {
                 .get(padre)
                 .map(|p| unir(p, &local::nombre_local(&n.nombre)))
         };
-        self.estado.nodos.insert(a.id.clone(), n);
+        self.e().nodos.insert(a.id.clone(), n);
         if let Some(r) = ruta {
             self.ruta_id.insert(r.clone(), a.id.clone());
             self.id_ruta.insert(a.id.clone(), r);
@@ -257,7 +268,7 @@ impl<A: Api> Sincronizador<A> {
     }
 
     fn quitar_nodo(&mut self, id: &str) {
-        self.estado.nodos.remove(id);
+        self.e().nodos.remove(id);
         if let Some(r) = self.id_ruta.remove(id) {
             self.ruta_id.remove(&r);
         }
@@ -309,7 +320,10 @@ impl<A: Api> Sincronizador<A> {
         }
         self.mirar_orbital();
         let r = self.ciclo_interno();
-        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        // Solo si algo cambió: el estado de 5000 notas son ≈ 2 MB (medido en el quickstart).
+        if self.mutado {
+            let _ = self.estado.guardar(&self.cfg.dir_estado);
+        }
         self.emitir_estados();
         if r.is_ok() {
             self.ultima = Some(
@@ -360,7 +374,7 @@ impl<A: Api> Sincronizador<A> {
             self.completa |= completa;
         } else if completa {
             self.ultima_completa = Instant::now();
-            self.estado.primera_union = false;
+            self.e().primera_union = false;
         }
         res
     }
@@ -370,7 +384,7 @@ impl<A: Api> Sincronizador<A> {
         let token = self.api.token_inicio()?;
         let raiz = self.estado.raiz.clone();
         self.listar_desde(&raiz)?;
-        self.estado.token = Some(token);
+        self.e().token = Some(token);
         self.indexar();
         self.completa = true;
         Ok(())
@@ -386,7 +400,7 @@ impl<A: Api> Sincronizador<A> {
                     if a.carpeta() {
                         cola.push_back(a.id.clone());
                     }
-                    self.estado.nodos.insert(a.id.clone(), Nodo::de(&a, &c));
+                    self.e().nodos.insert(a.id.clone(), Nodo::de(&a, &c));
                 }
                 match sig {
                     Some(s) => pagina = Some(s),
@@ -400,10 +414,24 @@ impl<A: Api> Sincronizador<A> {
     /// Trae los cambios remotos desde el último `pageToken` y marca las rutas que tocan.
     fn traer_cambios(&mut self) -> Resultado<()> {
         let mut token = self.estado.token.clone().unwrap_or_default();
+        // Lo común: ninguna novedad. Se responde sin copiar índices ni recalcular rutas.
+        let primera = self.api.cambios(&token)?;
+        if primera.cambios.is_empty() && primera.siguiente.is_none() {
+            if let Some(n) = primera.nuevo_inicio
+                && n != token
+            {
+                self.e().token = Some(n);
+            }
+            return Ok(());
+        }
+        let mut primera = Some(primera);
         let antes = self.id_ruta.clone();
         let mut tocados = BTreeSet::new();
         loop {
-            let pag = self.api.cambios(&token)?;
+            let pag = match primera.take() {
+                Some(p) => p,
+                None => self.api.cambios(&token)?,
+            };
             for c in pag.cambios {
                 if let Some(r) = antes.get(&c.id) {
                     self.sucio.insert(r.clone());
@@ -417,10 +445,10 @@ impl<A: Api> Sincronizador<A> {
                             self.completa = true;
                         }
                         let padre = a.padres[0].clone();
-                        self.estado.nodos.insert(a.id.clone(), Nodo::de(&a, &padre));
+                        self.e().nodos.insert(a.id.clone(), Nodo::de(&a, &padre));
                     }
                     _ => {
-                        self.estado.nodos.remove(&c.id);
+                        self.e().nodos.remove(&c.id);
                     }
                 }
                 tocados.insert(c.id);
@@ -434,7 +462,7 @@ impl<A: Api> Sincronizador<A> {
                 (None, None) => break,
             }
         }
-        self.estado.podar();
+        self.e().podar();
         self.indexar();
         // Carpetas que entraron a la bóveda (movidas desde afuera): hay que listar su contenido.
         let nuevas: Vec<String> = tocados
@@ -458,7 +486,7 @@ impl<A: Api> Sincronizador<A> {
                 self.sucio.insert(r.clone());
             }
         }
-        self.estado.token = Some(token);
+        self.e().token = Some(token);
         Ok(())
     }
 
@@ -602,8 +630,8 @@ impl<A: Api> Sincronizador<A> {
             ) {
                 Ok(a) => {
                     self.poner_nodo(&a, &padre_nuevo);
-                    self.estado.registros.remove(&vieja);
-                    self.estado.registros.insert(
+                    self.e().registros.remove(&vieja);
+                    self.e().registros.insert(
                         nueva.clone(),
                         Registro {
                             id: b.id.clone(),
@@ -613,8 +641,8 @@ impl<A: Api> Sincronizador<A> {
                             mtime: f.mtime,
                         },
                     );
-                    if let Some(s) = self.estado.subidas.remove(&vieja) {
-                        self.estado.subidas.insert(nueva.clone(), s);
+                    if let Some(s) = self.e().subidas.remove(&vieja) {
+                        self.e().subidas.insert(nueva.clone(), s);
                     }
                     rutas.remove(&vieja);
                     rutas.remove(&nueva);
@@ -659,13 +687,13 @@ impl<A: Api> Sincronizador<A> {
             }
             if local::mover(&self.cfg.root.join(&r), &self.cfg.root.join(&q)).is_ok() {
                 // Renombrar no cambia la fecha: el registro sigue valiendo en la ruta nueva.
-                if let Some(b) = self.estado.registros.remove(&r) {
-                    self.estado.registros.insert(q.clone(), b);
+                if let Some(b) = self.e().registros.remove(&r) {
+                    self.e().registros.insert(q.clone(), b);
                 }
                 disco.insert(r.clone(), EnDisco::Nada);
                 disco.remove(&q);
                 rutas.insert(q);
-                self.estado.subidas.remove(&r);
+                self.e().subidas.remove(&r);
             }
         }
     }
@@ -722,7 +750,7 @@ impl<A: Api> Sincronizador<A> {
                         if f.mtime != b.mtime {
                             let mut b = b.clone();
                             b.mtime = f.mtime;
-                            self.estado.registros.insert(r.to_owned(), b);
+                            self.e().registros.insert(r.to_owned(), b);
                         }
                         Ok(())
                     }
@@ -759,7 +787,7 @@ impl<A: Api> Sincronizador<A> {
     }
 
     fn acordar(&mut self, r: &str, id: &str, md5: Option<String>, f: Firma) {
-        self.estado.registros.insert(
+        self.e().registros.insert(
             r.to_owned(),
             Registro {
                 id: id.to_owned(),
@@ -773,10 +801,10 @@ impl<A: Api> Sincronizador<A> {
     }
 
     fn olvidar(&mut self, r: &str) {
-        if let Some(b) = self.estado.registros.remove(r) {
+        if let Some(b) = self.e().registros.remove(r) {
             let _ = fs::remove_file(estado::ruta_base(&self.cfg.dir_estado, &b.id));
         }
-        self.estado.subidas.remove(r);
+        self.e().subidas.remove(r);
     }
 
     /// Guarda la versión acordada de una nota de texto como base de futuras fusiones.
@@ -854,7 +882,7 @@ impl<A: Api> Sincronizador<A> {
         let a = self.api.crear_carpeta(&padre, nombre_de(rel))?;
         self.poner_nodo(&a, &padre);
         if reglas::sincronizable(rel) {
-            self.estado.registros.insert(
+            self.e().registros.insert(
                 rel.to_owned(),
                 Registro {
                     id: a.id.clone(),
@@ -879,6 +907,7 @@ impl<A: Api> Sincronizador<A> {
                 match self.api.archivo(&b.id) {
                     Ok(a) if !a.papelera && a.md5 == b.md5 => {
                         let mut s = sesion.take();
+                        self.mutado = true;
                         let (estado, dir) = (&mut self.estado, &self.cfg.dir_estado);
                         let r2 = self.api.subir_cambio(&b.id, &ruta, &mut s, &mut |n| {
                             estado.subidas.insert(r.to_owned(), n.clone());
@@ -898,6 +927,7 @@ impl<A: Api> Sincronizador<A> {
                         self.olvidar(r);
                         let padre = self.carpeta_remota(padre_de(r))?;
                         let mut s = sesion.take();
+                        self.mutado = true;
                         let (estado, dir) = (&mut self.estado, &self.cfg.dir_estado);
                         let r2 =
                             self.api
@@ -914,6 +944,7 @@ impl<A: Api> Sincronizador<A> {
             None => {
                 let padre = self.carpeta_remota(padre_de(r))?;
                 let mut s = sesion.take();
+                self.mutado = true;
                 let (estado, dir) = (&mut self.estado, &self.cfg.dir_estado);
                 let r2 = self
                     .api
@@ -927,13 +958,13 @@ impl<A: Api> Sincronizador<A> {
         };
         match resultado {
             Ok((a, padre)) => {
-                self.estado.subidas.remove(r);
+                self.e().subidas.remove(r);
                 let padre = padre
                     .or_else(|| a.padres.first().cloned())
                     .or_else(|| self.estado.nodos.get(&a.id).map(|n| n.padre.clone()))
                     .unwrap_or_else(|| self.estado.raiz.clone());
                 self.poner_nodo(&a, &padre);
-                self.estado.registros.insert(
+                self.e().registros.insert(
                     r.to_owned(),
                     Registro {
                         id: a.id.clone(),
@@ -952,10 +983,10 @@ impl<A: Api> Sincronizador<A> {
             Err(e) => {
                 match sesion {
                     Some(s) => {
-                        self.estado.subidas.insert(r.to_owned(), s);
+                        self.e().subidas.insert(r.to_owned(), s);
                     }
                     None => {
-                        self.estado.subidas.remove(r);
+                        self.e().subidas.remove(r);
                     }
                 }
                 if matches!(e, ErrorApi::Local(_))
@@ -1054,7 +1085,7 @@ impl<A: Api> Sincronizador<A> {
             // Se vuelve a pedir el archivo en el próximo ciclo.
             if let Ok(a) = self.api.archivo(id) {
                 let padre = a.padres.first().cloned().unwrap_or_default();
-                self.estado.nodos.insert(a.id.clone(), Nodo::de(&a, &padre));
+                self.e().nodos.insert(a.id.clone(), Nodo::de(&a, &padre));
             }
             self.completa = true;
             return Ok(None);
@@ -1117,7 +1148,7 @@ impl<A: Api> Sincronizador<A> {
                 EnDisco::Archivo(ff) => ff,
                 _ => f,
             };
-            self.estado.registros.insert(
+            self.e().registros.insert(
                 r.to_owned(),
                 Registro {
                     id: id.to_owned(),
@@ -1163,7 +1194,7 @@ impl<A: Api> Sincronizador<A> {
             .strip_prefix(&self.cfg.root)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or(copia_rel);
-        self.estado.conflictos.insert(
+        self.e().conflictos.insert(
             r.to_owned(),
             Conflicto {
                 id: id.to_owned(),
@@ -1200,6 +1231,7 @@ impl<A: Api> Sincronizador<A> {
                     local::marca_de_tiempo()
                 )));
                 local::mover(&tmp, &copia).map_err(|e| ErrorApi::Local(e.to_string()))?;
+                self.mutado = true;
                 if let Some(cc) = self.estado.conflictos.get_mut(&r) {
                     cc.md5 = n.md5.clone();
                     cc.copia = copia
@@ -1248,10 +1280,10 @@ impl<A: Api> Sincronizador<A> {
                 tam: 0,
                 mtime: 0,
             };
-            self.estado.registros.insert(r.to_owned(), b.clone());
-            self.estado.conflictos.remove(r);
+            self.e().registros.insert(r.to_owned(), b.clone());
+            self.e().conflictos.remove(r);
             if let Err(e) = self.subir(r, Some(b), f) {
-                self.estado.conflictos.insert(r.to_owned(), c);
+                self.e().conflictos.insert(r.to_owned(), c);
                 return Err(e);
             }
             self.descartar_copia(r, &copia);
@@ -1268,7 +1300,7 @@ impl<A: Api> Sincronizador<A> {
             if copia.exists() {
                 local::mover(&copia, &destino).map_err(|e| ErrorApi::Local(e.to_string()))?;
             }
-            self.estado.conflictos.remove(r);
+            self.e().conflictos.remove(r);
             if let EnDisco::Archivo(f) = local::en_disco(&destino) {
                 self.acordar(r, &c.id, c.md5.clone(), f);
             }
@@ -1309,7 +1341,7 @@ impl<A: Api> Sincronizador<A> {
         let base = self.estado.registros.get(c).cloned();
         match (base, en, remoto) {
             (_, EnDisco::Carpeta, Some(id)) => {
-                self.estado.registros.insert(
+                self.e().registros.insert(
                     c.to_owned(),
                     Registro {
                         id,
@@ -1325,7 +1357,7 @@ impl<A: Api> Sincronizador<A> {
                 fs::create_dir_all(self.cfg.root.join(c))
                     .map_err(|e| ErrorApi::Local(e.to_string()))?;
                 disco.insert(c.to_owned(), EnDisco::Carpeta);
-                self.estado.registros.insert(
+                self.e().registros.insert(
                     c.to_owned(),
                     Registro {
                         id,
@@ -1345,7 +1377,7 @@ impl<A: Api> Sincronizador<A> {
                 } else {
                     self.api.a_papelera(&id)?;
                     self.quitar_nodo(&id);
-                    self.estado.registros.remove(c);
+                    self.e().registros.remove(c);
                 }
             }
             (Some(_), EnDisco::Carpeta, None) => {
@@ -1354,7 +1386,7 @@ impl<A: Api> Sincronizador<A> {
                 let vacia = fs::read_dir(&dir)
                     .map(|mut d| d.next().is_none())
                     .unwrap_or(false);
-                self.estado.registros.remove(c);
+                self.e().registros.remove(c);
                 if vacia {
                     let _ = fs::remove_dir(&dir);
                 } else {
@@ -1363,7 +1395,7 @@ impl<A: Api> Sincronizador<A> {
                 }
             }
             (Some(_), EnDisco::Nada, None) => {
-                self.estado.registros.remove(c);
+                self.e().registros.remove(c);
             }
             _ => {}
         }
@@ -1411,6 +1443,12 @@ impl<A: Api> Sincronizador<A> {
     }
 
     pub fn emitir_estados(&mut self) {
+        if !self.mutado && self.pendientes == self.pendientes_emitidas && self.ultimo_mapa.is_some()
+        {
+            return;
+        }
+        self.mutado = false;
+        self.pendientes_emitidas = self.pendientes.clone();
         let m = Arc::new(self.mapa());
         if self.ultimo_mapa.as_deref() != Some(&*m) {
             self.ultimo_mapa = Some(m.clone());

@@ -22,7 +22,11 @@ use orbital_drive::motor::{Config, Destino, Sincronizador, conectar};
 use orbital_drive::{Conexion, Estado, Papelera};
 
 fn main() {
-    let root = PathBuf::from(std::env::args().nth(1).expect("carpeta de la bóveda de prueba"));
+    let root = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .expect("carpeta de la bóveda de prueba"),
+    );
     assert!(
         !root.starts_with("/home/ejemplo/Documentos"),
         "nunca la bóveda real"
@@ -33,12 +37,24 @@ fn main() {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, t).unwrap();
     };
-    escribir("wiki/index.md", b"# \xc3\x8dndice\n\n- [[Proyecto]]\n- [[Lecturas/Libro]]\n");
+    escribir(
+        "wiki/index.md",
+        b"# \xc3\x8dndice\n\n- [[Proyecto]]\n- [[Lecturas/Libro]]\n",
+    );
     escribir("wiki/log.md", b"# Registro\n");
-    escribir("wiki/Proyecto.md", "# Proyecto\n\nObjetivo del trimestre.\n\n## Tareas\n\n- Escribir el informe\n".as_bytes());
-    escribir("wiki/Lecturas/Libro.md", "# Libro\n\nNotas de lectura.\n".as_bytes());
+    escribir(
+        "wiki/Proyecto.md",
+        "# Proyecto\n\nObjetivo del trimestre.\n\n## Tareas\n\n- Escribir el informe\n".as_bytes(),
+    );
+    escribir(
+        "wiki/Lecturas/Libro.md",
+        "# Libro\n\nNotas de lectura.\n".as_bytes(),
+    );
     escribir("wiki/Lecturas/Artículo.md", "# Artículo\n".as_bytes());
-    escribir("wiki/privado/Diario íntimo.md", "# Solo en este equipo\n".as_bytes());
+    escribir(
+        "wiki/privado/Diario íntimo.md",
+        "# Solo en este equipo\n".as_bytes(),
+    );
     escribir("raw/foto.png", &[0x89, b'P', b'N', b'G', 13, 10, 26, 10]);
     escribir(".orbital/config.yaml", b"format_version: 1\n");
 
@@ -56,7 +72,14 @@ fn main() {
         )
     };
     let mut c = cliente();
-    conectar(&mut c, &root, &dir_estado, CUENTA, Destino::Nueva("Bóveda de prueba".into())).unwrap();
+    conectar(
+        &mut c,
+        &root,
+        &dir_estado,
+        CUENTA,
+        Destino::Nueva("Bóveda de prueba".into()),
+    )
+    .unwrap();
     let mut con = Conexion::leer(&root).unwrap().unwrap();
     con.poner_local("wiki/privado/", true);
     con.guardar(&root).unwrap();
