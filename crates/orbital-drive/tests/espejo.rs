@@ -489,3 +489,44 @@ fn el_motor_en_su_hilo_sube_lo_que_cambia_y_avisa() {
     motor.detener();
     assert!(rx.try_iter().any(|e| matches!(e, Evento::Detenido(None))));
 }
+
+#[test]
+fn inicio_de_sesion_con_pkce_y_redireccion_local() {
+    use orbital_drive::{cliente::Direcciones, llavero, oauth};
+    let srv = ServidorFalso::iniciar();
+    let l = llavero::Memoria::default();
+    let cliente = llavero::Cliente {
+        id: "id-de-prueba.apps.googleusercontent.com".into(),
+        secreto: "GOCSPX-prueba".into(),
+    };
+    let base = format!("{}/auth", srv.url);
+    let s = oauth::iniciar_sesion_con(
+        &Direcciones::locales(&srv.url),
+        &base,
+        &cliente,
+        &l,
+        |url| {
+            // El «navegador»: sigue la redirección del servidor hasta el puerto local de Orbital.
+            assert!(url.contains("code_challenge_method=S256"));
+            assert!(url.contains("access_type=offline"));
+            assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A"));
+            std::thread::spawn(move || {
+                use soup::prelude::*;
+                let s = soup::Session::new();
+                let m = soup::Message::new("GET", &url).unwrap();
+                let b = s.send_and_read(&m, gio::Cancellable::NONE).unwrap();
+                assert!(String::from_utf8_lossy(&b).contains("ya podés volver a Orbital"));
+            });
+        },
+        std::time::Duration::from_secs(20),
+    )
+    .unwrap();
+    assert_eq!(s.cuenta, orbital_drive::falso::CUENTA);
+    assert_eq!(llavero::leer_cliente(&l).unwrap(), Some(cliente));
+    assert_eq!(
+        llavero::leer_cuenta(&l, orbital_drive::falso::CUENTA)
+            .unwrap()
+            .as_deref(),
+        Some("falso-renovar")
+    );
+}

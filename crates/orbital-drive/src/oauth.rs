@@ -37,17 +37,22 @@ pub fn pkce() -> (String, String) {
     (verificador, desafio)
 }
 
-/// URL de autorización (la de Google o la del servidor falso).
+/// Dirección de autorización: la de Google, o la del servidor falso con `ORBITAL_DRIVE_API`.
+pub fn base_autorizacion() -> String {
+    match std::env::var("ORBITAL_DRIVE_API") {
+        Ok(b) if !b.is_empty() => format!("{}/auth", b.trim_end_matches('/')),
+        _ => AUTORIZAR_GOOGLE.to_owned(),
+    }
+}
+
+/// URL de autorización.
 pub fn url_autorizacion(
+    base: &str,
     cliente_id: &str,
     redireccion: &str,
     desafio: &str,
     estado: &str,
 ) -> String {
-    let base = match std::env::var("ORBITAL_DRIVE_API") {
-        Ok(b) if !b.is_empty() => format!("{}/auth", b.trim_end_matches('/')),
-        _ => AUTORIZAR_GOOGLE.to_owned(),
-    };
     format!(
         "{base}?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={desafio}&code_challenge_method=S256&state={estado}&access_type=offline&prompt=consent",
         escapar(cliente_id),
@@ -71,22 +76,41 @@ pub fn iniciar_sesion(
     abrir: impl FnOnce(String),
     espera: Duration,
 ) -> Result<Sesion, String> {
+    iniciar_sesion_con(
+        &Direcciones::del_entorno(),
+        &base_autorizacion(),
+        cliente,
+        llavero,
+        abrir,
+        espera,
+    )
+}
+
+/// [`iniciar_sesion`] con direcciones explícitas (las pruebas usan las del servidor falso).
+pub fn iniciar_sesion_con(
+    dir: &Direcciones,
+    base_auth: &str,
+    cliente: &llavero::Cliente,
+    llavero: &dyn llavero::Llavero,
+    abrir: impl FnOnce(String),
+    espera: Duration,
+) -> Result<Sesion, String> {
     let oyente = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let puerto = oyente.local_addr().map_err(|e| e.to_string())?.port();
     let redireccion = format!("http://127.0.0.1:{puerto}");
     let (verificador, desafio) = pkce();
     let estado = b64(&azar(16));
     abrir(url_autorizacion(
+        base_auth,
         &cliente.id,
         &redireccion,
         &desafio,
         &estado,
     ));
     let codigo = esperar_codigo(&oyente, &estado, espera)?;
-    let dir = Direcciones::del_entorno();
-    let refresh = canjear(&dir, cliente, &codigo, &verificador, &redireccion)?;
+    let refresh = canjear(dir, cliente, &codigo, &verificador, &redireccion)?;
     let mut c = Cliente::new(
-        dir,
+        dir.clone(),
         Credenciales {
             client_id: cliente.id.clone(),
             client_secret: cliente.secreto.clone(),
