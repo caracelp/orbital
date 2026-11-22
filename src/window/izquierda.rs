@@ -81,7 +81,12 @@ pub(super) fn construir_izquierda() -> Izquierda {
     explorer.append(&tags_section);
     explorer.append(&recent_section);
 
-    let sidebar_stack = adw::ViewStack::new();
+    // No homogénea (060): si no, el primer cuadro mide y dispone también la búsqueda y
+    // Guardados, que no se ven. El ancho lo fija la barra lateral.
+    let sidebar_stack = adw::ViewStack::builder()
+        .hhomogeneous(false)
+        .vhomogeneous(false)
+        .build();
     sidebar_stack.add_named(&explorer, Some("archivos"));
     sidebar_stack.add_named(search_panel.widget(), Some("busqueda"));
     // Guardados (027): la página existe vacía; su contenido se arma al mostrarla por primera vez.

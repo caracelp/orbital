@@ -79,8 +79,12 @@ pub(super) fn construir_centro() -> Centro {
         .title("Ninguna nota abierta")
         .description("Elegí una nota de la lista para leerla.")
         .build();
+    // No homogénea (060): homogénea, el primer cuadro mide y dispone todas las páginas (el
+    // editor, el grafo, la brújula, las vistas de archivos…) aunque se vea una sola.
     let content_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
+        .hhomogeneous(false)
+        .vhomogeneous(false)
         .build();
     content_stack.add_named(&empty, Some("vacio"));
     content_stack.add_named(&editor_scroll, Some("nota"));

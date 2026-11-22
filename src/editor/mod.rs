@@ -337,7 +337,11 @@ impl Editor {
         let switcher = adw::ToggleGroup::new();
         fill_toggles(&switcher, Format::Md);
         let visual = html::Visual::new();
-        let stack = gtk::Stack::new();
+        // No homogénea (060): la Visual de `.html` no se mide mientras se ve el texto.
+        let stack = gtk::Stack::builder()
+            .hhomogeneous(false)
+            .vhomogeneous(false)
+            .build();
         stack.add_named(&root, Some("texto"));
         stack.add_named(visual.widget(), Some("visual"));
         switcher.add_css_class("round");
