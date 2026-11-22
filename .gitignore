@@ -12,7 +12,7 @@ __pycache__/
 *.py[co]
 
 # Material de desarrollo local (lo arma tools/preparar-desarrollo.sh; no es parte del repo)
-/desarrollo/
+/desarrollo
 /specs
 /.specify
 /AGENTS.md
