@@ -62,7 +62,11 @@ pub fn ensure_scheme() {
         let dir = gtk::glib::user_cache_dir().join("orbital/styles");
         let _ = std::fs::create_dir_all(&dir);
         let scheme_file = dir.join("orbital-dark.xml");
-        let _ = std::fs::write(&scheme_file, scheme_xml());
+        // Solo se reescribe si cambió (060): leer 2 KB es más barato que escribirlos siempre.
+        let xml = scheme_xml();
+        if std::fs::read(&scheme_file).ok().as_deref() != Some(xml.as_bytes()) {
+            let _ = std::fs::write(&scheme_file, xml);
+        }
 
         let sm = sourceview5::StyleSchemeManager::default();
         sm.prepend_search_path(&dir.to_string_lossy());
@@ -70,19 +74,54 @@ pub fn ensure_scheme() {
     });
 }
 
+/// El esquema `orbital-dark` o, si faltara, `Adwaita-dark`.
+fn esquema() -> Option<sourceview5::StyleScheme> {
+    ensure_scheme();
+    let sm = sourceview5::StyleSchemeManager::default();
+    sm.scheme("orbital-dark")
+        .or_else(|| sm.scheme("Adwaita-dark"))
+}
+
+thread_local! {
+    /// Buffers creados antes de cargar los esquemas (060), que esperan al primer *idle*.
+    static SIN_ESQUEMA: std::cell::RefCell<Vec<gtk::glib::WeakRef<sourceview5::Buffer>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Pone el esquema de colores en `buffer`. Cargar los esquemas (leer y analizar todos los XML
+/// de las carpetas de GtkSourceView) cuesta ≈ 10 ms en el Celeron: si todavía no se cargaron,
+/// se hace en el primer *idle* (después del primer cuadro) y no al armar la ventana, cuando
+/// ninguna vista de código se ve todavía.
+fn aplicar_esquema(buffer: &sourceview5::Buffer) {
+    if INIT_SCHEME.is_completed() {
+        if let Some(scheme) = esquema() {
+            buffer.set_style_scheme(Some(&scheme));
+        }
+        return;
+    }
+    let primero = SIN_ESQUEMA.with(|p| {
+        let mut p = p.borrow_mut();
+        p.push(buffer.downgrade());
+        p.len() == 1
+    });
+    if primero {
+        gtk::glib::idle_add_local_once(|| {
+            let scheme = esquema();
+            for b in SIN_ESQUEMA.with(|p| std::mem::take(&mut *p.borrow_mut())) {
+                if let (Some(b), Some(s)) = (b.upgrade(), scheme.as_ref()) {
+                    b.set_style_scheme(Some(s));
+                }
+            }
+        });
+    }
+}
+
 /// Crea el buffer y la vista de código.
 pub fn new_view() -> (sourceview5::View, sourceview5::Buffer) {
     let buffer = sourceview5::Buffer::new(None);
     buffer.set_highlight_syntax(true);
     buffer.set_highlight_matching_brackets(false);
-    ensure_scheme();
-    let sm = sourceview5::StyleSchemeManager::default();
-    if let Some(scheme) = sm
-        .scheme("orbital-dark")
-        .or_else(|| sm.scheme("Adwaita-dark"))
-    {
-        buffer.set_style_scheme(Some(&scheme));
-    }
+    aplicar_esquema(&buffer);
     let view = sourceview5::View::with_buffer(&buffer);
     view.set_wrap_mode(gtk::WrapMode::WordChar);
     view.set_monospace(true);
