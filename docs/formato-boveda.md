@@ -170,7 +170,7 @@ Visual (FR-014b). En su lugar, utiliza clases semánticas con prefijo `o-` cuyas
 
   - El id es `^` + letras, dígitos o guiones (Orbital genera 6 caracteres `a-z0-9`), separado por un
     espacio al final del bloque; en tablas, código y `$$`, solo en la línea siguiente. Un id escrito a
-    mano (o por Obsidian) se respeta; si se repite en la nota, Orbital reemplaza los siguientes.
+    mano (o por otra herramienta) se respeta; si se repite en la nota, Orbital reemplaza los siguientes.
   - Los encabezados se enlazan por su texto (`[[nota#Encabezado]]`) y no llevan id; el frontmatter
     tampoco.
   - En las notas `.html` el id es el atributo `id` de `p`, `li`, `blockquote`, `table`, `pre` y `figure`
@@ -357,7 +357,7 @@ generado; en Código queda el texto plano.
 
 ### Marcadores `[%clave]`
 
-- Sintaxis compatible con Obsidian. La clave usa el mismo criterio de los campos inline (sin
+- Sintaxis de Orbital. La clave usa el mismo criterio de los campos inline (sin
   espacios, `:`, comillas ni delimitadores) y el cierre `]` va en la misma línea.
 - No cuentan los que están dentro de código (cercas, en línea, bloques), enlaces, imágenes,
   frontmatter o escapados con `\`.
@@ -430,7 +430,7 @@ generado; en Código queda el texto plano.
   acentuadas solo las iguala en ASCII.
 - ` ```cardlink ` (013): tarjeta de una URL. El cuerpo es YAML con `url` más los metadatos
   (`title`, `description`, `host`, `favicon`, `image`); Lectura lo muestra como tarjeta clicable y
-  el archivo conserva el fuente. Compatible con el formato del plugin de Obsidian.
+  el archivo conserva el fuente.
 
   ````markdown
   ```cardlink
