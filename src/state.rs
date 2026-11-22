@@ -42,6 +42,8 @@ pub struct AppState {
     /// Valores por defecto de la tabla de contenidos (035): los toma un ` ```toc ` que no
     /// escribe esa opción.
     pub toc: orbital_vault::toc::TocDefaults,
+    /// Valores por defecto del índice por etiqueta (036).
+    pub indice: orbital_vault::indice::IndiceDefaults,
 }
 
 fn state_file() -> PathBuf {
@@ -116,6 +118,7 @@ impl AppState {
             _ => false,
         });
         let toc = toc_from(&entries);
+        let indice = indice_from(&entries);
         Self {
             last_vault,
             recent,
@@ -127,6 +130,7 @@ impl AppState {
             window_height,
             hide_line_numbers,
             toc,
+            indice,
         }
     }
 
@@ -213,6 +217,7 @@ impl AppState {
             entries.push(("line_numbers", PropValue::Bool(false)));
         }
         toc_entries(&self.toc, &mut entries);
+        indice_entries(&self.indice, &mut entries);
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }
 }
@@ -249,6 +254,55 @@ fn toc_from(entries: &[orbital_vault::props::PropEntry]) -> orbital_vault::toc::
         d.hide_when_empty = b;
     }
     d
+}
+
+/// Los valores por defecto del índice por etiqueta (036): `indice_prioridad`, `indice_titulo`
+/// e `indice_excluir`.
+fn indice_from(
+    entries: &[orbital_vault::props::PropEntry],
+) -> orbital_vault::indice::IndiceDefaults {
+    let mut d = orbital_vault::indice::IndiceDefaults::default();
+    if let Some(e) = find(entries, "indice_prioridad") {
+        match &e.value {
+            PropValue::Text(s) => d.prioridad = s.clone(),
+            PropValue::Null => d.prioridad = String::new(),
+            _ => {}
+        }
+    }
+    if let Some(e) = find(entries, "indice_titulo") {
+        match &e.value {
+            PropValue::Bool(b) => d.titulo = *b,
+            PropValue::Text(s) if s == "false" => d.titulo = false,
+            _ => {}
+        }
+    }
+    if let Some(PropValue::List(items)) = find(entries, "indice_excluir").map(|e| &e.value) {
+        d.excluir = items
+            .iter()
+            .filter_map(PropValue::as_text)
+            .map(str::to_owned)
+            .collect();
+    }
+    d
+}
+
+fn indice_entries(
+    d: &orbital_vault::indice::IndiceDefaults,
+    entries: &mut Vec<(&'static str, PropValue)>,
+) {
+    let fabrica = orbital_vault::indice::IndiceDefaults::default();
+    if d.prioridad != fabrica.prioridad {
+        entries.push(("indice_prioridad", PropValue::Text(d.prioridad.clone())));
+    }
+    if d.titulo != fabrica.titulo {
+        entries.push(("indice_titulo", PropValue::Bool(d.titulo)));
+    }
+    if d.excluir != fabrica.excluir {
+        entries.push((
+            "indice_excluir",
+            PropValue::List(d.excluir.iter().cloned().map(PropValue::Text).collect()),
+        ));
+    }
 }
 
 /// Escribe solo lo que difiere del valor de fábrica.
@@ -340,6 +394,28 @@ mod tests {
         // Un valor que no se entiende queda con el de fábrica.
         fs::write(&file, "toc_style: arbol\ntoc_max_level: x\n").unwrap();
         assert_eq!(AppState::load_from(&file).toc, TocDefaults::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Los valores por defecto del índice por etiqueta (036) van y vuelven, también la
+    /// prioridad vacía.
+    #[test]
+    fn indice_defaults_roundtrip() {
+        use orbital_vault::indice::IndiceDefaults;
+        let dir = std::env::temp_dir().join(format!("orbital-state-indice-{}", std::process::id()));
+        let file = dir.join("estado.yaml");
+        AppState::default().save_to(&file).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("indice_"));
+        let s = AppState {
+            indice: IndiceDefaults {
+                prioridad: String::new(),
+                titulo: false,
+                excluir: vec!["plantillas".into(), "archivo ñ".into()],
+            },
+            ..AppState::default()
+        };
+        s.save_to(&file).unwrap();
+        assert_eq!(AppState::load_from(&file).indice, s.indice);
         let _ = fs::remove_dir_all(&dir);
     }
 

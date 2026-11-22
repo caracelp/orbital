@@ -531,6 +531,7 @@ impl Window {
                     texto: i.code_editor.text(),
                     ruta,
                     vault: i.vault.borrow().clone(),
+                    indice: i.search_index.borrow().clone(),
                 })
             }
         });

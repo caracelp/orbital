@@ -370,10 +370,31 @@ generado; en Código queda el texto plano.
 
 ### Codeblocks generados
 
-- ` ```indice ` con `tag: #etiqueta` (comillas no necesarias aunque la etiqueta tenga `#`): lista las
-  notas con esa etiqueta y sus hijas, anidada por jerarquía y ordenada alfabéticamente. **Solo
-  vista**: nunca escribe enlaces en el disco y el grafo no la ve. Tag sin notas: aviso «sin notas
-  con #tag». Las filas son clicables: una nota se abre; una etiqueta abre la búsqueda `tag:`.
+- ` ```indice ` (036): lista las notas de una etiqueta y de sus sub-etiquetas, anidadas por
+  sub-etiqueta (cada una con su cantidad), en orden alfabético por nombre y con las prioritarias
+  arriba y en negrita. **Solo vista**: nunca escribe en el disco y el grafo no lo ve. Sale del
+  índice de búsqueda en memoria (las etiquetas del frontmatter y del cuerpo), nunca del disco, y
+  se actualiza solo cuando cambian las etiquetas de la bóveda. Las filas son clicables: una nota
+  se abre; una sub-etiqueta abre la búsqueda `tag:`; «Nota nueva con #etiqueta» (al final de
+  cada lista) pide un nombre y crea la nota en la carpeta de la nota del índice con
+  `tags: [etiqueta]`. El cuerpo son líneas `clave: valor` (no YAML estricto) o, en la forma
+  corta, la etiqueta sola en el primer renglón (`#proyectos`):
+
+  | Opción | Sinónimos | Por defecto | Qué hace |
+  |---|---|---|---|
+  | `etiqueta` | `tag`, `indice` | — | La etiqueta o rama, con o sin `#` |
+  | `prioridad` | `priority` | `top` | Etiqueta que manda arriba y en negrita; `no` o `ninguna`: sin prioridad |
+  | `titulo` | `título`, `title` | `true` | La propiedad `title` de cada nota junto al enlace (si difiere del nombre) |
+  | `excluir` | `exclude` | `[]` | Carpetas fuera del índice (`[plantillas, borradores]`), en cualquier nivel |
+  | `meta` | — | `false` | Lista las notas que tienen un bloque `indice` (con su etiqueta): un índice de índices |
+
+  Los valores por defecto de `prioridad`, `titulo` y `excluir` se cambian en Preferencias →
+  «Índice por etiqueta» (configuración del usuario, `estado.yaml`); lo que escribe el bloque
+  manda. Sin etiqueta o con un valor inválido, el motivo en su lugar; una etiqueta sin notas
+  muestra «Sin notas con #etiqueta» y hasta tres etiquetas parecidas como pista. Comandos de la
+  paleta: «Insertar índice de etiqueta…» y «Nota nueva con esta etiqueta» (con el cursor en un
+  bloque `indice`). En OnStage, al exportar y en la Visual de las notas `.html` se ve la lista
+  estática (sin «Nota nueva»); en Código, el globito sobre el bloque resume cuántas notas lista.
 - ` ```toc ` (también ` ```table-of-contents ` o ` ```tabla-de-contenidos `): tabla de contenidos
   de la nota, anidada por nivel; cada entrada lleva al encabezado y se actualiza sola al editar.
   El cuerpo son líneas `clave: valor` (no YAML estricto): un `# comentario` al final de la línea se
@@ -399,6 +420,8 @@ generado; en Código queda el texto plano.
   que escribe el bloque manda; `title: ''` deja sin título aunque Preferencias tenga uno. El
   comando «Insertar índice…» de la paleta arma el bloque en el cursor con las opciones elegidas y
   escribe solo las que difieren de Preferencias (`style` con el nombre en español).
+  En OnStage se ve como en Lectura (con los encabezados de la diapositiva) y al exportar, como
+  una lista estática sin enlaces (036).
 
   Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
   encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
@@ -443,7 +466,6 @@ generado; en Código queda el texto plano.
   Un error de la consulta o de una opción se muestra en lugar del resultado, con la línea y la
   columna dentro del bloque; sin resultados, un aviso. En una nota `.html` el bloque se ve como
   código (su Lectura todavía no completa bloques generados).
-- Un codeblock `indice` sin `tag` o con YAML inválido se muestra como codeblock común.
 - Dentro de una transclusión (`![[…]]`) el contenido generado se completa con la nota incrustada:
   su ` ```toc ` lista los encabezados de esa nota (o de la parte incrustada) y enlaza a ella. En la
   tarjeta HTML de una nota `.html` se sigue viendo el codeblock fuente.

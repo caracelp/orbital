@@ -186,6 +186,11 @@ impl Window {
             self.search_tag(tag);
             return;
         }
+        // «Nota nueva con esta etiqueta» del índice por etiqueta (036).
+        if let Some(tag) = url.strip_prefix(crate::editor::reader::NOTA_NUEVA) {
+            self.ask_new_note_tagged(tag.to_owned());
+            return;
+        }
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
             gtk::UriLauncher::new(url).launch(
                 Some(&self.0.window),

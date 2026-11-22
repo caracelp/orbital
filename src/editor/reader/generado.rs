@@ -17,6 +17,26 @@ pub fn toc_defaults() -> orbital_vault::toc::TocDefaults {
         .unwrap_or_default()
 }
 
+/// Valores por defecto del índice por etiqueta (036), los de Preferencias; vacío: los de fábrica.
+static INDICE_DEFAULTS: std::sync::RwLock<Option<orbital_vault::indice::IndiceDefaults>> =
+    std::sync::RwLock::new(None);
+
+/// Los valores por defecto vigentes del índice por etiqueta.
+pub fn indice_defaults() -> orbital_vault::indice::IndiceDefaults {
+    INDICE_DEFAULTS
+        .read()
+        .ok()
+        .and_then(|d| d.clone())
+        .unwrap_or_default()
+}
+
+/// Cambia los valores por defecto del índice por etiqueta (Preferencias y el arranque).
+pub fn set_indice_defaults(d: orbital_vault::indice::IndiceDefaults) {
+    if let Ok(mut g) = INDICE_DEFAULTS.write() {
+        *g = (d != orbital_vault::indice::IndiceDefaults::default()).then_some(d);
+    }
+}
+
 /// Cambia los valores por defecto de la tabla de contenidos (Preferencias y el arranque).
 pub fn set_toc_defaults(d: orbital_vault::toc::TocDefaults) {
     if let Ok(mut g) = TOC_DEFAULTS.write() {
@@ -36,6 +56,19 @@ pub fn complete_generated(
     raiz: Option<&Path>,
     path: Option<&orbital_vault::RelPath>,
 ) -> bool {
+    complete_generated_con(doc, hashes, index, raiz, path, true)
+}
+
+/// Como [`complete_generated`]; sin `interactivo` (OnStage), el índice por etiqueta no ofrece
+/// «Nota nueva».
+pub fn complete_generated_con(
+    doc: &mut RenderDoc,
+    hashes: &mut [u64],
+    index: Option<&orbital_vault::SearchIndex>,
+    raiz: Option<&Path>,
+    path: Option<&orbital_vault::RelPath>,
+    interactivo: bool,
+) -> bool {
     let encabezados = headings_flat(&doc.blocks);
     let mut completado = false;
     // Los valores por defecto se leen una vez, y solo si hay una tabla de contenidos.
@@ -46,7 +79,13 @@ pub fn complete_generated(
         // de lo incrustado.
         if !matches!(block.kind, BlockKind::Generated(_)) {
             let mut huella = String::new();
-            if completar_incrustados(std::slice::from_mut(block), index, raiz, &mut huella) {
+            if completar_incrustados(
+                std::slice::from_mut(block),
+                index,
+                raiz,
+                &mut huella,
+                interactivo,
+            ) {
                 completado = true;
                 // Un índice incrustado depende del índice de la bóveda: entra en el hash.
                 if let Some(h) = hashes.get_mut(n) {
@@ -64,6 +103,7 @@ pub fn complete_generated(
             orbital_vault::render::GeneratedKind::Toc => {
                 let d = defaults.get_or_insert_with(toc_defaults);
                 block.kind = toc_block(&g.raw, &encabezados, path, d);
+                fijar_linea(&mut block.kind, block.line);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -141,37 +181,18 @@ pub fn complete_generated(
                 items
             }
             orbital_vault::render::GeneratedKind::Indice => {
-                let tag = g
-                    .params
-                    .iter()
-                    .find(|e| e.key == "tag")
-                    .and_then(|e| e.value.as_text())
-                    .map(str::to_owned);
-                match (tag, index) {
-                    (Some(tag), Some(index)) => {
-                        let fold_tag = orbital_vault::fold(tag.trim_start_matches('#'));
-                        let tree = index.tags();
-                        match nodo_del_tag(&tree, &fold_tag) {
-                            Some(node) => indice_items(index, node),
-                            None => Vec::new(),
-                        }
-                    }
-                    _ => Vec::new(),
+                block.kind = indice_block(&g.raw, index, interactivo);
+                // Los bloques de adentro llevan la línea de la cerca: si no, la línea 0 (un
+                // encabezado plegable) les pondría flechitas de plegado (028).
+                fijar_linea(&mut block.kind, block.line);
+                if let Some(h) = hashes.get_mut(n) {
+                    *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
+                completado = true;
+                continue;
             }
         };
-        let nuevo = if items.is_empty() {
-            let tag = g
-                .params
-                .iter()
-                .find(|e| e.key == "tag")
-                .and_then(|e| e.value.as_text())
-                .map(|t| t.trim_start_matches('#').to_owned())
-                .unwrap_or_default();
-            BlockKind::Paragraph(vec![Inline::Text(format!("«sin notas con #{tag}»"))])
-        } else {
-            BlockKind::List { start: None, items }
-        };
+        let nuevo = BlockKind::List { start: None, items };
         block.kind = nuevo;
         if let Some(h) = hashes.get_mut(n) {
             *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
@@ -179,6 +200,26 @@ pub fn complete_generated(
         completado = true;
     }
     completado
+}
+
+/// Pone `linea` a todos los bloques de adentro de `kind` (el contenido generado no tiene líneas
+/// propias en el fuente).
+fn fijar_linea(kind: &mut BlockKind, linea: usize) {
+    let bloques = |bs: &mut [Block]| {
+        for b in bs {
+            b.line = linea;
+            fijar_linea(&mut b.kind, linea);
+        }
+    };
+    match kind {
+        BlockKind::Group(bs) => bloques(bs),
+        BlockKind::List { items, .. } => {
+            for it in items {
+                bloques(&mut it.blocks);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Completa los bloques generados de las notas incrustadas en `blocks` (y en las que estas
@@ -189,6 +230,7 @@ fn completar_incrustados(
     index: Option<&orbital_vault::SearchIndex>,
     raiz: Option<&Path>,
     huella: &mut String,
+    interactivo: bool,
 ) -> bool {
     use orbital_vault::render::Embed;
     let mut completado = false;
@@ -200,7 +242,14 @@ fn completar_incrustados(
                         blocks: std::mem::take(blocks),
                     };
                     let mut hashes = vec![0; sub.blocks.len()];
-                    if complete_generated(&mut sub, &mut hashes, index, raiz, Some(path)) {
+                    if complete_generated_con(
+                        &mut sub,
+                        &mut hashes,
+                        index,
+                        raiz,
+                        Some(path),
+                        interactivo,
+                    ) {
                         completado = true;
                         for h in hashes.iter().filter(|h| **h != 0) {
                             huella.push_str(&format!("{h:x}"));
@@ -213,21 +262,61 @@ fn completar_incrustados(
             | BlockKind::Callout { body, .. }
             | BlockKind::Seccion { body, .. }
             | BlockKind::Group(body) => {
-                completado |= completar_incrustados(body, index, raiz, huella)
+                completado |= completar_incrustados(body, index, raiz, huella, interactivo)
             }
             BlockKind::Flashcard(f) => {
-                completado |= completar_incrustados(&mut f.question, index, raiz, huella);
-                completado |= completar_incrustados(&mut f.answer, index, raiz, huella);
+                completado |=
+                    completar_incrustados(&mut f.question, index, raiz, huella, interactivo);
+                completado |=
+                    completar_incrustados(&mut f.answer, index, raiz, huella, interactivo);
             }
             BlockKind::List { items, .. } => {
                 for it in items {
-                    completado |= completar_incrustados(&mut it.blocks, index, raiz, huella);
+                    completado |=
+                        completar_incrustados(&mut it.blocks, index, raiz, huella, interactivo);
                 }
             }
             _ => {}
         }
     }
     completado
+}
+
+/// HTML estático de un bloque generado para exportar (036): `indice` desde el índice de
+/// búsqueda (cada enlace lo arma `href`) y `toc` con los encabezados de `texto`. Otro lenguaje:
+/// `None`.
+pub fn generado_html(
+    lang: &str,
+    cuerpo: &str,
+    texto: &str,
+    index: Option<&orbital_vault::SearchIndex>,
+    href: &dyn Fn(&orbital_vault::RelPath) -> String,
+) -> Option<String> {
+    let esc = |t: &str| {
+        t.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    match lang {
+        "indice" => {
+            let o = match orbital_vault::indice::parse(cuerpo, &indice_defaults()) {
+                Ok(o) => o,
+                Err(e) => return Some(format!("<p><em>{}</em></p>", esc(&e.to_string()))),
+            };
+            let index = index?;
+            let ind = index.indice_etiqueta(&o);
+            Some(orbital_vault::indice::html(&ind, &o, href))
+        }
+        "toc" | "table-of-contents" | "tabla-de-contenidos" => {
+            let o =
+                orbital_vault::toc::parse_options_with(cuerpo, toc_defaults().options()).ok()?;
+            let doc = orbital_vault::render::render_markdown(texto);
+            let h = headings_flat(&doc.blocks);
+            let pares: Vec<(u8, &str)> = h.iter().map(|(n, t)| (*n, t.as_str())).collect();
+            Some(orbital_vault::toc::html(&o, &pares))
+        }
+        _ => None,
+    }
 }
 
 /// Encabezados de primer nivel (y dentro de citas), en orden del documento.
@@ -417,79 +506,128 @@ pub(super) fn ruta_sin_wiki(path: &orbital_vault::RelPath) -> &str {
     path.as_str().strip_prefix("wiki/").unwrap_or(path.as_str())
 }
 
-/// Ítems del índice: notas propias del tag (alfabéticas) y debajo, anidado, cada hija con sus
-/// notas. La fila del tag abre la búsqueda por etiqueta (como el panel).
-pub(super) fn indice_items(
-    index: &orbital_vault::SearchIndex,
-    node: &orbital_vault::TagNode,
-) -> Vec<ListItem> {
-    let mut items: Vec<ListItem> = index
-        .notes_with_tag(&node.path)
-        .into_iter()
-        .map(|p| ListItem {
-            task: None,
-            blocks: vec![nota_item(&p)],
-        })
-        .collect();
-    for child in &node.children {
-        let hijos = indice_items(index, child);
-        if hijos.is_empty() {
-            continue;
-        }
-        let mut blocks = vec![Block {
-            line: 0,
-            id: None,
-            source: 0..0,
-            kind: BlockKind::Paragraph(vec![Inline::Link {
-                url: format!("orbital-tag:{}", child.path),
-                children: vec![Inline::Text(format!("#{}", child.name))],
-            }]),
-        }];
-        blocks.push(Block {
-            line: 0,
-            id: None,
-            source: 0..0,
-            kind: BlockKind::List {
-                start: None,
-                items: hijos,
-            },
-        });
-        items.push(ListItem { task: None, blocks });
-    }
-    items
-}
+/// Prefijo de los enlaces «Nota nueva con esta etiqueta» del índice (036): lo que sigue es la
+/// etiqueta tal como se escribió (`proyectos/Tesis`).
+pub const NOTA_NUEVA: &str = "orbital-nota-nueva:";
 
-/// La fila de una nota del índice: enlace a `/ruta` con el nombre del archivo.
-pub(super) fn nota_item(path: &orbital_vault::RelPath) -> Block {
-    Block {
+/// El índice por etiqueta de un ` ```indice ` (036): la lista de notas de la rama, anidada por
+/// sub-etiqueta, del índice de búsqueda en memoria. Sin índice todavía, un aviso (se vuelve a
+/// dibujar cuando llega); con opciones inválidas o sin notas, el motivo.
+pub(super) fn indice_block(
+    raw: &str,
+    index: Option<&orbital_vault::SearchIndex>,
+    interactivo: bool,
+) -> BlockKind {
+    let aviso = |t: String| BlockKind::Paragraph(vec![Inline::Emph(vec![Inline::Text(t)])]);
+    let o = match orbital_vault::indice::parse(raw, &indice_defaults()) {
+        Ok(o) => o,
+        Err(e) => return aviso(format!("No se pudo mostrar el índice: {e}")),
+    };
+    let Some(index) = index else {
+        return aviso("El índice de la bóveda todavía se está armando".into());
+    };
+    let ind = index.indice_etiqueta(&o);
+    let nueva = |etiqueta: &str| Block {
         line: 0,
         id: None,
         source: 0..0,
         kind: BlockKind::Paragraph(vec![Inline::Link {
-            url: format!("/{}", ruta_sin_wiki(path)),
-            children: vec![Inline::Text(path.file_name().to_owned())],
+            url: format!("{NOTA_NUEVA}{etiqueta}"),
+            children: vec![Inline::Text(format!("Nota nueva con #{etiqueta}"))],
         }]),
+    };
+    if ind.raiz.notas.is_empty() && ind.raiz.hijas.is_empty() {
+        let mut bloques = vec![Block {
+            line: 0,
+            id: None,
+            source: 0..0,
+            kind: aviso(orbital_vault::indice::vacio(&ind, &o)),
+        }];
+        if interactivo && !o.meta {
+            bloques.push(nueva(&o.etiqueta));
+        }
+        return BlockKind::Group(bloques);
+    }
+    BlockKind::List {
+        start: None,
+        items: indice_items(&ind.raiz, &o.etiqueta, interactivo && !o.meta),
     }
 }
 
-/// El nodo del subárbol con esta ruta plegada, si existe.
-pub(super) fn nodo_del_tag<'t>(
-    tree: &'t orbital_vault::TagTree,
-    path: &str,
-) -> Option<&'t orbital_vault::TagNode> {
-    let mut actuales: &[orbital_vault::TagNode] = &tree.roots;
-    let mut restante = path;
-    loop {
-        let (tramo, resto) = restante.split_once('/').unwrap_or((restante, ""));
-        let node = actuales
-            .iter()
-            .find(|n| orbital_vault::fold(&n.name) == tramo)?;
-        if resto.is_empty() {
-            return Some(node);
-        }
-        actuales = &node.children;
-        restante = resto;
+/// Los ítems de un nodo: sus notas (las prioritarias arriba y en negrita, con el título al lado),
+/// cada sub-etiqueta con su lista y, si es interactivo, «Nota nueva con #etiqueta».
+fn indice_items(
+    nodo: &orbital_vault::indice::Nodo,
+    escrita: &str,
+    interactivo: bool,
+) -> Vec<ListItem> {
+    let parrafo = |inlines: Vec<Inline>| Block {
+        line: 0,
+        id: None,
+        source: 0..0,
+        kind: BlockKind::Paragraph(inlines),
+    };
+    let mut items: Vec<ListItem> = nodo
+        .notas
+        .iter()
+        .map(|e| {
+            let enlace = Inline::Link {
+                url: format!("/{}", ruta_sin_wiki(&e.path)),
+                children: vec![Inline::Text(e.nombre.clone())],
+            };
+            let mut linea = vec![if e.prioritaria {
+                Inline::Strong(vec![enlace])
+            } else {
+                enlace
+            }];
+            if let Some(t) = &e.titulo {
+                linea.push(Inline::Text(" — ".into()));
+                linea.push(Inline::Emph(vec![Inline::Text(t.clone())]));
+            }
+            if let Some(t) = &e.etiqueta {
+                linea.push(Inline::Text(" ".into()));
+                linea.push(Inline::Code(format!("#{t}")));
+            }
+            ListItem {
+                task: None,
+                blocks: vec![parrafo(linea)],
+            }
+        })
+        .collect();
+    for h in &nodo.hijas {
+        let etiqueta = format!("{escrita}/{}", h.nombre);
+        items.push(ListItem {
+            task: None,
+            blocks: vec![
+                parrafo(vec![
+                    Inline::Link {
+                        url: format!("orbital-tag:{}", h.ruta),
+                        children: vec![Inline::Text(format!("#{}", h.nombre))],
+                    },
+                    Inline::Text(format!(" ({})", h.total())),
+                ]),
+                Block {
+                    line: 0,
+                    id: None,
+                    source: 0..0,
+                    kind: BlockKind::List {
+                        start: None,
+                        items: indice_items(h, &etiqueta, interactivo),
+                    },
+                },
+            ],
+        });
     }
+    if interactivo {
+        items.push(ListItem {
+            task: None,
+            blocks: vec![parrafo(vec![Inline::Link {
+                url: format!("{NOTA_NUEVA}{escrita}"),
+                children: vec![Inline::Text(format!("Nota nueva con #{escrita}"))],
+            }])],
+        });
+    }
+    items
 }
 
 impl Prepared {

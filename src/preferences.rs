@@ -26,7 +26,9 @@ pub fn show(
         .build();
     let page = adw::PreferencesPage::new();
     page.add(&editor_group(persist));
-    page.add(&toc_group(persist, std::rc::Rc::new(on_lectura)));
+    let on_lectura: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(on_lectura);
+    page.add(&toc_group(persist, on_lectura.clone()));
+    page.add(&indice_group(persist, on_lectura));
     let group = adw::PreferencesGroup::builder()
         .title("Notas")
         .description("Se guardan en .orbital/config.yaml, dentro de la bóveda.")
@@ -241,20 +243,7 @@ fn toc_group(persist: bool, on_lectura: std::rc::Rc<dyn Fn()>) -> adw::Preferenc
         .build();
     {
         let aplicar = aplicar.clone();
-        let pausa: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
-        titulo.connect_changed(move |row| {
-            if let Some(id) = pausa.borrow_mut().take() {
-                id.remove();
-            }
-            let (aplicar, texto, p) =
-                (aplicar.clone(), row.text().trim().to_owned(), pausa.clone());
-            let id =
-                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-                    p.borrow_mut().take();
-                    aplicar(&|d| d.title = texto.clone());
-                });
-            *pausa.borrow_mut() = Some(id);
-        });
+        al_escribir(&titulo, move |t| aplicar(&|d| d.title = t.clone()));
     }
     let enlaces = adw::SwitchRow::builder()
         .title("Enlaces a los encabezados")
@@ -286,5 +275,110 @@ fn toc_group(persist: bool, on_lectura: std::rc::Rc<dyn Fn()>) -> adw::Preferenc
     group.add(&titulo);
     group.add(&enlaces);
     group.add(&ocultar);
+    group
+}
+
+/// Una pausa antes de aplicar lo escrito en una fila de texto (no se escribe `estado.yaml` por
+/// tecla).
+fn al_escribir(fila: &adw::EntryRow, aplicar: impl Fn(String) + 'static) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let aplicar = Rc::new(aplicar);
+    let pausa: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    fila.connect_changed(move |row| {
+        if let Some(id) = pausa.borrow_mut().take() {
+            id.remove();
+        }
+        let (aplicar, texto, p) = (aplicar.clone(), row.text().trim().to_owned(), pausa.clone());
+        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            p.borrow_mut().take();
+            aplicar(texto);
+        });
+        *pausa.borrow_mut() = Some(id);
+    });
+}
+
+/// Grupo «Índice por etiqueta» (036): la etiqueta de prioridad, los títulos al lado y las
+/// carpetas excluidas que toma un ` ```indice ` que no las escribe. Como la tabla de contenidos:
+/// se aplica en el acto y se guarda con el estado de la app.
+fn indice_group(persist: bool, on_lectura: std::rc::Rc<dyn Fn()>) -> adw::PreferencesGroup {
+    use orbital_vault::indice::IndiceDefaults;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let group = adw::PreferencesGroup::builder()
+        .title("Índice por etiqueta")
+        .description(
+            "Valores por defecto de los bloques indice. Lo que escribe cada bloque manda sobre estos.",
+        )
+        .build();
+    let actual = Rc::new(RefCell::new(crate::editor::reader::indice_defaults()));
+    let aplicar = {
+        let actual = actual.clone();
+        Rc::new(move |cambiar: &dyn Fn(&mut IndiceDefaults)| {
+            let d = {
+                let mut d = actual.borrow_mut();
+                let antes = d.clone();
+                cambiar(&mut d);
+                if *d == antes {
+                    return;
+                }
+                d.clone()
+            };
+            crate::editor::reader::set_indice_defaults(d.clone());
+            on_lectura();
+            if persist {
+                glib::spawn_future_local(async move {
+                    let _ = gio::spawn_blocking(move || {
+                        let mut s = crate::state::AppState::load();
+                        s.indice = d;
+                        s.save()
+                    })
+                    .await;
+                });
+            }
+        })
+    };
+    let d = actual.borrow().clone();
+    let prioridad = adw::EntryRow::builder()
+        .title("Etiqueta de prioridad (arriba y en negrita; vacío: ninguna)")
+        .text(&d.prioridad)
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        al_escribir(&prioridad, move |t| {
+            let t = t.trim_start_matches('#').to_owned();
+            aplicar(&|d| d.prioridad = t.clone());
+        });
+    }
+    let titulos = adw::SwitchRow::builder()
+        .title("Título de cada nota")
+        .subtitle("Mostrar la propiedad title junto al enlace")
+        .active(d.titulo)
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        titulos.connect_active_notify(move |row| {
+            let on = row.is_active();
+            aplicar(&|d| d.titulo = on);
+        });
+    }
+    let excluir = adw::EntryRow::builder()
+        .title("Carpetas excluidas (separadas por comas)")
+        .text(d.excluir.join(", "))
+        .build();
+    {
+        let aplicar = aplicar.clone();
+        al_escribir(&excluir, move |t| {
+            let lista: Vec<String> = t
+                .split(',')
+                .map(|s| s.trim().trim_matches('/').to_owned())
+                .filter(|s| !s.is_empty())
+                .collect();
+            aplicar(&|d| d.excluir = lista.clone());
+        });
+    }
+    group.add(&prioridad);
+    group.add(&titulos);
+    group.add(&excluir);
     group
 }

@@ -113,6 +113,71 @@ impl Window {
         });
     }
 
+    /// «Nota nueva con esta etiqueta» (036): pide el nombre y crea la nota `.md` en la carpeta de
+    /// la nota abierta (la del índice), con `tags: [etiqueta]`, y la abre. El índice la toma con
+    /// la actualización del índice de búsqueda.
+    pub(super) fn ask_new_note_tagged(&self, tag: String) {
+        let Some(vault) = self.0.vault.borrow().clone() else {
+            return;
+        };
+        let tag = tag.trim().trim_start_matches('#').to_owned();
+        if tag.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let field = gtk::Entry::builder().activates_default(true).build();
+            field.update_property(&[gtk::accessible::Property::Label("Nombre de la nota")]);
+            let dialog = adw::AlertDialog::new(
+                Some("Nota nueva"),
+                Some(&format!("Se crea con la etiqueta #{tag}. ¿Cómo se llama?")),
+            );
+            dialog.set_extra_child(Some(&field));
+            dialog.add_response("cancel", "Cancelar");
+            dialog.add_response("create", "Crear");
+            dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("create"));
+            dialog.set_close_response("cancel");
+            let f = field.clone();
+            glib::idle_add_local_once(move || {
+                f.grab_focus();
+            });
+            if dialog.choose_future(Some(&this.0.window)).await != "create" {
+                return;
+            }
+            let name = field.text().trim().to_owned();
+            if name.is_empty() || name.contains('/') {
+                return this.toast("El nombre no puede estar vacío ni tener «/»");
+            }
+            warn_portable(&this, &name);
+            // La carpeta de la nota del índice; en la raíz (o sin nota), la de las notas nuevas.
+            let dir = this
+                .0
+                .current_entry
+                .borrow()
+                .as_ref()
+                .and_then(|e| e.path.as_str().rsplit_once('/').map(|(d, _)| d.to_owned()))
+                .and_then(|d| RelPath::new(&d).ok())
+                .or_else(|| this.target_dir());
+            let result = gio::spawn_blocking(move || {
+                let ctx = write_ctx::now(Some(vault.config()));
+                let Some(dir) = dir else {
+                    return Err(orbital_vault::VaultError::InvalidPath(name));
+                };
+                vault.create_note_with_tags(&dir, &name, &[tag], &ctx)
+            })
+            .await;
+            match result {
+                Ok(Ok(path)) => {
+                    this.reload(Some(path.clone())).await;
+                    this.toast(&format!("Se creó «{path}»"));
+                }
+                Ok(Err(e)) => this.toast(&e.to_string()),
+                Err(_) => this.toast("No se pudo crear la nota"),
+            }
+        });
+    }
+
     /// «Diario de hoy»: lo abre, creándolo si no existe.
     pub(super) fn open_journal(&self) {
         let Some(vault) = self.0.vault.borrow().clone() else {

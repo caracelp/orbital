@@ -25,6 +25,7 @@ pub mod historial;
 pub mod html_edit;
 pub mod html_text;
 pub mod importar;
+pub mod indice;
 pub mod link_graph;
 pub mod links;
 pub mod listas;

@@ -3,6 +3,12 @@
 use super::*;
 
 impl Reader {
+    /// Las direcciones de los enlaces de la vista, en orden (pruebas).
+    #[cfg(test)]
+    pub(crate) fn link_urls(&self) -> Vec<String> {
+        self.all_link_items().into_iter().map(|i| i.url).collect()
+    }
+
     pub(super) fn all_link_items(&self) -> Vec<LinkItem> {
         // Lo plegado y lo fuera del enfoque no se recorren con Tab (028).
         let buf = self.buffer();

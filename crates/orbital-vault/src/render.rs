@@ -145,7 +145,8 @@ impl SeccionKind {
 /// Clases de codeblock que la vista completa con contenido generado (005).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeneratedKind {
-    /// Lista de notas con una etiqueta (subárbol del árbol de etiquetas).
+    /// Índice de las notas de una rama de etiquetas (036; el cuerpo lo lee
+    /// [`crate::indice::parse`]).
     Indice,
     /// Tabla de contenidos automática de la nota (`toc`, `table-of-contents` o
     /// `tabla-de-contenidos`; opciones en
@@ -170,8 +171,9 @@ impl GeneratedKind {
     }
 }
 
-/// Un codeblock `indice` o `toc` con sus parámetros YAML. Si el cuerpo no parsea o al bloque
-/// `indice` le falta `tag`, queda como [`BlockKind::Code`] común.
+/// Un codeblock generado (`indice`, `toc`, `consulta`, `cardlink`). Los parámetros YAML son
+/// los de la tarjeta de enlace; los demás leen `raw`. Una tarjeta con YAML inválido queda como
+/// [`BlockKind::Code`] común.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Generated {
     pub kind: GeneratedKind,
@@ -1175,41 +1177,19 @@ fn parse_item(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> ListItem {
 }
 
 /// Valida y completa los parámetros de un codeblock generado. `None` = no es un bloque
-/// generado (el codeblock queda común): YAML inválido o un `indice` sin tag.
+/// generado (el codeblock queda común): YAML inválido en una tarjeta de enlace.
 fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::PropEntry>> {
     // La tabla de contenidos lee su cuerpo línea por línea ([`crate::toc::parse_options`]), con
     // comentarios y valores vacíos que no siempre son YAML válido: siempre es generada.
-    // La consulta (048) tampoco es YAML: un error de su cuerpo se muestra en la vista.
-    if matches!(kind, GeneratedKind::Toc | GeneratedKind::Consulta) {
+    // La consulta (048) y el índice por etiqueta (036, [`crate::indice::parse`]) tampoco son
+    // YAML: un error de su cuerpo se muestra en la vista.
+    if matches!(
+        kind,
+        GeneratedKind::Toc | GeneratedKind::Consulta | GeneratedKind::Indice
+    ) {
         return Some(Vec::new());
     }
-    let mut params = crate::props::yaml::parse_block(body.trim()).ok()?;
-    if kind == GeneratedKind::Indice {
-        let tag = crate::props::find(&params, "tag")
-            .and_then(|entry| entry.value.as_text().map(str::to_owned))
-            .or_else(|| raw_line_value(body, "tag"))?;
-        match params.iter_mut().find(|entry| entry.key == "tag") {
-            Some(entry) => entry.value = crate::props::PropValue::Text(tag),
-            None => {
-                params.push(crate::props::PropEntry {
-                    key: "tag".into(),
-                    value: crate::props::PropValue::Text(tag),
-                    lines: 0..0,
-                });
-            }
-        }
-    }
-    Some(params)
-}
-
-/// Valor crudo de `clave: valor` en el cuerpo del codeblock, sin reglas de comentario YAML:
-/// admite `tag: #fisica` sin comillas.
-fn raw_line_value(body: &str, key: &str) -> Option<String> {
-    body.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix(key)?.strip_prefix(':')?;
-        let value = rest.trim();
-        (!value.is_empty()).then(|| value.trim_matches(['"', '\'']).to_owned())
-    })
+    crate::props::yaml::parse_block(body.trim()).ok()
 }
 
 /// Analiza exactamente un bloque empezando en `i`.

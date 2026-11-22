@@ -22,7 +22,8 @@ figure.grafico{margin:1em 0}figure.grafico svg{max-width:100%;height:auto}\
 figure.diagrama{margin:1em 0}figure.diagrama svg{max-width:100%;height:auto}\
 figure.medio{margin:1em 0}figure.medio video{max-width:100%}figure.medio audio{width:100%}\
 figure.medio figcaption,p.medio{color:#55555c;font-size:0.9em}\
-p.medio{border:1px solid #d0d0d4;border-radius:6px;padding:0.5em 0.8em}";
+p.medio{border:1px solid #d0d0d4;border-radius:6px;padding:0.5em 0.8em}\
+nav.orbital-indice,nav.orbital-toc{margin:0.75em 0}";
 
 /// Título de la página: el título de la nota (frontmatter) o el nombre del archivo.
 fn titulo(texto: &str, defecto: &str) -> String {
@@ -59,6 +60,20 @@ pub struct Medios<'a> {
     pub carrusel: Option<&'a dyn Fn(&mut orbital_vault::carrusel::Carrusel)>,
     /// Arma la lista de una galería (033) con la bóveda.
     pub galeria: Option<&'a dyn Fn(&mut orbital_vault::galeria::Galeria)>,
+    /// Los bloques generados (036): por lenguaje (`indice`, `toc`) y cuerpo, su HTML estático;
+    /// `None` deja el bloque como código.
+    pub generado: Option<&'a Generador<'a>>,
+}
+
+/// Arma el HTML estático de un bloque generado: lenguaje y cuerpo (036).
+pub type Generador<'a> = dyn Fn(&str, &str) -> Option<String> + 'a;
+
+/// Lenguajes de los bloques generados que se exportan estáticos (036).
+fn es_generado(lang: &str) -> bool {
+    matches!(
+        lang,
+        "indice" | "toc" | "table-of-contents" | "tabla-de-contenidos"
+    )
 }
 
 impl Medios<'_> {
@@ -168,7 +183,31 @@ fn con_medios<'a>(
     let mut carrusel: Option<String> = None;
     // El cuerpo de una galería (033) que se está leyendo.
     let mut galeria: Option<String> = None;
+    // Un bloque generado (036): lenguaje y cuerpo.
+    let mut generado: Option<(String, String)> = None;
     eventos.filter_map(move |(ev, rango)| {
+        if let Some((_, texto)) = &mut generado {
+            return match ev {
+                Event::Text(t) => {
+                    texto.push_str(&t);
+                    None
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let (lang, texto) = generado.take()?;
+                    let html = medios
+                        .generado
+                        .and_then(|f| f(&lang, &texto))
+                        .unwrap_or_else(|| {
+                            format!(
+                                "<pre><code class=\"language-{lang}\">{}</code></pre>",
+                                orbital_formulas::html::escapar_atributo(&texto)
+                            )
+                        });
+                    Some((Event::Html((html + "\n").into()), rango))
+                }
+                _ => None,
+            };
+        }
         if let Some(texto) = &mut galeria {
             return match ev {
                 Event::Text(t) => {
@@ -199,6 +238,14 @@ fn con_medios<'a>(
             && orbital_vault::galeria::es_lenguaje(info.split_whitespace().next().unwrap_or(""))
         {
             galeria = Some(String::new());
+            return None;
+        }
+        if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = &ev
+            && medios.generado.is_some()
+            && es_generado(info.split_whitespace().next().unwrap_or(""))
+        {
+            let lang = info.split_whitespace().next().unwrap_or("").to_owned();
+            generado = Some((lang, String::new()));
             return None;
         }
         if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = &ev
@@ -631,12 +678,51 @@ pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
                 orbital_graficos::html::reemplazar_bloques(&out, lang, |f| galeria_html(f, medios));
         }
     }
+    // Los índices por etiqueta (036), estáticos.
+    if let Some(f) = medios.generado
+        && out.contains("language-indice")
+    {
+        out = orbital_graficos::html::reemplazar_bloques(&out, "indice", |cuerpo| {
+            f("indice", cuerpo).unwrap_or_default()
+        });
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Los bloques generados (036) se exportan con lo que arma `generado`; sin él, como código.
+    #[test]
+    fn exporta_indice_y_toc_estaticos() {
+        let nota = "# A\n\n```toc\n```\n\n```indice\netiqueta: x\n```\n\n```rust\nfn a() {}\n```\n";
+        let f = |lang: &str, cuerpo: &str| {
+            Some(format!("<nav data-lang=\"{lang}\">{}</nav>", cuerpo.trim()))
+        };
+        let m = Medios {
+            generado: Some(&f),
+            ..Medios::default()
+        };
+        let out = html_md_con(nota, "n.md", &m);
+        assert!(out.contains("<nav data-lang=\"toc\"></nav>"), "{out}");
+        assert!(
+            out.contains("<nav data-lang=\"indice\">etiqueta: x</nav>"),
+            "{out}"
+        );
+        assert!(!out.contains("language-indice"), "{out}");
+        assert!(out.contains("language-rust"), "{out}");
+        // Sin `generado`, el bloque queda como código.
+        let out = html_md(nota, "n.md");
+        assert!(out.contains("language-indice"), "{out}");
+        // En una nota `.html`, el `indice`.
+        let html = "<!doctype html><html><body><pre><code class=\"language-indice\">etiqueta: y\n</code></pre></body></html>";
+        let out = html_passthrough_con(html, &m);
+        assert!(
+            out.contains("<nav data-lang=\"indice\">etiqueta: y</nav>"),
+            "{out}"
+        );
+    }
 
     #[test]
     fn exporta_cuerpo_sin_frontmatter_con_tabla() {
@@ -792,6 +878,7 @@ mod tests {
                 reproducibles,
                 carrusel: None,
                 galeria: None,
+                generado: None,
             };
             html_md_con(nota, "c.md", &m)
         };
@@ -812,6 +899,7 @@ mod tests {
             reproducibles: true,
             carrusel: None,
             galeria: None,
+            generado: None,
         };
         let out = html_passthrough_con(h, &m);
         assert!(out.contains("orbital-carrusel"), "{out}");
@@ -834,6 +922,7 @@ mod tests {
                 reproducibles,
                 carrusel: None,
                 galeria: None,
+                generado: None,
             };
             html_md_con(nota, "m.md", &m)
         };
@@ -859,6 +948,7 @@ mod tests {
             reproducibles: true,
             carrusel: None,
             galeria: None,
+            generado: None,
         };
         let out = html_md_con("![[foto.png]]\n", "f.md", &m);
         assert!(out.contains("<img src=\"file://"), "{out}");
@@ -876,6 +966,7 @@ mod tests {
             reproducibles: true,
             carrusel: None,
             galeria: None,
+            generado: None,
         };
         let out = html_md_con(
             "![[voz.mp3]] ![[falta.png]]\n![[voz.mp3]]\n\nOí ![[voz.mp3]] y `![[voz.mp3]]` fin.\n",
@@ -899,6 +990,7 @@ mod tests {
             reproducibles: true,
             carrusel: None,
             galeria: None,
+            generado: None,
         };
         let out = html_passthrough_con(h, &m);
         assert!(out.contains("<p><figure class=\"medio\"><audio"), "{out}");

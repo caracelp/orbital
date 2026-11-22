@@ -273,7 +273,7 @@ fn us5_indice_reader_lists_and_activates() {
                     false,
                 )
                 .to_string();
-            if visible.contains("a.md") && visible.contains("#termo") {
+            if visible.contains("•  a\n") && visible.contains("#termo") {
                 break;
             }
             glib::timeout_future(Duration::from_millis(10)).await;
@@ -286,16 +286,22 @@ fn us5_indice_reader_lists_and_activates() {
                 false,
             )
             .to_string();
-        assert!(visible.contains("a.md"), "{visible:?}");
-        assert!(visible.contains("b.md"), "{visible:?}");
-        assert!(visible.contains("#termo"), "{visible:?}");
+        // Desde la 036 la nota se nombra sin extensión, la sub-etiqueta lleva su cantidad y cada
+        // lista termina con «Nota nueva con #…».
+        assert!(visible.contains("•  a\n"), "{visible:?}");
+        assert!(visible.contains("•  b\n"), "{visible:?}");
+        assert!(visible.contains("#termo (1)"), "{visible:?}");
+        assert!(
+            visible.contains("Nota nueva con #fisica/termo"),
+            "{visible:?}"
+        );
         assert!(!visible.contains("```"), "{visible:?}");
 
         // T016: elegir la primera entrada abre la nota (url /a.md desde la raíz de wiki/).
         let items = reader.all_link_items();
         assert_eq!(
             items.len(),
-            3,
+            5,
             "{:?}\"",
             items.iter().map(|i| i.url.clone()).collect::<Vec<_>>()
         );

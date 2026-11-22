@@ -275,6 +275,8 @@ impl Window {
         editor::code::set_line_numbers(!state.hide_line_numbers);
         // Valores por defecto de la tabla de contenidos (035).
         editor::reader::set_toc_defaults(state.toc.clone());
+        // Y los del índice por etiqueta (036).
+        editor::reader::set_indice_defaults(state.indice.clone());
         // El tamaño por defecto es el de la ventana sin maximizar (056): la app abre maximizada
         // (`Window::maximize`, antes de `present`) y vuelve a este tamaño si se desmaximiza.
         let (default_w, default_h) = state.restore_size();
