@@ -126,7 +126,7 @@ fn main() {
         t.elapsed().as_secs_f64() * 1000.0
     );
     drop(s);
-    let tam = fs::metadata(dir_estado.join("estado.json")).unwrap().len();
+    let tam = fs::metadata(dir_estado.join("estado.txt")).unwrap().len();
     let mut tiempos = Vec::new();
     for _ in 0..10 {
         let t = Instant::now();

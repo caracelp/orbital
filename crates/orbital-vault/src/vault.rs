@@ -183,23 +183,34 @@ impl Vault {
         }
         let structured =
             self.layout.raw == Presence::Present || self.layout.wiki == Presence::Present;
-        let mut hay: std::collections::HashSet<RelPath> =
-            self.entries.iter().map(|e| e.path.clone()).collect();
+        // Las entradas del escaneo ya están ordenadas: se busca en ellas sin armar un conjunto
+        // con todas (con 5000 notas y 5000 marcadores, ese conjunto era la mitad del costo).
+        let n0 = self.entries.len();
+        let mut nuevas: std::collections::HashSet<String> = std::collections::HashSet::new();
         for (path, size, mtime) in remotos {
-            if hay.contains(path) || path.as_str().split('/').any(|c| c.starts_with('.')) {
+            let en_disco = |entries: &[Entry], p: &str| {
+                entries[..n0]
+                    .binary_search_by(|e| e.path.as_str().cmp(p))
+                    .is_ok()
+            };
+            if en_disco(&self.entries, path.as_str())
+                || path.as_str().split('/').any(|c| c.starts_with('.'))
+                || !nuevas.insert(path.as_str().to_owned())
+            {
                 continue;
             }
             // Las carpetas de más arriba, si faltan.
-            let mut acum = String::new();
             let partes: Vec<&str> = path.as_str().split('/').collect();
+            let mut fin = 0;
             for parte in &partes[..partes.len() - 1] {
-                if !acum.is_empty() {
-                    acum.push('/');
+                fin += parte.len();
+                let dir = &path.as_str()[..fin];
+                fin += 1;
+                if en_disco(&self.entries, dir) || nuevas.contains(dir) {
+                    continue;
                 }
-                acum.push_str(parte);
-                if let Ok(dir) = RelPath::new(&acum)
-                    && hay.insert(dir.clone())
-                {
+                nuevas.insert(dir.to_owned());
+                if let Ok(dir) = RelPath::new(dir) {
                     let zone = scan::zone_of(&dir, structured);
                     self.entries.push(Entry {
                         read_only: zone == crate::Zone::Raw,
@@ -213,7 +224,6 @@ impl Vault {
             }
             let zone = scan::zone_of(path, structured);
             let kind = crate::EntryKind::classify(path.file_name(), zone, partes.len() == 1);
-            hay.insert(path.clone());
             self.entries.push(Entry {
                 read_only: Entry::compute_read_only(kind, zone, *size),
                 path: path.clone(),
