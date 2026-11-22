@@ -324,14 +324,16 @@ mod tests {
         let file = dir.join("estado.yaml");
         AppState::default().save_to(&file).unwrap();
         assert!(!fs::read_to_string(&file).unwrap().contains("toc_"));
-        let mut s = AppState::default();
-        s.toc = TocDefaults {
-            title: "En esta nota: índice".into(),
-            style: TocStyle::NestedOrderedList,
-            min_level: 2,
-            max_level: 3,
-            include_links: false,
-            hide_when_empty: true,
+        let s = AppState {
+            toc: TocDefaults {
+                title: "En esta nota: índice".into(),
+                style: TocStyle::NestedOrderedList,
+                min_level: 2,
+                max_level: 3,
+                include_links: false,
+                hide_when_empty: true,
+            },
+            ..AppState::default()
         };
         s.save_to(&file).unwrap();
         assert_eq!(AppState::load_from(&file).toc, s.toc);
