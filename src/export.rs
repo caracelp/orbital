@@ -62,8 +62,11 @@ pub struct Medios<'a> {
     pub galeria: Option<&'a dyn Fn(&mut orbital_vault::galeria::Galeria)>,
     /// Los bloques generados (036): por lenguaje (`indice`, `toc`) y cuerpo, su HTML estático;
     /// `None` deja el bloque como código.
-    pub generado: Option<&'a dyn Fn(&str, &str) -> Option<String>>,
+    pub generado: Option<&'a Generador<'a>>,
 }
+
+/// Arma el HTML estático de un bloque generado: lenguaje y cuerpo (036).
+pub type Generador<'a> = dyn Fn(&str, &str) -> Option<String> + 'a;
 
 /// Lenguajes de los bloques generados que se exportan estáticos (036).
 fn es_generado(lang: &str) -> bool {
