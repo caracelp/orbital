@@ -705,4 +705,39 @@ mod tests {
         assert_eq!(*start, None);
         assert_eq!(forma(items), "A(B(C)) D");
     }
+
+    /// SC-001/SC-002 (035): analizar y completar una nota de 300 encabezados con una tabla de
+    /// contenidos, y solo completar la tabla. `cargo test --release --bin orbital medir_toc --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "medición"]
+    fn medir_toc() {
+        let mut texto = String::from("```toc\n```\n\n");
+        for k in 0..300 {
+            let nivel = "#".repeat(1 + k % 3);
+            texto.push_str(&format!(
+                "{nivel} Sección {k} con **formato** ñ\n\nTexto {k}.\n\n"
+            ));
+        }
+        let path = orbital_vault::RelPath::new("wiki/x.md").unwrap();
+        let mut mejor_total = f64::MAX;
+        let mut mejor_tabla = f64::MAX;
+        for _ in 0..20 {
+            let t = std::time::Instant::now();
+            let mut p = Prepared::new(&texto, &[]);
+            let analizar = t.elapsed();
+            assert!(complete_generated(
+                &mut p.doc,
+                &mut p.hashes,
+                None,
+                None,
+                Some(&path)
+            ));
+            mejor_total = mejor_total.min(t.elapsed().as_secs_f64() * 1e3);
+            mejor_tabla = mejor_tabla.min((t.elapsed() - analizar).as_secs_f64() * 1e3);
+        }
+        println!(
+            "300 encabezados: análisis + tabla {mejor_total:.2} ms; solo la tabla {mejor_tabla:.3} ms"
+        );
+    }
 }
