@@ -305,7 +305,7 @@ fn nombre_repetido_en_drive_con_marcadores() {
     // La web renombra «otra.md» (id más chico) a «nota.md»: dos «nota.md» en la carpeta.
     let otra = srv.datos().buscar("wiki/otra.md", &id).unwrap();
     let nota = srv.datos().buscar("wiki/nota.md", &id).unwrap();
-    assert!(otra > nota || otra < nota);
+    assert_ne!(otra, nota);
     srv.datos().renombrar(&otra, "nota.md");
     b.sincronizar();
     let mut m = b.marcadores();
