@@ -24,8 +24,8 @@ pub(super) struct DriveUi {
 
 /// Una fila visible del explorador.
 pub(super) struct FilaDrive {
-    icono: glib::WeakRef<gtk::Image>,
-    item: glib::WeakRef<gtk::ListItem>,
+    pub(super) icono: glib::WeakRef<gtk::Image>,
+    pub(super) item: glib::WeakRef<gtk::ListItem>,
     /// Nombre accesible sin el estado de Drive.
     base: String,
 }
@@ -59,6 +59,11 @@ impl EstadoFila {
     }
 }
 
+/// Solo pruebas: la API del servidor falso y una carpeta de estado temporal (nunca la cuenta ni
+/// el estado de la usuaria).
+#[cfg(test)]
+pub(super) static PRUEBA: std::sync::Mutex<Option<(String, PathBuf)>> = std::sync::Mutex::new(None);
+
 /// Si una regla «solo en este equipo» cubre `rel`.
 fn cubre(reglas: &[String], rel: &str) -> bool {
     reglas.iter().any(|r| {
@@ -86,7 +91,8 @@ impl Window {
             d.resumen = None;
             d.detenido = None;
         }
-        self.0.drive_filas.borrow_mut().clear();
+        // Las filas anotadas son las de la lista nueva (las viejas se sueltan al desligarse).
+        self.drive_repintar(None);
         self.0.status.set_drive(None);
         let (this, root) = (self.clone(), root.to_path_buf());
         self.after_next_frame(move || {
@@ -100,8 +106,32 @@ impl Window {
     /// Arranca el motor de la bóveda abierta.
     pub(super) fn drive_arrancar(&self, root: &Path) {
         let (tx, mut rx) = futures_channel::mpsc::unbounded::<Evento>();
-        let cfg = orbital_drive::motor::Config::new(root);
-        let motor = match Motor::iniciar(cfg, orbital_drive::api_del_equipo, move |e| {
+        #[allow(unused_mut)]
+        let mut cfg = orbital_drive::motor::Config::new(root);
+        #[allow(unused_mut)]
+        let mut fabrica: Box<
+            dyn FnOnce(&orbital_drive::Estado) -> Result<Box<dyn orbital_drive::Api>, String>
+                + Send,
+        > = Box::new(orbital_drive::api_del_equipo);
+        #[cfg(test)]
+        if let Some((url, dir)) = PRUEBA.lock().unwrap().clone() {
+            cfg.dir_estado = dir;
+            cfg.papelera = orbital_drive::Papelera::Boveda;
+            cfg.espera_subida = std::time::Duration::from_millis(300);
+            cfg.intervalo_activo = std::time::Duration::from_millis(500);
+            cfg.intervalo_fondo = std::time::Duration::from_millis(500);
+            fabrica = Box::new(move |_| {
+                Ok(Box::new(orbital_drive::cliente::Cliente::new(
+                    orbital_drive::cliente::Direcciones::locales(&url),
+                    orbital_drive::cliente::Credenciales {
+                        client_id: "x".into(),
+                        client_secret: "x".into(),
+                        refresh_token: "x".into(),
+                    },
+                )) as Box<dyn orbital_drive::Api>)
+            });
+        }
+        let motor = match Motor::iniciar(cfg, fabrica, move |e| {
             let _ = tx.unbounded_send(e);
         }) {
             Ok(m) => m,

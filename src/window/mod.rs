@@ -33,6 +33,8 @@ mod busqueda;
 mod centro;
 mod conexiones;
 mod drive;
+#[cfg(test)]
+mod drive_tests;
 mod enlaces;
 mod esqueleto;
 mod explorador;
@@ -497,6 +499,29 @@ impl Window {
     /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`);
     /// `ORBITAL_CAPTURA_TARJETA=id` muestra la respuesta de esa tarjeta de estudio.
     pub fn preparar_captura(&self) {
+        // 061a: `ORBITAL_CAPTURA_DRIVE=dialogo` abre «Google Drive…»; `=conflicto`, el primer
+        // conflicto (una sola vez: esta función se llama dos veces).
+        static DRIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Ok(que) = std::env::var("ORBITAL_CAPTURA_DRIVE")
+            && !DRIVE.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            match que.as_str() {
+                "dialogo" => self.drive_dialogo(),
+                "conflicto" => {
+                    let primero = self
+                        .0
+                        .drive
+                        .borrow()
+                        .conflictos
+                        .first()
+                        .map(|c| c.ruta.clone());
+                    if let Some(r) = primero {
+                        self.drive_resolver(&r);
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Ok(id) = std::env::var("ORBITAL_CAPTURA_TARJETA") {
             self.0.code_editor.mostrar_respuesta_tarjeta(&id);
         }
