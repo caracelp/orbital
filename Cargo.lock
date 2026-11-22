@@ -1282,7 +1282,6 @@ dependencies = [
  "fontdb",
  "mermaid-svg",
  "resvg",
- "ttf-parser",
 ]
 
 [[package]]
