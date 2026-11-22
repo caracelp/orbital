@@ -716,6 +716,11 @@ flowchart TD
   rellenos son rosas translúcidos. Un tema pedido por el propio diagrama (`%%{init: {theme: …}}%%`)
   se respeta.
 - **Tamaño**: el natural; si no entra en la columna, se achica (sin deformarse).
+- **Ampliar y copiar** (059): en la Lectura, un clic (o Tab e Intro) abre el diagrama ampliado a
+  pantalla completa, con zoom y arrastre; el menú contextual (clic derecho, Menú o Mayús+F10)
+  lo copia como imagen PNG o como SVG, con los colores de papel (Ctrl+C y Ctrl+Mayús+C).
+- **Letras**: los emoji y las escrituras que no están en la letra de la interfaz (CJK, por
+  ejemplo) salen con una letra del sistema que las tenga.
 - **Con error**: se ve el fuente como código y debajo el motivo con el renglón del bloque
   («⚠ Error en el diagrama (renglón 3): …»). El archivo no cambia.
 - **Notas `.html`**: un `<pre><code class="language-mermaid">…</code></pre>` (como sale un bloque
