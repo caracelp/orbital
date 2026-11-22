@@ -218,7 +218,7 @@ pub fn dibujar_a(
     let mut img = orbital_diagramas::imagen(&d, escala, &fuentes())?;
     if let Some([r, g, b]) = fondo {
         // Premultiplicado: color + (1 − alfa) × fondo.
-        for p in img.rgba.chunks_exact_mut(4) {
+        for p in img.rgba.as_chunks_mut::<4>().0 {
             let resto = 255 - u16::from(p[3]);
             p[0] = (u16::from(p[0]) + resto * u16::from(r) / 255) as u8;
             p[1] = (u16::from(p[1]) + resto * u16::from(g) / 255) as u8;
