@@ -2203,6 +2203,7 @@ mod ventana_tests {
 
             win.unmaximize();
             esperar("vuelve a 900×600", || {
+                eprintln!("DIAG {} {}x{} def {:?}", win.is_maximized(), win.width(), win.height(), win.default_size());
                 !win.is_maximized() && win.width() == 900 && win.height() == 600
             })
             .await;
