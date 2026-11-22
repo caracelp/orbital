@@ -3,7 +3,8 @@
 //! puntero; arrastrar recorre la foto ampliada sin salirse de los bordes; `0` o doble clic la
 //! vuelven a ajustar. Al acercar se pide la imagen con más resolución (en el pool de `gio`,
 //! acotada a [`crate::imagenes::LADO_MAXIMO`]). Con la imagen ajustada, deslizar con el dedo
-//! pasa de foto.
+//! pasa de foto. El diagrama ampliado (059) usa la misma imagen, con otra fuente de resolución
+//! (el diagrama se vuelve a dibujar más grande): [`Zoom::con_fuente`].
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ pub struct Zoom {
     nivel: Cell<f64>,
     /// El puntero, en coordenadas de la vista (para acercar a su alrededor).
     puntero: Cell<Option<(f64, f64)>>,
-    abs: PathBuf,
+    pedir: Pedir,
     /// Lado de la imagen con más resolución ya pedida.
     pedida: Cell<i32>,
     inicio_arrastre: Cell<(f64, f64)>,
@@ -30,9 +31,20 @@ pub struct Zoom {
 /// Lo que hace un deslizamiento con la imagen ajustada: `true` hacia la siguiente.
 pub type Deslizar = Rc<dyn Fn(bool)>;
 
+/// Pide la imagen con `lado` píxeles en su lado mayor; `listo` la recibe en el hilo de GTK.
+pub type Pedir = Rc<dyn Fn(i32, Box<dyn FnOnce(Option<gdk::Texture>)>)>;
+
 impl Zoom {
-    /// La imagen (todavía sin textura) y su control.
+    /// La imagen de un archivo (todavía sin textura) y su control.
     pub fn nueva(abs: PathBuf, alt: &str, deslizar: Deslizar) -> Rc<Self> {
+        let pedir: Pedir = Rc::new(move |lado, listo| {
+            crate::imagenes::pedir(&abs, lado, lado, listo);
+        });
+        Self::con_fuente(pedir, alt, deslizar)
+    }
+
+    /// Como [`Zoom::nueva`], con la imagen de más resolución pedida a `pedir`.
+    pub fn con_fuente(pedir: Pedir, alt: &str, deslizar: Deslizar) -> Rc<Self> {
         let pic = gtk::Picture::builder()
             .can_shrink(true)
             .content_fit(gtk::ContentFit::Contain)
@@ -56,7 +68,7 @@ impl Zoom {
             pic,
             nivel: Cell::new(1.0),
             puntero: Cell::new(None),
-            abs,
+            pedir,
             pedida: Cell::new(0),
             inicio_arrastre: Cell::new((0.0, 0.0)),
         });
@@ -239,13 +251,33 @@ impl Zoom {
         let lado = (lado * 2).min(crate::imagenes::LADO_MAXIMO);
         self.pedida.set(lado);
         let d = Rc::downgrade(self);
-        crate::imagenes::pedir(&self.abs, lado, lado, move |t| {
-            if let (Some(z), Some(t)) = (d.upgrade(), t)
-                && z.nivel() > 1.0
-            {
-                z.pic.set_paintable(Some(&t));
-            }
-        });
+        (self.pedir)(
+            lado,
+            Box::new(move |t| {
+                if let (Some(z), Some(t)) = (d.upgrade(), t)
+                    && z.nivel() > 1.0
+                {
+                    z.pic.set_paintable(Some(&t));
+                }
+            }),
+        );
+    }
+
+    /// Pide ya la imagen con `lado` píxeles (físicos) en su lado mayor y la pone al llegar,
+    /// también con la imagen ajustada: el diagrama ampliado (059) la pide del tamaño de la
+    /// pantalla, para no estirar la de la nota.
+    pub fn cargar(self: &Rc<Self>, lado: i32) {
+        let lado = lado.min(crate::imagenes::LADO_MAXIMO);
+        self.pedida.set(lado);
+        let d = Rc::downgrade(self);
+        (self.pedir)(
+            lado,
+            Box::new(move |t| {
+                if let (Some(z), Some(t)) = (d.upgrade(), t) {
+                    z.pic.set_paintable(Some(&t));
+                }
+            }),
+        );
     }
 
     /// La tecla de zoom, si lo es.

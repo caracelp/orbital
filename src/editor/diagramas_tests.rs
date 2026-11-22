@@ -518,3 +518,178 @@ fn medir_lectura_diagramas() {
         let _ = fs::remove_dir_all(&root);
     });
 }
+
+/// Las ventanas de primer nivel con `clase` y visibles.
+fn ventanas(clase: &str) -> Vec<gtk::Window> {
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk::Window>().ok())
+        .filter(|w| w.has_css_class(clase) && w.is_visible())
+        .collect()
+}
+
+/// Ampliar y copiar desde la Lectura (059): el diagrama se enfoca, tiene el menú con las tres
+/// acciones, copia como SVG (`image/svg+xml` y texto, colores de papel) y como imagen (PNG
+/// opaco, al doble de resolución) y se abre ampliado, con una imagen más grande que la de la
+/// nota, zoom con el teclado y Escape para salir. Con `ORBITAL_CAPTURA_DIR`, guarda
+/// `059-ampliado.png`, `059-ampliado-zoom.png` y `059-menu.png`.
+#[test]
+#[ignore = "requiere una sesión gráfica; tools/pruebas-gtk.sh"]
+fn ampliar_y_copiar_diagrama() {
+    use gtk::glib::translate::IntoGlib;
+    adw::init().expect("Se necesita una sesión gráfica GTK");
+    crate::style::apply();
+    glib::MainContext::default().block_on(async {
+        let nota = "# Uno\n\n```mermaid\nflowchart LR\n    A[🚀 Idea] --> B{¿Sirve?}\n    B -->|sí| C[Nota]\n    B -->|no| D[Archivo]\n```\n";
+        let (root, vault, rel) = boveda("ampliar", nota);
+        let editor = Editor::new();
+        let window = gtk::Window::builder()
+            .default_width(900)
+            .default_height(700)
+            .child(editor.widget())
+            .build();
+        window.present();
+        editor.load(vault.clone(), &vault.read_note(&rel).unwrap());
+        editor.set_view(View::Lectura);
+        editor.render_now();
+        let vista = editor.0.reader.text_view().clone();
+        assert!(esperar(|| !diagramas(vista.upcast_ref()).is_empty()).await);
+        let pic = diagramas(vista.upcast_ref()).remove(0);
+        assert!(esperar(|| pic.paintable().is_some()).await);
+        let ancho_nota = pic.paintable().unwrap().intrinsic_width();
+        assert!(pic.is_focusable(), "el diagrama se enfoca con Tab");
+        assert!(pic.grab_focus());
+
+        // El menú contextual: las tres acciones.
+        crate::diagrama_ampliado::menu(pic.upcast_ref(), None);
+        let pop = {
+            let mut h = pic.first_child();
+            let mut p = None;
+            while let Some(w) = h {
+                if let Ok(m) = w.clone().downcast::<gtk::PopoverMenu>() {
+                    p = Some(m);
+                }
+                h = w.next_sibling();
+            }
+            p.expect("el menú del diagrama")
+        };
+        let modelo = pop.menu_model().unwrap();
+        let rotulos: Vec<String> = (0..modelo.n_items())
+            .filter_map(|i| {
+                modelo
+                    .item_attribute_value(i, "label", None)
+                    .and_then(|v| v.get::<String>())
+            })
+            .collect();
+        assert_eq!(
+            rotulos,
+            ["Ampliar", "Copiar como imagen", "Copiar como SVG"]
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        capturar(&pop, "059-menu", crate::style::VIEW_BG.rgba(1.0));
+        pop.popdown();
+        glib::timeout_future(Duration::from_millis(100)).await;
+
+        // Copiar como SVG.
+        let portapapeles = pic.clipboard();
+        pic.activate_action("diagrama.copiar-svg", None).unwrap();
+        let formatos = portapapeles.formats();
+        assert!(formatos.contain_mime_type("image/svg+xml"), "{formatos}");
+        let texto = portapapeles.read_text_future().await.unwrap().unwrap();
+        assert!(texto.starts_with("<svg"), "{texto}");
+        assert!(texto.contains("Diagrama Mermaid: de flujo"));
+        assert!(!texto.contains("#161618"), "colores de papel, no los oscuros");
+
+        // Copiar como imagen.
+        pic.activate_action("diagrama.copiar-imagen", None).unwrap();
+        assert!(
+            // Hasta que reemplaza al SVG (GTK también convierte el SVG en una textura).
+            esperar(|| {
+                let f = portapapeles.formats();
+                f.contains_type(gtk::gdk::Texture::static_type())
+                    && !f.contain_mime_type("image/svg+xml")
+            })
+            .await
+        );
+        let t = portapapeles.read_texture_future().await.unwrap().unwrap();
+        // Al doble del tamaño del diagrama (la de la nota va a la escala del monitor).
+        let logico = ancho_nota / pic.scale_factor().max(1);
+        assert!(t.width() >= logico * 2 - 2, "{} contra {logico}", t.width());
+        let mut px = vec![0u8; (t.width() * t.height() * 4) as usize];
+        t.download(&mut px, t.width() as usize * 4);
+        assert_eq!(&px[..4], &[255, 255, 255, 255], "papel opaco (BGRA)");
+
+        // Ampliar.
+        pic.activate_action("diagrama.ampliar", None).unwrap();
+        assert!(esperar(|| ventanas("orbital-diagrama-ventana").len() == 1).await);
+        let v = ventanas("orbital-diagrama-ventana").remove(0);
+        assert_eq!(v.title().as_deref(), Some("Diagrama Mermaid: de flujo"));
+        let grande = |v: &gtk::Window| {
+            let mut pila = vec![v.clone().upcast::<gtk::Widget>()];
+            while let Some(w) = pila.pop() {
+                if let Some(p) = w.downcast_ref::<gtk::Picture>()
+                    && let Some(t) = p.paintable()
+                {
+                    return t.intrinsic_width();
+                }
+                let mut h = w.first_child();
+                while let Some(x) = h {
+                    pila.push(x.clone());
+                    h = x.next_sibling();
+                }
+            }
+            0
+        };
+        assert!(
+            esperar(|| grande(&v) > ancho_nota * 3 / 2).await,
+            "la imagen ampliada se dibuja de nuevo, más grande: {} contra {ancho_nota}",
+            grande(&v)
+        );
+        glib::timeout_future(Duration::from_millis(300)).await;
+        capturar(&v, "059-ampliado", crate::style::VIEW_BG.rgba(1.0));
+        // Teclado: más acerca (aparecen las barras externas: el contenido crece).
+        let zoom = {
+            let mut pila = vec![v.clone().upcast::<gtk::Widget>()];
+            let mut z = None;
+            while let Some(w) = pila.pop() {
+                if w.has_css_class("orbital-visor-zoom") {
+                    z = w.downcast::<gtk::ScrolledWindow>().ok();
+                    break;
+                }
+                let mut h = w.first_child();
+                while let Some(x) = h {
+                    pila.push(x.clone());
+                    h = x.next_sibling();
+                }
+            }
+            z.expect("la imagen ampliable")
+        };
+        let antes = zoom.hadjustment().upper();
+        let teclas = v
+            .observe_controllers()
+            .into_iter()
+            .filter_map(|c| c.ok()?.downcast::<gtk::EventControllerKey>().ok())
+            .next()
+            .expect("las teclas de la ventana");
+        for _ in 0..3 {
+            teclas.emit_by_name::<bool>(
+                "key-pressed",
+                &[&gtk::gdk::Key::plus.into_glib(), &0u32, &gtk::gdk::ModifierType::empty()],
+            );
+        }
+        assert!(
+            esperar(|| zoom.hadjustment().upper() > antes * 1.5).await,
+            "acercó: {} contra {antes}",
+            zoom.hadjustment().upper()
+        );
+        glib::timeout_future(Duration::from_millis(500)).await;
+        capturar(&v, "059-ampliado-zoom", crate::style::VIEW_BG.rgba(1.0));
+        teclas.emit_by_name::<bool>(
+            "key-pressed",
+            &[&gtk::gdk::Key::Escape.into_glib(), &0u32, &gtk::gdk::ModifierType::empty()],
+        );
+        assert!(esperar(|| ventanas("orbital-diagrama-ventana").is_empty()).await);
+        window.close();
+        let _ = fs::remove_dir_all(&root);
+    });
+}

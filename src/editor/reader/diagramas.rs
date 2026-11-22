@@ -66,6 +66,8 @@ impl Reader {
         match diagramas::svg(fuente, estilo.tema) {
             Ok(d) => {
                 let pic = diagramas::picture(Clave::new(fuente, estilo), &d.nombre());
+                // Ampliar y copiar (059): clic, teclado y menú contextual.
+                crate::diagrama_ampliado::interactivo(&pic, fuente, estilo);
                 let (ancho, alto) = diagramas::medida(d.ancho, d.alto, self.0.width.get());
                 pic.set_size_request(ancho, alto);
                 pic.set_margin_top(6);

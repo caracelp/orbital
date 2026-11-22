@@ -19,7 +19,7 @@ use orbital_vault::carrusel::{Carrusel, Clase, Diapositiva, Leyenda, Posicion};
 
 use crate::imagenes;
 
-mod zoom;
+pub mod zoom;
 
 /// Abrir un enlace (un PDF en su visor), relativo a la nota del carrusel.
 pub type AbrirFn = Rc<dyn Fn(&str)>;
