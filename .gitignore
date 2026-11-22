@@ -8,3 +8,14 @@
 *.log
 .env*
 *.swp
+__pycache__/
+*.py[co]
+
+# Material de desarrollo local (lo arma tools/preparar-desarrollo.sh; no es parte del repo)
+/desarrollo/
+/specs
+/.specify
+/AGENTS.md
+/CLAUDE.md
+/CLAUDE.local.md
+/.claude/
