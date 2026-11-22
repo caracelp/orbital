@@ -50,6 +50,7 @@ mod propiedades;
 #[cfg(test)]
 mod tests;
 mod util;
+pub use boveda::LecturaAnticipada;
 use util::*;
 
 struct Inner {
