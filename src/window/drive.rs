@@ -232,6 +232,11 @@ impl Window {
         };
         self.drive_barra();
         self.drive_senales();
+        // Lo «solo en Drive» que se pidió abrir antes de que arrancara el motor.
+        let pendiente = self.0.drive.borrow().abriendo.clone();
+        if let Some(r) = pendiente {
+            self.drive_orden(Orden::Traer(r));
+        }
         let this = self.clone();
         glib::spawn_future_local(async move {
             use futures_core::Stream;
@@ -302,7 +307,11 @@ impl Window {
         }
         let nombre = entry.path.file_name().to_owned();
         *self.0.current_entry.borrow_mut() = None;
-        if !self.drive_en_linea() {
+        let arrancando = {
+            let d = self.0.drive.borrow();
+            d.motor.is_none() && d.detenido.is_none()
+        };
+        if !arrancando && !self.drive_en_linea() {
             self.drive_pagina(
                 "system-lock-screen-symbolic",
                 "Solo en Drive",
@@ -320,6 +329,7 @@ impl Window {
             "Bajando de Drive…",
             &format!("«{nombre}» está solo en Drive: se abre apenas termine de bajar. La copia queda en la caché de este equipo, fuera de la bóveda."),
         );
+        // Si el motor todavía no arrancó (recién abierta la bóveda), lo pide al arrancar.
         self.drive_orden(Orden::Traer(rel.to_owned()));
         true
     }

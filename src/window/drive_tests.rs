@@ -349,12 +349,15 @@ fn drive_solo_en_drive_marcadores_y_apertura() {
             .menu_contextual("wiki/Remota.md", lista.upcast_ref(), None)
             .expect("con la bóveda conectada hay menú");
         if let Ok(d) = std::env::var("ORBITAL_CAPTURA_DIR") {
-            glib::timeout_future(std::time::Duration::from_millis(400)).await;
-            if let Some(c) = menu.child() {
-                window
-                    .capture_widget(&c, &Path::new(&d).join("061b-menu-ubicacion.png"))
-                    .unwrap();
-            }
+            let w = menu.clone();
+            esperar("el menú dibujado", move || w.is_mapped() && w.width() > 1).await;
+            glib::timeout_future(std::time::Duration::from_millis(600)).await;
+            window
+                .capture_widget(
+                    menu.upcast_ref(),
+                    &Path::new(&d).join("061b-menu-ubicacion.png"),
+                )
+                .unwrap();
         }
         menu.popdown();
         // La fila de la nota «solo en Drive», con su estado en el nombre accesible.
