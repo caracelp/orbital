@@ -21,6 +21,8 @@
   <launchable type="desktop-id">io.github.caracelp.Orbital.desktop</launchable>
   <url type="homepage">https://github.com/caracelp/orbital</url>
   <url type="bugtracker">https://github.com/caracelp/orbital/issues</url>
+  <url type="vcs-browser">https://github.com/caracelp/orbital</url>
+  <url type="contribute">https://github.com/caracelp/orbital/blob/main/CONTRIBUTING.md</url>
   <developer id="io.github.caracelp">
     <name>caracelp</name>
   </developer>
@@ -28,6 +30,20 @@
     <color type="primary" scheme_preference="light">#ffd2e6</color>
     <color type="primary" scheme_preference="dark">#402336</color>
   </branding>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Vista Dividida: el Markdown y la Lectura lado a lado</caption>
+      <image>https://raw.githubusercontent.com/caracelp/orbital/main/docs/img/dividida.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Gráficos 2D y 3D interactivos dentro de una nota</caption>
+      <image>https://raw.githubusercontent.com/caracelp/orbital/main/docs/img/visual-math.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Una base: tabla editable sobre las propiedades de las notas</caption>
+      <image>https://raw.githubusercontent.com/caracelp/orbital/main/docs/img/bases.png</image>
+    </screenshot>
+  </screenshots>
   <content_rating type="oars-1.1"/>
   <requires>
     <display_length compare="ge">360</display_length>
