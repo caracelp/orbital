@@ -8,8 +8,10 @@
 //! XDG_CONFIG_HOME=$(mktemp -d) ORBITAL_INSTANCIA_PROPIA=1 ORBITAL_DRIVE_API=… orbital /tmp/boveda-drive
 //! ```
 //!
-//! Deja: notas sincronizadas, una carpeta «solo en este equipo», un conflicto (`wiki/Proyecto.md`)
-//! y una nota nueva sin subir (la sube Orbital al abrir).
+//! Deja: notas sincronizadas, una carpeta «solo en este equipo», un conflicto (`wiki/Proyecto.md`),
+//! una nota nueva sin subir (la sube Orbital al abrir) y, desde la 061b, lo «solo en Drive»: `raw/`
+//! marcada «solo en Drive» (su foto se libera) y una nota y un video creados «en la web» con el
+//! predeterminado «lo nuevo en Drive: solo en Drive». Usar también un `XDG_CACHE_HOME` propio.
 
 use std::fs;
 use std::path::PathBuf;
@@ -125,6 +127,30 @@ fn main() {
     s.pedir_completa();
     s.ciclo().unwrap();
     assert_eq!(s.estado.conflictos.len(), 1, "quedó el conflicto");
+    // Lo «solo en Drive» (061b).
+    s.predeterminados(
+        orbital_drive::reglas::Ubicacion::Ambos,
+        orbital_drive::reglas::Ubicacion::SoloDrive,
+    );
+    s.ubicar("raw/", Some(orbital_drive::reglas::Ubicacion::SoloDrive));
+    {
+        let mut d = srv.datos();
+        let lecturas = d.buscar("wiki/Lecturas", &raiz).unwrap();
+        let raw = d.buscar("raw", &raiz).unwrap();
+        d.crear(
+            &lecturas,
+            "Desde el celular.md",
+            "# Desde el celular\n\nIdeas sueltas del viaje: [[Libro]] #viaje\n".as_bytes(),
+            "Ana (celular)",
+        );
+        let videos = d.crear_carpeta(&raw, "videos");
+        d.crear(&videos, "Viaje.mp4", &vec![0u8; 3 << 20], "Ana (celular)");
+    }
+    for _ in 0..3 {
+        s.pedir_completa();
+        let _ = s.ciclo();
+    }
+    assert!(s.estado.marcadores().len() >= 3, "quedó lo «solo en Drive»");
     drop(s);
     // Una nota nueva sin subir: la sube Orbital al abrir.
     escribir("wiki/Lecturas/Nueva.md", "# Nueva\n".as_bytes());

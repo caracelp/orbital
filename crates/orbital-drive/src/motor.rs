@@ -324,6 +324,13 @@ impl<A: Api> Sincronizador<A> {
         };
         self.e().nodos.insert(a.id.clone(), n);
         if let Some(r) = ruta {
+            // Otro archivo con el mismo nombre en la carpeta (Drive lo permite): los dos se
+            // numeran (` (2)`) en orden de id, como en `Estado::rutas`; se rearma el índice. La
+            // prueba de caos encontró un marcador que quedaba con la ruta del otro.
+            if self.ruta_id.get(&r).is_some_and(|otro| *otro != a.id) {
+                self.indexar();
+                return;
+            }
             self.ruta_id.insert(r.clone(), a.id.clone());
             self.id_ruta.insert(a.id.clone(), r);
         }

@@ -432,7 +432,27 @@ fn caos_nunca_pierde_nada() {
         .partition(|(r, _)| !r.starts_with(".orbital"));
     for e in [&mut a, &mut b] {
         let v = e.vista(&srv);
-        assert_eq!(v.keys().collect::<Vec<_>>(), sin.keys().collect::<Vec<_>>());
+        assert_eq!(
+            v.keys().collect::<Vec<_>>(),
+            sin.keys().collect::<Vec<_>>(),
+            "registros: {:?}\nnodos: {:?}",
+            e.s()
+                .estado
+                .registros
+                .iter()
+                .map(|(r, b)| format!("{r}={}{}", b.id, if b.solo_drive { "·d" } else { "" }))
+                .collect::<Vec<_>>(),
+            {
+                let st = &e.sinc.as_ref().unwrap().estado;
+                let mut x: Vec<String> = st
+                    .rutas()
+                    .into_iter()
+                    .map(|(id, r)| format!("{r}={id}:{:?}", st.nodos[&id].md5))
+                    .collect();
+                x.sort();
+                x
+            }
+        );
         assert_eq!(v, sin, "lo que ve el equipo es igual a Drive");
         let cfg: std::collections::BTreeMap<_, _> = e
             .arbol()
