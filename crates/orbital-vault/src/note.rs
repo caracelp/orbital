@@ -354,7 +354,28 @@ impl Vault {
         ctx: &WriteCtx,
     ) -> Result<RelPath, VaultError> {
         let path = dir.join(&format!("{name}.{}", format.extension()))?;
-        self.create_typed(&path, name, format, format.default_type(), ctx)?;
+        self.create_typed(&path, name, format, format.default_type(), &[], ctx)?;
+        Ok(path)
+    }
+
+    /// Como [`Vault::create_note`] (`.md`), con `tags` en el frontmatter: la «Nota nueva con esta
+    /// etiqueta» del índice por etiqueta (036).
+    pub fn create_note_with_tags(
+        &self,
+        dir: &RelPath,
+        name: &str,
+        tags: &[String],
+        ctx: &WriteCtx,
+    ) -> Result<RelPath, VaultError> {
+        let path = dir.join(&format!("{name}.md"))?;
+        self.create_typed(
+            &path,
+            name,
+            Format::Md,
+            Format::Md.default_type(),
+            tags,
+            ctx,
+        )?;
         Ok(path)
     }
 
@@ -376,11 +397,12 @@ impl Vault {
         title: &str,
         format: Format,
         kind: &str,
+        tags: &[String],
         ctx: &WriteCtx,
     ) -> Result<(), VaultError> {
         self.check_new(path)?;
         let stamp = PropValue::DateTime(ctx.timestamp());
-        let entries = [
+        let mut entries = vec![
             ("type", PropValue::Text(kind.to_owned())),
             ("title", PropValue::Text(title.to_owned())),
             ("created", stamp.clone()),
@@ -392,6 +414,12 @@ impl Vault {
                 ]),
             ),
         ];
+        if !tags.is_empty() {
+            entries.push((
+                "tags",
+                PropValue::List(tags.iter().cloned().map(PropValue::Text).collect()),
+            ));
+        }
         let block = emit::document(&entries, LineEnding::Lf);
         let content = match format {
             Format::Md => format!("---\n{block}---\n# {title}\n"),
@@ -460,7 +488,7 @@ impl Vault {
         if path.to_path(self.root()).exists() {
             return Ok(path);
         }
-        self.create_typed(&path, &ctx.date.to_string(), Format::Md, "diario", ctx)?;
+        self.create_typed(&path, &ctx.date.to_string(), Format::Md, "diario", &[], ctx)?;
         Ok(path)
     }
 

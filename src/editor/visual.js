@@ -438,6 +438,7 @@
     'media-slider': { titulo: 'Clic para editar el fuente del carrusel' },
     galeria: { titulo: 'Clic para editar el fuente de la galería' },
     gallery: { titulo: 'Clic para editar el fuente de la galería' },
+    indice: { titulo: 'Clic para editar el fuente del índice' },
   };
   function ponerFiguras(map, tipo) {
     if (!document.getElementById('orbital-grafico-style')) {
@@ -498,6 +499,8 @@
     // Las galerías (033) llegan en el mismo mapa: su grilla estática.
     ponerFiguras(map, 'galeria');
     ponerFiguras(map, 'gallery');
+    // Los índices por etiqueta (036): la lista estática.
+    ponerFiguras(map, 'indice');
   }
 
   // Ids de bloque (026): cada `p`, `li`, `blockquote`, `table`, `pre` y `figure` sin `id` recibe uno

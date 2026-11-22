@@ -281,6 +281,13 @@ impl Editor {
             self.mostrar_diagrama(d);
             return;
         }
+        let indice = (activa && hallada.is_none())
+            .then(|| self.cerca_en_offset(i.buffer.cursor_position(), "indice"))
+            .flatten();
+        if let Some(d) = indice {
+            self.mostrar_indice(d);
+            return;
+        }
         let Some((inicio, tex, modo)) = hallada else {
             self.ocultar_vista_previa();
             return;
@@ -429,6 +436,50 @@ impl Editor {
         v.popover.popup();
     }
 
+    /// El índice por etiqueta bajo el cursor (036): cuántas notas lista y las primeras, del
+    /// índice en memoria (una pasada por las notas; sin leer el disco); con error, el motivo.
+    fn mostrar_indice(&self, g: GraficoEnBuffer) {
+        let i = &self.0;
+        let texto = match orbital_vault::indice::parse(&g.fuente, &reader::indice_defaults()) {
+            Err(e) => e.to_string(),
+            Ok(o) => {
+                let idx = i.search_index.borrow().clone();
+                let Some(idx) = idx else {
+                    self.ocultar_vista_previa();
+                    return;
+                };
+                let Ok(idx) = idx.read() else { return };
+                resumen_indice(&idx.indice_etiqueta(&o), &o)
+            }
+        };
+        if i.vista_previa.borrow().is_none() {
+            i.vista_previa.replace(Some(VistaPrevia::new(&i.view)));
+        }
+        let prestamo = i.vista_previa.borrow();
+        let Some(v) = prestamo.as_ref() else { return };
+        self.apuntar_globito(v, g.inicio);
+        let clave = format!("indice\n{}", g.fuente);
+        if v.actual_grafico.borrow().as_deref() == Some(clave.as_str())
+            && v.popover.is_visible()
+            && v.error.label() == texto
+        {
+            return;
+        }
+        v.actual.replace(None);
+        v.imagen.set_paintable(None::<&gtk::gdk::Paintable>);
+        v.imagen.set_visible(false);
+        while let Some(h) = v.grafico.first_child() {
+            v.grafico.remove(&h);
+        }
+        v.grafico.set_visible(false);
+        v.error.set_label(&texto);
+        v.error.set_visible(true);
+        v.actual_grafico.replace(Some(clave));
+        v.popover
+            .update_property(&[gtk::accessible::Property::Label("Vista previa del índice")]);
+        v.popover.popup();
+    }
+
     fn mostrar_vista_previa(&self, tex: &str, modo: Modo, r: formulas::Resultado) {
         let prestamo = self.0.vista_previa.borrow();
         let Some(v) = prestamo.as_ref() else { return };
@@ -458,4 +509,47 @@ impl Editor {
         }
         v.popover.popup();
     }
+}
+
+/// El texto del globito de un índice por etiqueta (036): el total, las sub-etiquetas y las
+/// primeras notas.
+pub(super) fn resumen_indice(
+    ind: &orbital_vault::indice::Indice,
+    o: &orbital_vault::indice::IndiceOpciones,
+) -> String {
+    let r = &ind.raiz;
+    if r.notas.is_empty() && r.hijas.is_empty() {
+        return orbital_vault::indice::vacio(ind, o);
+    }
+    let total = r.total();
+    let mut s = if o.meta {
+        format!(
+            "Índice de índices: {total} {}",
+            if total == 1 { "nota" } else { "notas" }
+        )
+    } else {
+        format!(
+            "Índice de #{}: {total} {}",
+            o.etiqueta,
+            if total == 1 { "nota" } else { "notas" }
+        )
+    };
+    if !r.hijas.is_empty() {
+        let n = r.hijas.len();
+        s.push_str(&format!(
+            " en {n} {}",
+            if n == 1 {
+                "sub-etiqueta"
+            } else {
+                "sub-etiquetas"
+            }
+        ));
+    }
+    for e in r.notas.iter().take(5) {
+        s.push_str(&format!("\n• {}", e.nombre));
+    }
+    if r.notas.len() > 5 {
+        s.push_str(&format!("\n… y {} más", r.notas.len() - 5));
+    }
+    s
 }

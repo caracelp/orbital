@@ -123,6 +123,7 @@ fn us1_ventana_portada_navegacion_e_indice() {
             texto: nota.to_owned(),
             ruta: ruta.clone(),
             vault: Some(vault.clone()),
+            indice: None,
         })
     });
     onstage.presentar();
@@ -240,6 +241,7 @@ fn espacio_en_el_reproductor_no_pasa_de_diapositiva() {
             texto: nota.to_owned(),
             ruta: ruta.clone(),
             vault: Some(vault.clone()),
+            indice: None,
         })
     });
     onstage.presentar();
@@ -312,6 +314,7 @@ fn diagrama_en_diapositiva() {
             texto: nota.to_owned(),
             ruta: ruta.clone(),
             vault: Some(vault.clone()),
+            indice: None,
         })
     });
     onstage.presentar();
@@ -397,6 +400,7 @@ fn carrusel_en_diapositiva() {
             texto: nota.to_owned(),
             ruta: ruta.clone(),
             vault: Some(vault.clone()),
+            indice: None,
         })
     });
     onstage.presentar();
@@ -502,6 +506,7 @@ fn galeria_en_diapositiva() {
             texto: nota.to_owned(),
             ruta: ruta.clone(),
             vault: Some(vault.clone()),
+            indice: None,
         })
     });
     onstage.presentar();

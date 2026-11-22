@@ -55,6 +55,7 @@ impl Editor {
         let from_note = note.path.clone();
         i.reader.set_is_missing(move |url| {
             if url.starts_with("orbital-tag:")
+                || url.starts_with(crate::editor::reader::NOTA_NUEVA)
                 || url.starts_with("http://")
                 || url.starts_with("https://")
                 || url.starts_with("mailto:")

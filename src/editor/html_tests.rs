@@ -1176,6 +1176,7 @@ fn exportar_carrusel_en_webkit() {
             reproducibles: false,
             carrusel: Some(&resolver),
             galeria: None,
+            generado: None,
         };
         let html = crate::export::html_md_con(nota, "n.md", &m);
         assert_eq!(html.matches("<img ").count(), 3, "{html}");

@@ -98,6 +98,7 @@ impl OnStage {
             let texto = fuente.texto.clone();
             let ruta = fuente.ruta.clone();
             let vault = fuente.vault.clone();
+            let busqueda = fuente.indice.clone();
             async move {
                 gio::spawn_blocking(move || {
                     let yaml = orbital_vault::props::markdown::locate(&texto)
@@ -119,10 +120,7 @@ impl OnStage {
                         .filter(|r| *r < diapositivas.len());
                     let prepared = real.map(|r| {
                         let slice = diapositivas[r].texto.as_str();
-                        match &vault {
-                            Some(v) => Prepared::with_vault(slice, v, &ruta, &yaml),
-                            None => Prepared::new(slice, &yaml),
-                        }
+                        super::preparar(slice, vault.as_ref(), &ruta, &yaml, busqueda.as_ref())
                     });
                     (diapositivas, yaml, portada, indice, prepared)
                 })
@@ -158,6 +156,7 @@ impl OnStage {
                 let vault = Arc::downgrade(&v);
                 i.reader.set_is_missing(move |url| {
                     if url.starts_with("orbital-tag:")
+                        || url.starts_with(crate::editor::reader::NOTA_NUEVA)
                         || url.starts_with("http://")
                         || url.starts_with("https://")
                         || url.starts_with("mailto:")
@@ -203,6 +202,7 @@ impl OnStage {
             return;
         };
         let vault = fuente.vault.clone();
+        let indice = fuente.indice.clone();
         let ruta = fuente.ruta.clone();
         let yaml = i.yaml.borrow().clone();
         let generation = i.generation.get() + 1;
@@ -213,10 +213,8 @@ impl OnStage {
         let this = self.clone();
         glib::spawn_future_local(async move {
             let Ok(prepared) = gio::spawn_blocking(move || {
-                let prepared = match &vault {
-                    Some(v) => Prepared::with_vault(&texto, v, &ruta, &yaml),
-                    None => Prepared::new(&texto, &yaml),
-                };
+                let prepared =
+                    super::preparar(&texto, vault.as_ref(), &ruta, &yaml, indice.as_ref());
                 // Las fórmulas, fuera del hilo de GTK (050).
                 crate::formulas::precalentar(Reader::claves_formulas(&prepared.doc, &estilo));
                 // Los diagramas (058).

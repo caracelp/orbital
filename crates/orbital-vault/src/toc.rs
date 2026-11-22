@@ -364,6 +364,69 @@ impl TocOptions {
     }
 }
 
+/// HTML estático de la tabla (exportar, 036): el título como texto y la lista anidada (o el
+/// primer nivel en una línea), sin enlaces (las páginas exportadas no tienen anclas). Sin
+/// encabezados, el aviso o nada.
+pub fn html(o: &TocOptions, headings: &[(u8, &str)]) -> String {
+    let esc = crate::bloque_medios::escapar;
+    let elegidos: Vec<(u8, &str)> = o
+        .select(headings)
+        .into_iter()
+        .map(|i| headings[i])
+        .collect();
+    let mut s = String::from("<nav class=\"orbital-toc\">");
+    if !o.title.is_empty() {
+        s.push_str(&format!("<p>{}</p>", esc(&o.title)));
+    }
+    if elegidos.is_empty() {
+        if o.hide_when_empty {
+            return String::new();
+        }
+        s.push_str("<p><em>Tabla de contenidos: no hay encabezados</em></p></nav>");
+        return s;
+    }
+    if o.style == TocStyle::InlineFirstLevel {
+        let partes: Vec<String> = elegidos.iter().map(|(_, t)| esc(t)).collect();
+        s.push_str(&format!("<p>{}</p></nav>", partes.join(" | ")));
+        return s;
+    }
+    let (abre, cierra) = if o.style == TocStyle::NestedOrderedList {
+        ("<ol>", "</ol>")
+    } else {
+        ("<ul>", "</ul>")
+    };
+    // Una pila de niveles abiertos: más profundo abre una sublista dentro del último ítem.
+    let mut pila: Vec<u8> = Vec::new();
+    for (nivel, t) in &elegidos {
+        while pila.len() > 1
+            && pila.last().is_some_and(|l| l > nivel)
+            && pila[pila.len() - 2] >= *nivel
+        {
+            pila.pop();
+            s.push_str("</li>");
+            s.push_str(cierra);
+        }
+        match pila.last() {
+            None => {
+                s.push_str(abre);
+                pila.push(*nivel);
+            }
+            Some(l) if l < nivel => {
+                s.push_str(abre);
+                pila.push(*nivel);
+            }
+            _ => s.push_str("</li>"),
+        }
+        s.push_str(&format!("<li>{}", esc(t)));
+    }
+    while pila.pop().is_some() {
+        s.push_str("</li>");
+        s.push_str(cierra);
+    }
+    s.push_str("</nav>");
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +563,24 @@ mod tests {
             ..TocDefaults::default()
         };
         assert_eq!(bloque(&base, &con_titulo), "```toc\ntitle: ''\n```");
+    }
+
+    #[test]
+    fn html_anidado_y_en_linea() {
+        let h = [(1, "A"), (2, "B <x>"), (3, "C"), (2, "D"), (1, "E")];
+        assert_eq!(
+            html(&parse_options("").unwrap(), &h),
+            "<nav class=\"orbital-toc\"><ul><li>A<ul><li>B &lt;x&gt;<ul><li>C</li></ul></li><li>D</li></ul></li><li>E</li></ul></nav>"
+        );
+        assert_eq!(
+            html(&parse_options("style: linea-primer-nivel").unwrap(), &h),
+            "<nav class=\"orbital-toc\"><p>A | E</p></nav>"
+        );
+        assert!(html(&parse_options("style: lista-ordenada").unwrap(), &h).contains("<ol>"));
+        assert_eq!(
+            html(&parse_options("hideWhenEmpty: true").unwrap(), &[]),
+            ""
+        );
     }
 
     fn sel(o: &str, h: &[(u8, &str)]) -> Vec<usize> {

@@ -38,7 +38,11 @@ mod graficos_tests;
 mod guardado;
 pub mod html;
 mod ids_bloque;
+#[cfg(test)]
+#[path = "indice_tests.rs"]
+mod indice_tests;
 mod insertar_galeria;
+mod insertar_indice;
 mod insertar_toc;
 mod medicion;
 pub mod multi_cursor;

@@ -250,12 +250,29 @@ impl Window {
                 v.resolver_galeria(r, g);
             }
         };
+        // Los índices por etiqueta y las tablas de contenidos (036), estáticos: del índice en
+        // memoria y del texto de la nota. Cada nota, como `file://` (como los medios: la
+        // página exportada puede ir a cualquier carpeta).
+        let indice = self.0.search_index.borrow().clone();
+        let href = |p: &RelPath| -> String {
+            use gtk::gio::prelude::FileExt;
+            vault.as_ref().map_or_else(String::new, |v| {
+                gtk::gio::File::for_path(p.to_path(v.root()))
+                    .uri()
+                    .to_string()
+            })
+        };
+        let generado = |lang: &str, cuerpo: &str| {
+            let idx = indice.as_ref().and_then(|i| i.read().ok());
+            crate::editor::reader::generado_html(lang, cuerpo, text, idx.as_deref(), &href)
+        };
         let medios = crate::export::Medios {
             carpeta,
             adjunto: Some(&adjunto),
             reproducibles,
             carrusel: Some(&carrusel),
             galeria: Some(&galeria),
+            generado: Some(&generado),
         };
         let es_html = text.trim_start().starts_with("<!doctype html>")
             || text.trim_start().starts_with("<!DOCTYPE html>")

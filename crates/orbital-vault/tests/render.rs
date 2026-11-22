@@ -283,16 +283,14 @@ fn indice_codeblock_becomes_generated_with_tag() {
     match &doc.blocks[1].kind {
         BlockKind::Generated(g) => {
             assert_eq!(g.kind, orbital_vault::render::GeneratedKind::Indice);
-            let tag = g
-                .params
-                .iter()
-                .find(|e| e.key == "tag")
-                .and_then(|e| e.value.as_text());
-            assert_eq!(tag, Some("#fisica"));
+            assert_eq!(g.raw.trim(), "tag: #fisica");
             assert_eq!(&text[g.source.clone()], "```indice\ntag: #fisica\n```");
         }
         other => panic!("esperaba Generated, era {other:?}"),
     }
+    // Sin etiqueta también es generado: la vista muestra el error en su lugar (036).
+    let doc = render_markdown("```indice\n```\n");
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Generated(_)));
 }
 
 #[test]
@@ -313,13 +311,12 @@ fn toc_codeblock_becomes_generated_and_accepts_params() {
 }
 
 #[test]
-fn indice_sin_tag_y_toc_vacio_son_comunes_o_validos() {
-    // indice sin tag: codeblock común.
+fn indice_sin_tag_y_toc_vacio_son_generados() {
+    // indice sin etiqueta o con un cuerpo raro: generado (la vista muestra el error, 036).
     let doc = render_markdown("```indice\nsin tag\n```\n");
-    assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
-    // indice con yaml inválido: codeblock común.
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Generated(_)));
     let doc = render_markdown("```indice\ntag: [\n```\n");
-    assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { .. }));
+    assert!(matches!(&doc.blocks[0].kind, BlockKind::Generated(_)));
     // toc sin parámetros: bloque generado válido (todo por defecto).
     let doc = render_markdown("```toc\n```\n");
     assert!(matches!(&doc.blocks[0].kind, BlockKind::Generated(_)));

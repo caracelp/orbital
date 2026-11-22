@@ -159,6 +159,15 @@ impl Window {
             simple("insertar-toc", |w| {
                 w.0.code_editor.insertar_toc();
             }),
+            simple("insertar-indice", |w| {
+                w.0.code_editor.insertar_indice();
+            }),
+            simple("nota-nueva-etiqueta", |w| {
+                match w.0.code_editor.etiqueta_del_indice() {
+                    Some(tag) => w.ask_new_note_tagged(tag),
+                    None => w.toast("Poné el cursor en un bloque indice con una etiqueta"),
+                }
+            }),
             simple("card-link", Window::card_link),
             simple("onstage", Window::presentar),
             simple("importar-md", Window::importar_md),
@@ -499,6 +508,18 @@ impl Window {
         ("Insertar gráfico", "insertar-grafico", None, true),
         ("Insertar galería…", "insertar-galeria", None, true),
         ("Insertar índice…", "insertar-toc", None, true),
+        (
+            "Insertar índice de etiqueta…",
+            "insertar-indice",
+            None,
+            true,
+        ),
+        (
+            "Nota nueva con esta etiqueta",
+            "nota-nueva-etiqueta",
+            None,
+            true,
+        ),
         (
             "Editar o insertar ecuación",
             "ecuacion",

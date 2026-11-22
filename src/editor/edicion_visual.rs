@@ -110,15 +110,22 @@ impl Editor {
 
     /// Los carruseles de la nota `.html` (032): sus medios se resuelven contra la bóveda en
     /// segundo plano y la Visual los muestra como una grilla estática (la navegación es de la
-    /// Lectura). Las galerías (033) van por el mismo camino, como su grilla estática. Sin
-    /// carruseles ni galerías, nada.
+    /// Lectura). Las galerías (033) y los índices por etiqueta (036) van por el mismo camino,
+    /// estáticos. Sin ninguno de ellos, nada.
     pub(super) fn visual_carruseles(&self) {
         let i = &self.0;
         let b = &i.buffer;
         let text = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
-        if !["carrusel", "media-slider", "galeria", "galería", "gallery"]
-            .iter()
-            .any(|l| text.contains(&format!("language-{l}")))
+        if ![
+            "carrusel",
+            "media-slider",
+            "galeria",
+            "galería",
+            "gallery",
+            "indice",
+        ]
+        .iter()
+        .any(|l| text.contains(&format!("language-{l}")))
         {
             i.visual.set_carruseles(&[]);
             return;
@@ -127,6 +134,7 @@ impl Editor {
             return;
         };
         let this = self.clone();
+        let indice = i.search_index.borrow().clone();
         glib::spawn_future_local(async move {
             let desde = from.clone();
             let result = gio::spawn_blocking(move || {
@@ -155,6 +163,22 @@ impl Editor {
                             ))
                         };
                         out.push((b.fuente, orbital_vault::galeria::html(&g, &src, true)));
+                    }
+                }
+                // Los índices por etiqueta (036): la lista estática, con enlaces relativos.
+                let idx = indice.as_ref().and_then(|x| x.read().ok());
+                let href = |p: &orbital_vault::RelPath| {
+                    orbital_vault::carrusel::enlace_relativo(dir, p.as_str())
+                };
+                for b in orbital_graficos::html::bloques(body, "indice") {
+                    if let Some(html) = crate::editor::reader::generado_html(
+                        "indice",
+                        &b.fuente,
+                        "",
+                        idx.as_deref(),
+                        &href,
+                    ) {
+                        out.push((b.fuente, html));
                     }
                 }
                 out

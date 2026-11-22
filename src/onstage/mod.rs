@@ -53,6 +53,33 @@ pub struct Fuente {
     pub texto: String,
     pub ruta: RelPath,
     pub vault: Option<Arc<orbital_vault::Vault>>,
+    /// El índice de búsqueda de la bóveda: los bloques generados (`toc`, `indice`, `consulta`)
+    /// se completan como en la Lectura, sin interacción (036).
+    pub indice: Option<Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>,
+}
+
+/// Una diapositiva preparada fuera del hilo de GTK: transclusiones y bloques generados.
+pub(crate) fn preparar(
+    texto: &str,
+    vault: Option<&Arc<orbital_vault::Vault>>,
+    ruta: &RelPath,
+    yaml: &[orbital_vault::props::PropEntry],
+    indice: Option<&Arc<std::sync::RwLock<orbital_vault::SearchIndex>>>,
+) -> Prepared {
+    let mut p = match vault {
+        Some(v) => Prepared::with_vault(texto, v, ruta, yaml),
+        None => Prepared::new(texto, yaml),
+    };
+    let idx = indice.and_then(|i| i.read().ok());
+    crate::editor::reader::complete_generated_con(
+        &mut p.doc,
+        &mut p.hashes,
+        idx.as_deref(),
+        vault.map(|v| v.root()),
+        Some(ruta),
+        false,
+    );
+    p
 }
 
 type ProveedorFn = Box<dyn Fn() -> Option<Fuente>>;
