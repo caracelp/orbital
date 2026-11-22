@@ -420,6 +420,8 @@ generado; en Código queda el texto plano.
   que escribe el bloque manda; `title: ''` deja sin título aunque Preferencias tenga uno. El
   comando «Insertar índice…» de la paleta arma el bloque en el cursor con las opciones elegidas y
   escribe solo las que difieren de Preferencias (`style` con el nombre en español).
+  En OnStage se ve como en Lectura (con los encabezados de la diapositiva) y al exportar, como
+  una lista estática sin enlaces (036).
 
   Un encabezado que `include` o `exclude` deja afuera se lleva a sus subencabezados; los
   encabezados vacíos no entran. Un valor inválido (por ejemplo `style: arbol`) muestra el error en
