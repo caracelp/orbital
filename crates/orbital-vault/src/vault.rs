@@ -174,6 +174,59 @@ impl Vault {
         &self.root
     }
 
+    /// Suma a las entradas archivos que no están en la bóveda (lo «solo en Drive», 061b): su
+    /// ruta, tamaño y fecha. Las carpetas que falten se agregan también. Lo que ya está en el
+    /// disco no se duplica. La app registra dónde está cada copia en [`crate::ubicacion`].
+    pub fn agregar_remotos(&mut self, remotos: &[(RelPath, u64, Option<std::time::SystemTime>)]) {
+        if remotos.is_empty() {
+            return;
+        }
+        let structured =
+            self.layout.raw == Presence::Present || self.layout.wiki == Presence::Present;
+        let mut hay: std::collections::HashSet<RelPath> =
+            self.entries.iter().map(|e| e.path.clone()).collect();
+        for (path, size, mtime) in remotos {
+            if hay.contains(path) || path.as_str().split('/').any(|c| c.starts_with('.')) {
+                continue;
+            }
+            // Las carpetas de más arriba, si faltan.
+            let mut acum = String::new();
+            let partes: Vec<&str> = path.as_str().split('/').collect();
+            for parte in &partes[..partes.len() - 1] {
+                if !acum.is_empty() {
+                    acum.push('/');
+                }
+                acum.push_str(parte);
+                if let Ok(dir) = RelPath::new(&acum)
+                    && hay.insert(dir.clone())
+                {
+                    let zone = scan::zone_of(&dir, structured);
+                    self.entries.push(Entry {
+                        read_only: zone == crate::Zone::Raw,
+                        path: dir,
+                        kind: crate::EntryKind::Folder,
+                        zone,
+                        size: 0,
+                        mtime: None,
+                    });
+                }
+            }
+            let zone = scan::zone_of(path, structured);
+            let kind = crate::EntryKind::classify(path.file_name(), zone, partes.len() == 1);
+            hay.insert(path.clone());
+            self.entries.push(Entry {
+                read_only: Entry::compute_read_only(kind, zone, *size),
+                path: path.clone(),
+                kind,
+                zone,
+                size: *size,
+                mtime: *mtime,
+            });
+        }
+        self.entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        self.names = std::sync::OnceLock::new();
+    }
+
     /// Las notas de `wiki/` cuyo nombre sin extensión es `stem` (en minúsculas).
     pub(crate) fn notes_named(&self, stem: &str) -> impl Iterator<Item = &Entry> {
         let names = self.names.get_or_init(|| {

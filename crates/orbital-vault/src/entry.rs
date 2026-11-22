@@ -63,8 +63,18 @@ impl RelPath {
         self.0.split('/').next().unwrap_or(&self.0)
     }
 
-    /// Ruta absoluta dentro de `root`.
+    /// Ruta absoluta del archivo: dentro de `root`, o la copia fuera de la bóveda si es «solo en
+    /// Drive» y la app la registró ([`crate::ubicacion`]).
     pub fn to_path(&self, root: &Path) -> PathBuf {
+        if let Some(p) = crate::ubicacion::resolver(root, &self.0) {
+            return p;
+        }
+        self.en_boveda(root)
+    }
+
+    /// Ruta absoluta dentro de `root`, aunque el archivo viva fuera (para carpetas vecinas y
+    /// rutas relativas a la nota).
+    pub fn en_boveda(&self, root: &Path) -> PathBuf {
         let mut p = root.to_path_buf();
         for c in self.0.split('/') {
             p.push(c);

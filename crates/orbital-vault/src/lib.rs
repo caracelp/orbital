@@ -51,6 +51,7 @@ pub mod tarjetas;
 pub mod template;
 pub mod toc;
 pub mod transclusion;
+pub mod ubicacion;
 pub mod vault;
 pub mod write;
 
