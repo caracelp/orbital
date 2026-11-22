@@ -37,7 +37,7 @@ jobs:
             gst-plugins-good \
             gst-libav \
             openbox \
-            weston \
+            xcompmgr \
             rust
 
       - uses: actions/checkout@v5
@@ -54,25 +54,14 @@ jobs:
           cargo build -q --tests --bin orbital
           cat > /tmp/diag.sh <<'FIN'
           openbox >/tmp/openbox.log 2>&1 &
+          xcompmgr >/tmp/xcompmgr.log 2>&1 &
           sleep 2
-          echo "=== X11 + openbox"
+          echo "=== X11 + openbox + xcompmgr"
           timeout 300 cargo test -q --bin orbital window::tests::ventana_tests::abre_maximizada_y_vuelve_al_tamano_guardado -- --ignored --exact 2>&1 | grep -v portal | tail -15
+          tools/pruebas-gtk.sh 2>&1 | grep -v portal | grep -A25 "FALLA\|Pruebas GTK"
+          cat /tmp/xcompmgr.log
           FIN
           dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" sh /tmp/diag.sh
-          cat > /tmp/diag2.sh <<'FIN'
-          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
-          mkdir -p -m 700 $XDG_RUNTIME_DIR
-          unset DISPLAY
-          weston --backend=headless --width=1920 --height=1080 --socket=wayland-1 >/tmp/weston.log 2>&1 &
-          for i in $(seq 50); do [ -S $XDG_RUNTIME_DIR/wayland-1 ] && break; sleep 0.2; done
-          export WAYLAND_DISPLAY=wayland-1
-          for p in editor::ecuaciones_tests::editor_de_ecuaciones_en_codigo editor::galeria_tests::galeria_cuatro_layouts_y_visor editor::galeria_tests::galeria_teclado_y_paginas editor::html::webkit_tests::medios_en_visual_html window::tests::ventana_tests::abre_maximizada_y_vuelve_al_tamano_guardado; do
-            echo "=== weston $p"
-            timeout 300 cargo test -q --bin orbital "$p" -- --ignored --exact 2>&1 | grep -v portal | tail -15
-          done
-          tail -30 /tmp/weston.log
-          FIN
-          dbus-run-session -- sh /tmp/diag2.sh
 
       - name: Formato
         if: false
