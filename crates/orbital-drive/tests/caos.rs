@@ -450,9 +450,8 @@ fn caos_nunca_pierde_nada() {
     let marcas = (a.marcadores().len(), b.marcadores().len());
     let d = srv.datos();
     eprintln!(
-        "caos: {ops} operaciones, {} versiones vigiladas, {exitos} ciclos bien, {fallos} cortados, {cortes} fallas provocadas, {} solo en Drive al final (A, B), {} pedidos, {} tramos de subida cortados y {} subidas retomadas",
+        "caos: {ops} operaciones, {} versiones vigiladas, {exitos} ciclos bien, {fallos} cortados, {cortes} fallas provocadas, {marcas:?} solo en Drive al final (A, B), {} pedidos, {} tramos de subida cortados y {} subidas retomadas",
         debe.len(),
-        format!("{marcas:?}"),
         d.pedidos,
         d.cortadas,
         d.reanudadas

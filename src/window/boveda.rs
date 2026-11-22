@@ -279,6 +279,7 @@ impl Window {
                 .borrow()
                 .as_ref()
                 .is_some_and(|v| v.entries().iter().all(|e| e.kind == EntryKind::Folder));
+            empty.set_icon_name(Some("text-x-generic-symbolic"));
             if vault_empty {
                 empty.set_title("La bóveda todavía no tiene notas");
                 empty.set_description(Some(

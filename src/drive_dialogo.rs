@@ -1,5 +1,6 @@
-//! Diálogo «Google Drive» (061a): conectar la bóveda (con el proyecto de Google Cloud de la
-//! usuaria), ver el estado, los conflictos y las reglas «solo en este equipo».
+//! Diálogo «Google Drive» (061a, 061b): conectar la bóveda (con el proyecto de Google Cloud de la
+//! usuaria), ver el estado, la cuota, los conflictos, qué pasa con lo nuevo y las reglas de
+//! ubicación (solo en este equipo, solo en Drive, en ambos).
 //!
 //! El id y el secreto del cliente los escribe la usuaria acá y van al llavero del sistema junto
 //! con el token de renovación; nunca a la bóveda ni al repositorio.
@@ -13,15 +14,23 @@ use adw::prelude::*;
 use gtk::glib;
 use orbital_drive::llavero::{self, Cliente};
 use orbital_drive::motor::Destino;
+use orbital_drive::reglas::Ubicacion;
 use orbital_drive::{Conexion, InfoConflicto, Resumen};
 
 /// Lo que el diálogo le pide a la ventana.
 pub enum Pedido {
-    Conectar { cuenta: String, destino: Destino },
+    Conectar {
+        cuenta: String,
+        destino: Destino,
+    },
     Ahora,
     Desconectar,
     PonerLocal(String, bool),
     Resolver(String),
+    /// Quitar una regla de este equipo («en ambos» / «solo en Drive»).
+    QuitarRegla(String),
+    /// Qué pasa con lo nuevo de este equipo y con lo nuevo en Drive.
+    Predeterminados(Ubicacion, Ubicacion),
 }
 
 /// Lo que el diálogo muestra.
@@ -35,6 +44,20 @@ pub struct Datos {
     pub detenido: Option<String>,
     pub conflictos: Vec<InfoConflicto>,
     pub cliente: Option<Cliente>,
+    /// Las reglas de ubicación vigentes (compartidas y de este equipo).
+    pub reglas: Vec<(String, Ubicacion)>,
+}
+
+/// Bytes en GB o MB, para la cuota.
+fn tamano(b: u64) -> String {
+    const GB: f64 = (1u64 << 30) as f64;
+    const MB: f64 = (1u64 << 20) as f64;
+    let b = b as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB).replace('.', ",")
+    } else {
+        format!("{:.0} MB", (b / MB).max(1.0))
+    }
 }
 
 /// Texto corto del estado (barra de estado y diálogo).
@@ -139,6 +162,47 @@ fn estado(
         (None, None) => "Empezando…".into(),
     };
     g.add(&fila_texto("Estado", &texto));
+    if let Some(c) = datos.resumen.as_ref().and_then(|r| r.cuota) {
+        let (texto, fraccion) = match c.limite {
+            Some(l) if l > 0 => (
+                format!(
+                    "{} de {} usados ({} libres)",
+                    tamano(c.usado),
+                    tamano(l),
+                    tamano(l.saturating_sub(c.usado))
+                ),
+                Some(c.usado as f64 / l as f64),
+            ),
+            _ => (format!("{} usados, sin límite", tamano(c.usado)), None),
+        };
+        let fila = fila_texto("Espacio en Google Drive", &texto);
+        if let Some(f) = fraccion {
+            let barra = gtk::LevelBar::builder()
+                .min_value(0.0)
+                .max_value(1.0)
+                .value(f.clamp(0.0, 1.0))
+                .valign(gtk::Align::Center)
+                .width_request(120)
+                .build();
+            barra.update_property(&[gtk::accessible::Property::Label(
+                "Espacio usado en Google Drive",
+            )]);
+            fila.add_suffix(&barra);
+        }
+        g.add(&fila);
+    }
+    if let Some(r) = &datos.resumen
+        && r.solo_drive > 0
+    {
+        g.add(&fila_texto(
+            "Solo en Drive",
+            &if r.solo_drive == 1 {
+                "1 archivo no ocupa lugar en este equipo".to_owned()
+            } else {
+                format!("{} archivos no ocupan lugar en este equipo", r.solo_drive)
+            },
+        ));
+    }
     let botones = gtk::Box::builder()
         .spacing(12)
         .halign(gtk::Align::End)
@@ -173,6 +237,9 @@ fn estado(
     });
     g.add(&botones);
     page.add(&g);
+    if let Some(r) = &datos.resumen {
+        lo_nuevo(page, r, pedir);
+    }
 
     if !datos.conflictos.is_empty() {
         let gc = adw::PreferencesGroup::builder()
@@ -380,41 +447,110 @@ fn conectar(
 }
 
 /// Reglas «solo en este equipo» (compartidas con los otros equipos, decisión 2).
+/// Qué pasa con lo nuevo (061b): lo que se crea en este equipo y lo que aparece en Drive.
+fn lo_nuevo(page: &adw::PreferencesPage, r: &Resumen, pedir: &Rc<dyn Fn(Pedido)>) {
+    let g = adw::PreferencesGroup::builder()
+        .title("Lo nuevo")
+        .description("Para lo que no tiene una ubicación elegida en el explorador. Vale solo para este equipo.")
+        .build();
+    let locales = [Ubicacion::Ambos, Ubicacion::SoloDrive, Ubicacion::Local];
+    let remotos = [Ubicacion::Ambos, Ubicacion::SoloDrive];
+    let modelo =
+        |us: &[Ubicacion]| gtk::StringList::new(&us.iter().map(|u| u.texto()).collect::<Vec<_>>());
+    let local = adw::ComboRow::builder()
+        .title("Lo que se crea en este equipo")
+        .model(&modelo(&locales))
+        .selected(
+            locales
+                .iter()
+                .position(|u| *u == r.nuevo_local)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let remoto = adw::ComboRow::builder()
+        .title("Lo que aparece nuevo en Drive")
+        .subtitle("«Solo en Drive»: no se baja solo; se abre con conexión")
+        .model(&modelo(&remotos))
+        .selected(
+            remotos
+                .iter()
+                .position(|u| *u == r.nuevo_remoto)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let avisar = {
+        let (p, l, rr) = (pedir.clone(), local.clone(), remoto.clone());
+        move || {
+            let a = locales[(l.selected() as usize).min(locales.len() - 1)];
+            let b = remotos[(rr.selected() as usize).min(remotos.len() - 1)];
+            p(Pedido::Predeterminados(a, b));
+        }
+    };
+    let a2 = avisar.clone();
+    local.connect_selected_notify(move |_| a2());
+    remoto.connect_selected_notify(move |_| avisar());
+    g.add(&local);
+    g.add(&remoto);
+    page.add(&g);
+}
+
 fn reglas(page: &adw::PreferencesPage, datos: &Datos, pedir: &Rc<dyn Fn(Pedido)>) {
     let g = adw::PreferencesGroup::builder()
-        .title("Solo en este equipo")
-        .description("Lo que está acá nunca se sube a Drive (en ningún equipo). Una nota se puede marcar desde su menú.")
+        .title("Ubicación")
+        .description("Lo elegido en el explorador o en el menú de la nota. «Solo en este equipo» vale para todos los equipos; «Solo en Drive» y «En ambos», solo para este. Una carpeta vale para lo que tiene adentro, salvo lo que tenga su propia ubicación.")
         .build();
-    let c = datos.conexion.clone().unwrap_or_default();
-    if c.solo_local.is_empty() {
+    let mut reglas = datos.reglas.clone();
+    if datos.reglas.is_empty()
+        && let Some(c) = &datos.conexion
+    {
+        reglas = c
+            .solo_local
+            .iter()
+            .map(|r| (r.clone(), Ubicacion::Local))
+            .collect();
+    }
+    if reglas.is_empty() {
         g.add(
             &adw::ActionRow::builder()
-                .title("Nada: toda la bóveda se sincroniza")
+                .title("Nada elegido: todo está en este equipo y en Drive")
                 .build(),
         );
     }
-    for r in &c.solo_local {
-        let fila = adw::ActionRow::builder().title(r).build();
-        fila.add_prefix(&gtk::Image::from_icon_name("computer-symbolic"));
+    for (r, u) in &reglas {
+        let fila = adw::ActionRow::builder()
+            .title(r)
+            .subtitle(u.texto())
+            .build();
+        let icono = match u {
+            Ubicacion::Local => "computer-symbolic",
+            Ubicacion::SoloDrive => "folder-remote-symbolic",
+            Ubicacion::Ambos => "weather-overcast-symbolic",
+        };
+        fila.add_prefix(&gtk::Image::from_icon_name(icono));
         let quitar = gtk::Button::builder()
             .icon_name("list-remove-symbolic")
             .valign(gtk::Align::Center)
-            .tooltip_text("Volver a sincronizar")
+            .tooltip_text("Quitar esta ubicación")
             .css_classes(["flat"])
             .build();
         quitar.update_property(&[gtk::accessible::Property::Label(&format!(
-            "Volver a sincronizar {r}"
+            "Quitar la ubicación de {r}: {}",
+            u.texto()
         ))]);
-        let (p, r2, fila2, g2) = (pedir.clone(), r.clone(), fila.clone(), g.clone());
+        let (p, r2, u2, fila2, g2) = (pedir.clone(), r.clone(), *u, fila.clone(), g.clone());
         quitar.connect_clicked(move |_| {
-            p(Pedido::PonerLocal(r2.clone(), false));
+            if u2 == Ubicacion::Local {
+                p(Pedido::PonerLocal(r2.clone(), false));
+            } else {
+                p(Pedido::QuitarRegla(r2.clone()));
+            }
             g2.remove(&fila2);
         });
         fila.add_suffix(&quitar);
         g.add(&fila);
     }
     let agregar = gtk::Button::builder()
-        .label("Agregar una carpeta…")
+        .label("Solo en este equipo: agregar una carpeta…")
         .halign(gtk::Align::End)
         .margin_top(12)
         .build();

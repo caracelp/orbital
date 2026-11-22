@@ -1214,7 +1214,8 @@ impl Reader {
                 .base_dir
                 .as_ref()
                 .map(|d| d.join(&*ruta))
-                .filter(|p| p.is_file())
+                .map(|p| orbital_vault::ubicacion::redirigir(&p).unwrap_or(p))
+                .filter(|p| p.is_file() || crate::drive_remoto::es_remoto(p))
             {
                 Some(path) => {
                     s.medios_en_linea
@@ -1233,8 +1234,14 @@ impl Reader {
                 s.base_dir.as_ref().map(|d| d.join(&*ruta))
             })
             .flatten()
-            .filter(|p| p.is_file());
+            .map(|p| orbital_vault::ubicacion::redirigir(&p).unwrap_or(p))
+            .filter(|p| p.is_file() || crate::drive_remoto::es_remoto(p));
         match local {
+            Some(path) if !path.is_file() => {
+                // «Solo en Drive» sin copia todavía (061b): un marcador mientras baja.
+                let w = crate::drive_remoto::marcador_de_lugar(&path);
+                self.anchor(s, end, w);
+            }
             Some(path) => {
                 let pic = picture(&path, alt, self.0.width.get());
                 self.anchor(s, end, pic);
@@ -1264,6 +1271,13 @@ impl Reader {
         tipo: orbital_vault::medios::Tipo,
         fragmento: Option<&str>,
     ) {
+        if !path.is_file() && crate::drive_remoto::es_remoto(path) {
+            // «Solo en Drive» sin copia todavía (061b): un marcador mientras baja, o que explica
+            // por qué no se ve sin conexión.
+            let w = crate::drive_remoto::marcador_de_lugar(path);
+            self.anchor(s, end, w);
+            return;
+        }
         let ancho = self.0.width.get();
         let w = match tipo {
             orbital_vault::medios::Tipo::Imagen => {

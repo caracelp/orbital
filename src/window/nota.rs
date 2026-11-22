@@ -30,6 +30,10 @@ impl Window {
                 }
                 editor.close();
             }
+            // «Solo en Drive» (061b): se baja antes, o se explica por qué no se abre.
+            if this.drive_antes_de_abrir(&entry) {
+                return;
+            }
             let is_note = Format::from_name(entry.path.file_name()).is_some();
             let loaded = if is_note {
                 let (v, p) = (vault.clone(), entry.path.clone());
@@ -454,6 +458,13 @@ impl Window {
         self.0.code_editor.set_on_saved(move |path, hash| {
             if let Some(i) = weak.upgrade() {
                 i.own_writes.borrow_mut().insert(path.clone(), hash);
+                // «Solo en Drive» (061b): se guardó en la caché, que el vigilante no ve.
+                let w = Window(i.clone());
+                if w.drive_es_marcador(path.as_str()) {
+                    w.drive_orden(orbital_drive::Orden::Cambios(vec![
+                        path.as_str().to_owned(),
+                    ]));
+                }
                 Window(i.clone()).update_graph(path.clone(), false);
                 Window(i).update_search_index(path.clone(), false);
             }

@@ -46,7 +46,8 @@ impl Editor {
         i.loading.set(false);
         i.view.set_editable(!note.read_only);
         i.generation.set(i.generation.get() + 1);
-        *i.base_dir.borrow_mut() = note.path.to_path(vault.root()).parent().map(Into::into);
+        // La carpeta de la nota en la bóveda (aunque sea «solo en Drive» y viva en la caché, 061b).
+        *i.base_dir.borrow_mut() = note.path.en_boveda(vault.root()).parent().map(Into::into);
         *i.session.borrow_mut() = Some(session);
         // El árbol de plegables (028), en otro hilo: hasta que llega, las flechitas usan la regla
         // local de cada línea.

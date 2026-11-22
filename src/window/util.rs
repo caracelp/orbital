@@ -173,6 +173,8 @@ pub(super) struct MenuItem {
     pub(super) action: String,
     pub(super) accel: String,
     pub(super) target: Option<String>,
+    /// Una opción de un grupo de elección (como la ubicación de Drive): marcada o no.
+    pub(super) marcado: Option<bool>,
 }
 
 impl MenuItem {
@@ -182,6 +184,7 @@ impl MenuItem {
             action: action.to_owned(),
             accel: accel.to_owned(),
             target: None,
+            marcado: None,
         }
     }
 }
@@ -197,6 +200,14 @@ pub(super) fn fill_menu(popover: &gtk::Popover, items: &[MenuItem]) {
             .hexpand(true)
             .build();
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
+        if let Some(m) = item.marcado {
+            // La elegida lleva la marca; las otras, el mismo lugar vacío (el texto no salta).
+            let marca = gtk::Image::from_icon_name("object-select-symbolic");
+            marca.set_opacity(if m { 1.0 } else { 0.0 });
+            marca.set_accessible_role(gtk::AccessibleRole::Presentation);
+            row.set_spacing(8);
+            row.append(&marca);
+        }
         row.append(&text);
         if !item.accel.is_empty() {
             let shortcut = gtk::Label::new(Some(&item.accel));
@@ -211,7 +222,13 @@ pub(super) fn fill_menu(popover: &gtk::Popover, items: &[MenuItem]) {
         if let Some(t) = &item.target {
             button.set_action_target_value(Some(&t.to_variant()));
         }
-        button.update_property(&[gtk::accessible::Property::Label(&item.label)]);
+        match item.marcado {
+            Some(true) => button.update_property(&[gtk::accessible::Property::Label(&format!(
+                "{}, elegida",
+                item.label
+            ))]),
+            _ => button.update_property(&[gtk::accessible::Property::Label(&item.label)]),
+        }
         if !item.accel.is_empty() {
             button.update_property(&[gtk::accessible::Property::KeyShortcuts(&item.accel)]);
         }
@@ -298,7 +315,9 @@ pub(super) async fn find_in_trash(original: &Path) -> Option<gio::File> {
 }
 
 /// Corre en segundo plano: árbol de la lista (sin las notas archivadas) y plantillas.
-pub(super) fn prepare(v: Vault) -> (Vault, Tree, NoteMeta) {
+pub(super) fn prepare(mut v: Vault) -> (Vault, Tree, NoteMeta) {
+    // Lo «solo en Drive» (061b), desde lo que anotó el motor: sin red.
+    super::drive::marcadores_al_escanear(&mut v);
     let meta = v.note_meta();
     let archived: std::collections::HashSet<&RelPath> = meta.archived.iter().collect();
     let visible: Vec<Entry> = v
