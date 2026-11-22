@@ -54,7 +54,7 @@ fn texts(e: &Embed) -> Vec<String> {
 }
 
 #[test]
-fn only_a_paragraph_of_its_own_is_a_transclusion() {
+fn transclusion_sola_o_dentro_de_un_parrafo() {
     let doc =
         render_markdown("![[nota]]\n\n![[nota#Sección|alias]]\n\nTexto con ![[nota]] adentro.\n");
     let kinds: Vec<_> = doc.blocks.iter().map(|b| &b.kind).collect();
@@ -67,7 +67,14 @@ fn only_a_paragraph_of_its_own_is_a_transclusion() {
         panic!()
     };
     assert_eq!(t.anchor.as_deref(), Some("Sección"));
-    assert!(matches!(kinds[2], BlockKind::Paragraph(_)));
+    // Dentro de un párrafo con texto, el párrafo se corta en la incrustación: el texto de antes,
+    // la transclusión y el de después (antes se perdía «Texto con !» y quedaba «nota]]»).
+    let BlockKind::Group(partes) = kinds[2] else {
+        panic!("{kinds:?}")
+    };
+    assert!(matches!(&partes[0].kind, BlockKind::Paragraph(_)));
+    assert!(matches!(&partes[1].kind, BlockKind::Transclusion(t) if t.target == "nota"));
+    assert!(matches!(&partes[2].kind, BlockKind::Paragraph(_)));
 }
 
 #[test]

@@ -608,6 +608,7 @@ fn parse_fragment(
     let mut blocks = parse_blocks(&ctx, &events, &mut i, None);
     extraer_ids(&mut blocks);
     promover_formulas(&mut blocks);
+    separar_incrustaciones(&ctx, &mut blocks);
     blocks
 }
 
@@ -643,6 +644,149 @@ fn promover_formulas(blocks: &mut [Block]) {
             _ => {}
         }
     }
+}
+
+/// Un párrafo con `![[…]]` entre otras cosas (varias incrustaciones en un renglón, o texto e
+/// incrustaciones) pasa a ser un [`BlockKind::Group`]: cada `![[…]]` es su propia
+/// [`BlockKind::Transclusion`] y lo que queda entre ellas, párrafos. Así cada imagen, audio,
+/// video, nota o archivo faltante se ve igual que solo en su párrafo, sin restos de texto. El
+/// párrafo que es solo `![[…]]` ya es una transclusión ([`transclusion`]). Va después de
+/// [`extraer_ids`]: el `^id` queda en el grupo.
+fn separar_incrustaciones(ctx: &Ctx, blocks: &mut [Block]) {
+    for b in blocks {
+        match &mut b.kind {
+            BlockKind::Paragraph(inlines) => {
+                if inlines
+                    .iter()
+                    .any(|i| matches!(i, Inline::Text(t) if t.contains("![[")))
+                    && let Some(partes) = partes_con_incrustaciones(ctx, &b.source, inlines)
+                {
+                    b.kind = BlockKind::Group(partes);
+                }
+            }
+            BlockKind::Quote(body)
+            | BlockKind::Callout { body, .. }
+            | BlockKind::Seccion { body, .. }
+            | BlockKind::Group(body) => separar_incrustaciones(ctx, body),
+            BlockKind::Flashcard(f) => {
+                separar_incrustaciones(ctx, &mut f.question);
+                separar_incrustaciones(ctx, &mut f.answer);
+            }
+            BlockKind::List { items, .. } => {
+                for item in items {
+                    separar_incrustaciones(ctx, &mut item.blocks);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Las partes de un párrafo cortado en cada `![[…]]` de su texto (no en código ni en enlaces).
+/// `None` si no hay ninguna incrustación válida.
+fn partes_con_incrustaciones(
+    ctx: &Ctx,
+    source: &Range<usize>,
+    inlines: &[Inline],
+) -> Option<Vec<Block>> {
+    let fuente = ctx.text.get(source.clone())?;
+    let mut partes: Vec<Block> = Vec::new();
+    let mut actual: Vec<Inline> = Vec::new();
+    // Desde dónde se busca la próxima incrustación en el fuente y dónde empieza el tramo actual.
+    let mut cursor = 0usize;
+    let mut inicio_tramo = 0usize;
+    let mut alguna = false;
+    let cerrar = |actual: &mut Vec<Inline>, rango: Range<usize>, partes: &mut Vec<Block>| {
+        let inl = recortar(std::mem::take(actual));
+        if !inl.is_empty() {
+            let start = source.start + rango.start;
+            partes.push(Block {
+                kind: BlockKind::Paragraph(inl),
+                line: ctx.line(start),
+                source: start..source.start + rango.end.max(rango.start),
+                id: None,
+            });
+        }
+    };
+    for inl in inlines {
+        let Inline::Text(t) = inl else {
+            actual.push(inl.clone());
+            continue;
+        };
+        let mut desde = 0;
+        let mut buscar = 0;
+        while let Some(r) = t[buscar..].find("![[") {
+            let ini = buscar + r;
+            let Some(fin_rel) = t[ini + 3..].find("]]") else {
+                break;
+            };
+            let fin = ini + 3 + fin_rel + 2;
+            let escrito = &t[ini..fin];
+            let inner = &escrito[3..escrito.len() - 2];
+            let target = crate::links::parse_link_target(inner);
+            // Dónde está en el fuente (para el rango y el renglón); escapado (`\![[`), es texto.
+            let en_fuente = fuente[cursor..].find(escrito).map(|p| cursor + p);
+            let valida = !inner.contains("[[")
+                && !inner.contains('\n')
+                && !target.path.is_empty()
+                && en_fuente.is_some_and(|p| p == 0 || fuente.as_bytes()[p - 1] != b'\\');
+            let Some(pos) = en_fuente.filter(|_| valida) else {
+                buscar = ini + 3;
+                continue;
+            };
+            if ini > desde {
+                actual.push(Inline::Text(t[desde..ini].to_owned()));
+            }
+            cerrar(&mut actual, inicio_tramo..pos, &mut partes);
+            let start = source.start + pos;
+            partes.push(Block {
+                kind: BlockKind::Transclusion(Transclusion {
+                    target: target.path,
+                    anchor: target.anchor.filter(|a| !a.is_empty()),
+                    content: Embed::Pending,
+                }),
+                line: ctx.line(start),
+                source: start..start + escrito.len(),
+                id: None,
+            });
+            alguna = true;
+            cursor = pos + escrito.len();
+            inicio_tramo = cursor;
+            desde = fin;
+            buscar = fin;
+        }
+        if desde < t.len() {
+            actual.push(Inline::Text(t[desde..].to_owned()));
+        }
+    }
+    if !alguna {
+        return None;
+    }
+    cerrar(&mut actual, inicio_tramo..fuente.len(), &mut partes);
+    Some(partes)
+}
+
+/// Un tramo de párrafo sin los saltos y espacios del principio y del final. Vacío si no tiene
+/// nada más que eso.
+fn recortar(mut inl: Vec<Inline>) -> Vec<Inline> {
+    let blanco = |i: &Inline| match i {
+        Inline::SoftBreak | Inline::HardBreak => true,
+        Inline::Text(t) => t.trim().is_empty(),
+        _ => false,
+    };
+    while inl.last().is_some_and(blanco) {
+        inl.pop();
+    }
+    let primero = inl.iter().position(|i| !blanco(i)).unwrap_or(inl.len());
+    inl.drain(..primero);
+    if let Some(Inline::Text(t)) = inl.first_mut() {
+        let sin = t.trim_start().len();
+        t.drain(..t.len() - sin);
+    }
+    if let Some(Inline::Text(t)) = inl.last_mut() {
+        t.truncate(t.trim_end().len());
+    }
+    inl
 }
 
 /// Un `$` de cierre seguido de un dígito no cierra una fórmula en línea (050): así `$5,$10` sigue
@@ -1186,12 +1330,18 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
 /// Expande texto plano separando los wikilinks `[[...]]` en nodos `Inline::Link`.
 fn expand_text_wikilinks(text: &str) -> Vec<Inline> {
     let mut out = Vec::new();
+    // `search_from`: desde dónde falta volcar el texto; `scan`: desde dónde se busca el próximo
+    // `[[`. Un `![[…]]` (incrustación) se saltea pero queda en el texto: antes se perdía junto
+    // con lo anterior (`![[a.png]] ![[b.png]]` dejaba solo «b.png]]»).
     let mut search_from = 0;
+    let mut scan = 0;
 
-    while let Some(rel_start) = text[search_from..].find("[[") {
-        let start_idx = search_from + rel_start;
+    while let Some(rel_start) = text[scan..].find("[[") {
+        let start_idx = scan + rel_start;
         if start_idx > 0 && text.as_bytes()[start_idx - 1] == b'!' {
-            search_from = start_idx + 2;
+            scan = text[start_idx + 2..]
+                .find("]]")
+                .map_or(start_idx + 2, |r| start_idx + 2 + r + 2);
             continue;
         }
 
@@ -1211,6 +1361,7 @@ fn expand_text_wikilinks(text: &str) -> Vec<Inline> {
                 children: vec![Inline::Text(visible)],
             });
             search_from = end_idx;
+            scan = end_idx;
         } else {
             break;
         }

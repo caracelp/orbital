@@ -1636,6 +1636,93 @@ fn medios_en_lectura() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// Varios embeds en un mismo renglón: `![[a.png]] ![[b.png]]`, una imagen Markdown con `%20`
+/// seguida de un video y un faltante debajo, y uno entre texto. Cada uno se ve (imagen,
+/// reproductor o «Archivo inexistente») y no queda ningún resto como «b.png]]».
+#[test]
+#[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]
+fn embeds_en_un_mismo_renglon() {
+    gtk::init().expect("el proceso necesita conectarse a una sesión GTK");
+    let root = std::env::temp_dir().join(format!(
+        "orbital-embeds-bóveda-ñ-{}",
+        glib::uuid_string_random()
+    ));
+    std::fs::create_dir_all(root.join("wiki/fotos ñ")).unwrap();
+    // Un PNG de 1×1.
+    let png = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49, 0x44,
+        0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0x00, 0x01, 0xff,
+        0x89, 0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    for f in ["esquema-uno.png", "esquema-dos.png", "fotos ñ/foto-0.png"] {
+        std::fs::write(root.join("wiki").join(f), png).unwrap();
+    }
+    std::fs::write(
+        root.join("wiki/clip.wav"),
+        crate::medios::tests::wav_de_prueba(1.0),
+    )
+    .unwrap();
+    let vault = orbital_vault::open(&root).unwrap();
+    let from = orbital_vault::RelPath::new("wiki/a.md").unwrap();
+    let text = "# Esquemas\n![[esquema-uno.png]] ![[esquema-dos.png]]\n\n# Fotos\n![](fotos%20ñ/foto-0.png) ![[clip.wav]]\n![[borrada.png]]\n\nAntes ![[esquema-uno.png]] y después.\n";
+    let prepared = Prepared::with_vault(text, &vault, &from, &[]);
+    glib::MainContext::default().block_on(async {
+        let reader = Reader::new();
+        let ventana = gtk::Window::builder()
+            .child(reader.widget())
+            .default_width(900)
+            .default_height(900)
+            .build();
+        ventana.present();
+        reader.render(prepared, || None, Some(root.join("wiki")));
+        esperar_volcado(&reader).await;
+        for _ in 0..200 {
+            if reader.0.pending.borrow().is_empty() {
+                break;
+            }
+            glib::timeout_future(Duration::from_millis(10)).await;
+        }
+        let buf = reader.buffer();
+        let visible = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        assert!(!visible.contains("]]"), "{visible:?}");
+        assert!(!visible.contains("%20"), "{visible:?}");
+        assert!(
+            visible.contains("Archivo inexistente: «borrada.png»"),
+            "{visible:?}"
+        );
+        assert!(visible.contains("Antes"), "{visible:?}");
+        assert!(visible.contains("y después."), "{visible:?}");
+        let mut it = buf.start_iter();
+        let mut anclados = Vec::new();
+        loop {
+            if let Some(a) = it.child_anchor() {
+                anclados.extend(a.widgets());
+            }
+            if !it.forward_char() {
+                break;
+            }
+        }
+        assert_eq!(
+            anclados.iter().filter(|w| w.is::<gtk::Picture>()).count(),
+            4,
+            "dos esquemas, la foto con %20 y el del texto: {anclados:?}"
+        );
+        assert_eq!(
+            anclados
+                .iter()
+                .filter(|w| w.has_css_class("orbital-medio"))
+                .count(),
+            1,
+            "el reproductor de clip.wav"
+        );
+        ventana.destroy();
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// Capturas de los medios en Lectura (057), de una nota de una bóveda dada: sin reproducir
 /// (`057-lectura.png`) y con todo sonando (`057-reproduciendo.png`). `ORBITAL_CAPTURA_DIR`,
 /// `ORBITAL_CAPTURA_BOVEDA` y `ORBITAL_CAPTURA_NOTA` (relativa a la bóveda).
