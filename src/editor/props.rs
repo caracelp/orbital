@@ -52,7 +52,7 @@ pub fn display(v: &PropValue) -> String {
     }
 }
 
-/// Arma las propiedades como en Obsidian: un título «Propiedades» que las pliega y una fila baja
+/// Arma las propiedades en forma de lista compacta: un título «Propiedades» que las pliega y una fila baja
 /// por propiedad (ícono del tipo, clave en gris y el valor, editable en el sitio). `custom` puede
 /// dar filas propias para una propiedad (por ejemplo, las fuentes con su botón para abrirlas); si
 /// devuelve `None`, se usa la fila de su tipo.

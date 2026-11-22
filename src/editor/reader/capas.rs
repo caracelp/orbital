@@ -162,7 +162,7 @@ impl Capa {
     }
 }
 
-/// Color e ícono de un tipo de callout, con los alias de Obsidian.
+/// Color e ícono de un tipo de callout, con sus alias (por ejemplo `summary` y `tldr`).
 pub(super) fn estilo_callout(kind: &CalloutKind) -> (Rgb, &'static str) {
     use crate::style::*;
     match kind {

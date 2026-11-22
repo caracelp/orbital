@@ -69,7 +69,7 @@ pub const DIFF_ADDED_BG: Rgb = Rgb(0x16, 0x29, 0x1f);
 pub const DIFF_ADDED_FG: Rgb = Rgb(0xa6, 0xf5, 0xc0);
 pub const DIFF_ADDED_MARKER: Rgb = Rgb(0x8f, 0xf0, 0xa4);
 
-// Callouts: los colores de Obsidian en modo oscuro, aclarados lo justo para que el título (en
+// Callouts: un color por tipo para el modo oscuro, aclarados lo justo para que el título (en
 // ese color) llegue a 4,5:1 sobre el fondo, que es el mismo color al 10 % sobre la vista.
 pub const CALLOUT_AZUL: Rgb = Rgb(0x4d, 0x9b, 0xff);
 pub const CALLOUT_CIAN: Rgb = Rgb(0x53, 0xdf, 0xdd);
@@ -237,7 +237,7 @@ fn css() -> String {
     out
 }
 
-/// Propiedades arriba de la vista formateada, como las de Obsidian: filas bajas sin caja, la clave
+/// Propiedades arriba de la vista formateada: filas bajas sin caja, la clave
 /// en gris con el ícono de su tipo y el valor editable sin borde hasta que se lo toca.
 fn props_css() -> String {
     format!(

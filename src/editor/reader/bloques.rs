@@ -918,7 +918,7 @@ impl Reader {
         s.buffer.insert(end, " ");
     }
 
-    /// Callout como el de Obsidian: el texto deja el lugar (márgenes, rellenos y un renglón bajo
+    /// Callout (caja de aviso con tipo): el texto deja el lugar (márgenes, rellenos y un renglón bajo
     /// al final) y `capas` dibuja el fondo redondeado, el ícono y la flechita. Uno plegable se
     /// abre y cierra con un clic en el título (un «enlace» interno), sin widgets.
     #[allow(clippy::too_many_arguments)]
@@ -1181,7 +1181,7 @@ impl Reader {
                     };
                     self.formula(s, end, tex, modo, tags);
                 }
-                // Como Obsidian: un salto simple dentro del párrafo es un salto de línea. Va con
+                // Un salto simple dentro del párrafo es un salto de línea. Va con
                 // las etiquetas del contexto, así la línea siguiente conserva la sangría del
                 // callout, la cita o el ítem.
                 Inline::SoftBreak | Inline::HardBreak => {

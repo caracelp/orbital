@@ -4,14 +4,14 @@
 //!
 //! Crea `raw/` con 10 fuentes y `wiki/` con `n` notas (90 % `.md`, 10 % `.html`) en subcarpetas
 //! de hasta 3 niveles, con frontmatter OKF, más `wiki/index.md` y `wiki/log.md`. Es determinista.
-//! Nunca escribe dentro de la bóveda real del usuario.
+//! Nunca escribe dentro de una bóveda real: rechaza todo destino dentro de `~/Documentos` y de las
+//! carpetas que nombre `ORBITAL_BOVEDAS_PROTEGIDAS` (separadas por `:`).
 
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const REAL_VAULT: &str = "/home/ejemplo/Documentos/Bóveda";
 const TOPICS: [&str; 8] = [
     "fisica",
     "historia",
@@ -33,8 +33,11 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     let dest = PathBuf::from(dest);
-    if is_inside_real_vault(&dest) {
-        eprintln!("Me niego a escribir dentro de la bóveda real ({REAL_VAULT}).");
+    if let Some(protegida) = protected_root(&dest) {
+        eprintln!(
+            "Me niego a escribir dentro de una carpeta protegida ({}).",
+            protegida.display()
+        );
         return ExitCode::FAILURE;
     }
     if dest.exists()
@@ -57,8 +60,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn is_inside_real_vault(dest: &Path) -> bool {
-    let real = Path::new(REAL_VAULT);
+/// Carpetas donde nunca se escribe: `~/Documentos` (donde suelen vivir las bóvedas reales) y las
+/// que nombre `ORBITAL_BOVEDAS_PROTEGIDAS`, separadas por `:`.
+fn protected_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        roots.push(PathBuf::from(home).join("Documentos"));
+    }
+    if let Some(extra) = std::env::var_os("ORBITAL_BOVEDAS_PROTEGIDAS") {
+        roots.extend(std::env::split_paths(&extra).filter(|p| !p.as_os_str().is_empty()));
+    }
+    roots
+}
+
+/// La carpeta protegida que contiene a `dest`, si hay alguna.
+fn protected_root(dest: &Path) -> Option<PathBuf> {
     let abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -75,7 +91,14 @@ fn is_inside_real_vault(dest: &Path) -> bool {
             other => norm.push(other),
         }
     }
-    norm.starts_with(real) || fs::canonicalize(&norm).is_ok_and(|c| c.starts_with(real))
+    let canon = fs::canonicalize(&norm).ok();
+    protected_roots().into_iter().find(|root| {
+        let root_canon = fs::canonicalize(root).ok();
+        let inside = |p: &Path| {
+            p.starts_with(root) || root_canon.as_deref().is_some_and(|r| p.starts_with(r))
+        };
+        inside(&norm) || canon.as_deref().is_some_and(inside)
+    })
 }
 
 /// Generador congruencial simple: suficiente para datos de prueba deterministas.

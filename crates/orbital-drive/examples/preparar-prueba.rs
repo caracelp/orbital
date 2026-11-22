@@ -27,9 +27,19 @@ fn main() {
             .nth(1)
             .expect("carpeta de la bóveda de prueba"),
     );
+    // Nunca una bóveda real: ni `~/Documentos` ni las carpetas de `ORBITAL_BOVEDAS_PROTEGIDAS`.
+    let mut protegidas: Vec<PathBuf> = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join("Documentos"))
+        .into_iter()
+        .collect();
+    if let Some(extra) = std::env::var_os("ORBITAL_BOVEDAS_PROTEGIDAS") {
+        protegidas.extend(std::env::split_paths(&extra).filter(|p| !p.as_os_str().is_empty()));
+    }
+    let absoluta = std::path::absolute(&root).unwrap_or_else(|_| root.clone());
     assert!(
-        !root.starts_with("/home/ejemplo/Documentos"),
-        "nunca la bóveda real"
+        !protegidas.iter().any(|p| absoluta.starts_with(p)),
+        "nunca una bóveda real (carpeta protegida)"
     );
     let _ = fs::remove_dir_all(&root);
     let escribir = |r: &str, t: &[u8]| {

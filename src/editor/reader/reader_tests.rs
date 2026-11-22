@@ -521,7 +521,7 @@ fn flecha_sugerida_es_la_del_elemento_mas_interno() {
     });
 }
 
-/// Como en Obsidian, un salto simple dentro de un párrafo es un salto de línea en Lectura, y la
+/// Un salto simple dentro de un párrafo es un salto de línea en Lectura, y la
 /// línea siguiente conserva las etiquetas del contexto (la sangría del callout).
 #[test]
 #[ignore = "requiere acceso GTK; tools/pruebas-gtk.sh"]

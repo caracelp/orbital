@@ -1,5 +1,5 @@
-//! Spec 040: Ramas libres (escritura y organización en ramas estilo Branch Writing / Gingko /
-//! Lineage) e identificadores jerárquicos de bloques (`<!-- block <jerarquía> <ID_NOTA> --> ... <!---->`).
+//! Spec 040: Ramas libres (escritura y organización de la nota en ramas jerárquicas) e
+//! identificadores jerárquicos de bloques (`<!-- block <jerarquía> <ID_NOTA> --> ... <!---->`).
 //!
 //! Cada nota `.md` tiene una propiedad `id` en su frontmatter YAML formada por el prefijo de su
 //! `type` (tabla fija de prefijos o las 2 primeras letras en mayúsculas), un guion y un número
