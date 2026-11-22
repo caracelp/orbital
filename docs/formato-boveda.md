@@ -359,6 +359,18 @@ Formato de OKF v0.2 §8 y §9.
   - Lo que se reemplaza o se saca por la sincronización nunca se borra: si Drive no lo tenía, va al
     historial (notas de texto) o a `.orbital/respaldo/<fecha>/<ruta>`; lo borrado en Drive va a la
     papelera; lo borrado acá va a la papelera de Drive.
+  - **Ubicación** de cada archivo o carpeta: «solo en este equipo» (`solo_local`, la única que
+    viaja en este archivo: ningún equipo lo sube), «en ambos» o «solo en Drive». Las dos últimas,
+    y qué pasa con lo nuevo de este equipo y con lo nuevo en Drive, las decide cada equipo y
+    quedan en su estado, fuera de la bóveda. Gana la regla más específica: una carpeta vale para
+    lo que tiene adentro, salvo lo que tenga su propia ubicación.
+  - Lo **«solo en Drive»** no está en la bóveda: la carpeta en disco muestra exactamente lo que
+    hay en el equipo (otros programas no ven archivos vacíos ni marcadores). Orbital lo muestra
+    igual en el explorador. Lo que se abre baja a la caché del equipo
+    (`$XDG_CACHE_HOME/orbital/drive/<id>/copias/`, con tope); de las notas `.md` y `.html` de
+    hasta 1 MB se guarda ahí su texto, para buscarlas y para el grafo, los enlaces y las
+    etiquetas sin bajarlas. Pasar algo a «solo en Drive» saca la copia de la bóveda solo después
+    de comprobar que Drive tiene esa misma versión (misma suma MD5).
 - `.orbital/conflictos/<ruta>/<fecha>.<ext>`: la versión de Drive de un archivo que cambió en
   este equipo y en Drive a la vez. Mientras exista el conflicto no se sube nada encima. Al resolverlo
   («Conservar la de este equipo» o «Usar la de Drive»), la versión descartada pasa al historial o al
