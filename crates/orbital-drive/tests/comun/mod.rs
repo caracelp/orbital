@@ -44,6 +44,8 @@ pub fn cliente_de(url: &str) -> Cliente {
 pub static SUBIDA_CHICA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct Equipo {
+    /// Carpeta temporal del equipo (bóveda y estado); se borra al soltarlo.
+    base: PathBuf,
     pub root: PathBuf,
     pub dir_estado: PathBuf,
     pub sinc: Option<Sincronizador<Cliente>>,
@@ -58,6 +60,7 @@ impl Equipo {
         fs::create_dir_all(&root).unwrap();
         Self {
             dir_estado: base.join("estado"),
+            base,
             root,
             sinc: None,
             eventos: Arc::default(),
@@ -142,6 +145,13 @@ impl Equipo {
 
     pub fn conflictos(&mut self) -> Vec<String> {
         self.s().estado.conflictos.keys().cloned().collect()
+    }
+}
+
+impl Drop for Equipo {
+    fn drop(&mut self) {
+        self.sinc = None;
+        let _ = fs::remove_dir_all(&self.base);
     }
 }
 
