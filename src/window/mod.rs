@@ -32,6 +32,7 @@ mod boveda;
 mod busqueda;
 mod centro;
 mod conexiones;
+mod drive;
 mod enlaces;
 mod esqueleto;
 mod explorador;
@@ -194,6 +195,10 @@ struct Inner {
     plegado_pendiente: Cell<bool>,
     /// Cambios que no llegaron al disco, para repetirlos tras un `Conflict`.
     plegado_acciones: RefCell<Vec<plegado::AccionPlegado>>,
+    /// Google Drive (061a): el motor (si la bóveda está conectada) y lo que avisa.
+    drive: RefCell<drive::DriveUi>,
+    /// Filas visibles del explorador, para repintar su estado de Drive sin rearmar la lista.
+    drive_filas: RefCell<HashMap<String, drive::FilaDrive>>,
 }
 
 /// Ventana de Orbital.
@@ -423,6 +428,8 @@ impl Window {
             plegado_escribiendo: Cell::new(false),
             plegado_pendiente: Cell::new(false),
             plegado_acciones: RefCell::new(Vec::new()),
+            drive: RefCell::default(),
+            drive_filas: RefCell::default(),
         }));
         crate::medir_arranque::marca("Window::new: Inner");
         conexiones::conectar(&this, app);

@@ -86,6 +86,8 @@ pub struct Cliente {
     acceso: Option<(String, Instant)>,
     /// Tramo de subida (8 MiB; las pruebas lo achican para cortar a mitad).
     pub tramo: usize,
+    /// Hasta este tamaño, subida de un pedido (5 MB; las pruebas lo achican).
+    pub limite_simple: u64,
 }
 
 impl Cliente {
@@ -100,6 +102,7 @@ impl Cliente {
             cred,
             acceso: None,
             tramo: TRAMO,
+            limite_simple: LIMITE_SIMPLE,
         }
     }
 
@@ -530,7 +533,7 @@ impl Api for Cliente {
             .len();
         let meta = serde_json::json!({"name": nombre, "parents": [padre]});
         let campos = escapar(CAMPOS_ARCHIVO);
-        if tam <= LIMITE_SIMPLE {
+        if tam <= self.limite_simple {
             let url = self.url(&format!(
                 "/upload/drive/v3/files?uploadType=multipart&fields={campos}"
             ));
@@ -556,7 +559,7 @@ impl Api for Cliente {
         let meta = serde_json::json!({});
         let campos = escapar(CAMPOS_ARCHIVO);
         let id = escapar(id);
-        if tam <= LIMITE_SIMPLE {
+        if tam <= self.limite_simple {
             let url = self.url(&format!(
                 "/upload/drive/v3/files/{id}?uploadType=multipart&fields={campos}"
             ));

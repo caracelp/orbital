@@ -65,6 +65,12 @@ pub struct Datos {
     pub pedidos: u64,
     /// Cuota: si `Some`, tope de bytes totales.
     pub cuota: Option<u64>,
+    /// Consultas «¿hasta dónde llegó?» de subidas reanudables (cada una es una subida retomada).
+    pub reanudadas: u64,
+    /// Tramos cortados a mitad.
+    pub cortadas: u64,
+    /// De lo que llega en un tramo cortado se conserva un múltiplo de esto (Drive: 256 KiB).
+    pub granulo: usize,
 }
 
 impl Datos {
@@ -192,6 +198,14 @@ impl Datos {
         self.fallas.push_back(f);
     }
 
+    pub fn fallas_pendientes(&self) -> usize {
+        self.fallas.len()
+    }
+
+    pub fn sin_fallas(&mut self) {
+        self.fallas.clear();
+    }
+
     /// Ruta de un archivo debajo de `carpeta` (o `None` si no cuelga de ella).
     pub fn ruta(&self, id: &str, carpeta: &str) -> Option<String> {
         let mut partes = Vec::new();
@@ -211,12 +225,31 @@ impl Datos {
         Some(partes.join("/"))
     }
 
-    /// Árbol de archivos (no carpetas) vivos debajo de `carpeta`: ruta → contenido.
+    /// Árbol de archivos (no carpetas) vivos debajo de `carpeta`: ruta → contenido. Los nombres
+    /// repetidos se distinguen como en el disco (` (2)`…), con la misma regla que el motor.
     pub fn arbol(&self, carpeta: &str) -> BTreeMap<String, Vec<u8>> {
-        self.archivos
+        let mut e = crate::Estado::nuevo("", carpeta);
+        for a in self
+            .archivos
             .values()
-            .filter(|a| !a.papelera && a.mime != MIME_CARPETA)
-            .filter_map(|a| Some((self.ruta(&a.id, carpeta)?, a.contenido.clone())))
+            .filter(|a| !a.papelera && a.id != RAIZ)
+        {
+            if let Some(p) = a.padres.first() {
+                e.nodos.insert(
+                    a.id.clone(),
+                    crate::estado::Nodo {
+                        nombre: a.nombre.clone(),
+                        padre: p.clone(),
+                        carpeta: a.mime == MIME_CARPETA,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        e.rutas()
+            .into_iter()
+            .filter(|(id, _)| self.archivos[id].mime != MIME_CARPETA)
+            .map(|(id, r)| (r, self.archivos[&id].contenido.clone()))
             .collect()
     }
 
@@ -421,6 +454,15 @@ fn atender(s: TcpStream, datos: &Arc<Mutex<Datos>>, base: &str) -> std::io::Resu
         .get("content-length")
         .and_then(|l| l.parse().ok())
         .unwrap_or(0);
+    if std::env::var_os("ORBITAL_FALSO_VIVO").is_some() {
+        eprintln!(
+            "FALSO {} {} {:?} {:?}",
+            p.metodo,
+            p.ruta,
+            p.cabeceras.get("content-range"),
+            p.cabeceras.get("content-length")
+        );
+    }
     let es_subida = p.metodo == "PUT" && p.ruta.starts_with("/upload/sesion/");
     let es_bajada = p.consulta.get("alt").map(String::as_str) == Some("media");
     let (caido, falla) = {
@@ -448,14 +490,21 @@ fn atender(s: TcpStream, datos: &Arc<Mutex<Datos>>, base: &str) -> std::io::Resu
     }
     // Corte a mitad de un tramo de subida: se guardan los bytes que llegaron (en múltiplos de
     // 256 KiB, como Drive) y se corta la conexión.
+    let d0_granulo = datos.lock().unwrap().granulo;
     if let Some(Falla::CortarSubida(n)) = &falla {
         let n = (*n).min(largo);
         let mut buf = vec![0u8; n];
         lector.read_exact(&mut buf)?;
-        let guardar = n / (256 * 1024) * (256 * 1024);
+        let g = if d0_granulo == 0 {
+            256 * 1024
+        } else {
+            d0_granulo
+        };
+        let guardar = n / g * g;
         let sid = p.ruta.trim_start_matches("/upload/sesion/").to_owned();
         let mut d = datos.lock().unwrap();
         d.bytes_subidos += n as u64;
+        d.cortadas += 1;
         if let Some(se) = d.sesiones.get_mut(&sid) {
             se.datos.extend_from_slice(&buf[..guardar]);
         }
@@ -653,6 +702,9 @@ fn manejar(
                 .get("content-range")
                 .cloned()
                 .unwrap_or_default();
+            if rango.starts_with("bytes */") && d.sesiones.contains_key(&sid) {
+                d.reanudadas += 1;
+            }
             let Some(se) = d.sesiones.get_mut(&sid) else {
                 return error(s, 404, "notFound");
             };

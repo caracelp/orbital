@@ -21,8 +21,8 @@ el error está en el código. Define lo que cualquier herramienta
 - `wiki/`: todo lo demás. Las subcarpetas son libres. Las funciones identifican las notas por `type`, no por
   carpeta.
 - `.orbital/`: `config.yaml`, `respaldo/`, `papelera/` (solo se usa si el disco no tiene papelera del
-  sistema, por ejemplo tmpfs o FAT), `busquedas.yaml`, `enlaces.yaml` e `historial/` (secciones 9 y
-  12.1). Ninguna otra herramienta debería escribir aquí. Borrarla no pierde contenido de las notas.
+  sistema, por ejemplo tmpfs o FAT), `busquedas.yaml`, `enlaces.yaml`, `historial/` y, con la bóveda
+  en Google Drive, `drive.yaml`, `conflictos/` y `sincronizacion/` (secciones 9 y 12.1). Ninguna otra herramienta debería escribir aquí. Borrarla no pierde contenido de las notas.
 
 ## 2. Elementos ocultos
 
@@ -338,6 +338,33 @@ Formato de OKF v0.2 §8 y §9.
     quita las entradas (y «Deshacer» las repone). Lo que se borra o mueve por fuera se descarta al
     escribir.
   - El enfoque (ver solo un elemento) no se guarda.
+- `.orbital/drive.yaml` (061a): la conexión de la bóveda con una carpeta de Google Drive. Viaja con
+  la bóveda (también se sincroniza) y **no tiene secretos**: las credenciales están en el llavero del
+  sistema y el estado de sincronización de cada equipo, fuera de la bóveda
+  (`$XDG_STATE_HOME/orbital/drive/<id>/`). Si no existe, la bóveda no está conectada y Orbital no
+  carga nada de la sincronización.
+
+  ```yaml
+  # Orbital: conexión con Google Drive (061). No contiene secretos.
+  cuenta: "nombre@gmail.com"
+  carpeta: "1AbC…"        # id de la carpeta raíz de la bóveda en Drive
+  solo_local:             # nunca se suben, en ningún equipo
+    - "wiki/privado/"     # una carpeta termina en `/`
+    - "borrador.md"
+  ```
+
+  - Se sincroniza todo lo que no esté en `solo_local`, salvo lo oculto: de `.orbital/` solo viajan
+    `config.yaml`, `drive.yaml`, `listas.yaml`, `plegado.yaml`, `enlaces.yaml` y `busquedas.yaml`;
+    `historial/`, `respaldo/`, `papelera/` y `conflictos/` son de cada equipo.
+  - Lo que se reemplaza o se saca por la sincronización nunca se borra: si Drive no lo tenía, va al
+    historial (notas de texto) o a `.orbital/respaldo/<fecha>/<ruta>`; lo borrado en Drive va a la
+    papelera; lo borrado acá va a la papelera de Drive.
+- `.orbital/conflictos/<ruta>/<fecha>.<ext>` (061a): la versión de Drive de un archivo que cambió en
+  este equipo y en Drive a la vez. Mientras exista el conflicto no se sube nada encima. Al resolverlo
+  («Conservar la de este equipo» o «Usar la de Drive»), la versión descartada pasa al historial o al
+  respaldo y la copia se quita. Si los cambios de los dos lados de una nota `.md` o `.html` no tocan
+  los mismos renglones, se unen solos y las dos originales quedan en el historial.
+- `.orbital/sincronizacion/` (061a): bajadas a medio hacer (`<id>-<suma>.parcial`); se pueden borrar.
 
 ## 10. Borrar y papelera
 

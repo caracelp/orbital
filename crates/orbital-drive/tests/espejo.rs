@@ -83,8 +83,13 @@ fn cambios_cruzados_entre_dos_equipos() {
         b"# Nota\n\ncambiada en A\n"
     );
     assert_eq!(b.leer("wiki/nueva.md").unwrap(), b"nueva en A\n");
-    // La versión reemplazada en B quedó en su historial.
-    assert!(b.todo().iter().any(|v| v == b"# Nota\n\nhola\n"));
+    // La versión reemplazada en B sigue en las revisiones de Drive (no se duplica en el historial).
+    assert!(
+        srv.datos()
+            .todas_las_versiones()
+            .iter()
+            .any(|v| v == b"# Nota\n\nhola\n")
+    );
     std::fs::remove_file(b.root.join("wiki/nueva.md")).unwrap();
     b.sincronizar();
     a.sincronizar();
@@ -422,4 +427,65 @@ fn primera_union_con_contenido_en_los_dos_lados() {
     assert_eq!(c.leer("wiki/nota.md").unwrap(), b"# Nota\n\nhola\n");
     assert!(c.todo().iter().any(|v| v == b"plantilla de este equipo\n"));
     assert!(srv.datos().buscar("wiki/solo en C.md", &id).is_some());
+}
+
+#[test]
+fn el_motor_en_su_hilo_sube_lo_que_cambia_y_avisa() {
+    use orbital_drive::{Evento, Motor, Orden};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let srv = ServidorFalso::iniciar();
+    let (mut a, _b, id) = dos_equipos(&srv);
+    drop(a.sinc.take());
+    let mut cfg = a.config();
+    cfg.espera_subida = Duration::from_millis(50);
+    cfg.intervalo_activo = Duration::from_millis(200);
+    let (tx, rx) = mpsc::channel::<Evento>();
+    let url = srv.url.clone();
+    let motor = Motor::iniciar(
+        cfg,
+        move |_| Ok(Box::new(comun::cliente_de(&url)) as Box<dyn orbital_drive::Api>),
+        move |e| {
+            let _ = tx.send(e);
+        },
+    )
+    .unwrap();
+    a.escribir("wiki/desde el hilo.md", b"hola\n");
+    motor.enviar(Orden::Cambios(vec!["wiki/desde el hilo.md".into()]));
+    let limite = std::time::Instant::now() + Duration::from_secs(10);
+    let mut subiendo = false;
+    while std::time::Instant::now() < limite
+        && srv.datos().buscar("wiki/desde el hilo.md", &id).is_none()
+    {
+        // «Subiendo» llega en el mapa (si esperaba la pausa de 5 s) o como cambio de una ruta (si
+        // el primer ciclo, que recorre toda la bóveda, lo encontró antes).
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Evento::Estados(m, _))
+                if m.get("wiki/desde el hilo.md")
+                    == Some(&orbital_drive::EstadoArchivo::Subiendo) =>
+            {
+                subiendo = true
+            }
+            Ok(Evento::Uno(r, orbital_drive::EstadoArchivo::Subiendo))
+                if r == "wiki/desde el hilo.md" =>
+            {
+                subiendo = true
+            }
+            _ => {}
+        }
+    }
+    assert!(subiendo, "se mostró «subiendo» mientras esperaba");
+    assert!(srv.datos().buscar("wiki/desde el hilo.md", &id).is_some());
+    // Un cambio en la web llega solo, con el sondeo.
+    let nota = srv.datos().buscar("wiki/nota.md", &id).unwrap();
+    srv.datos().editar(&nota, b"desde la web\n", "Web");
+    let limite = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < limite
+        && a.leer("wiki/nota.md").as_deref() != Some(b"desde la web\n")
+    {
+        let _ = rx.recv_timeout(Duration::from_millis(100));
+    }
+    assert_eq!(a.leer("wiki/nota.md").unwrap(), b"desde la web\n");
+    motor.detener();
+    assert!(rx.try_iter().any(|e| matches!(e, Evento::Detenido(None))));
 }

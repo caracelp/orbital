@@ -263,6 +263,8 @@ impl Window {
         self.plegado_en_show_vault();
         self.set_list_model(tree);
         crate::medir_arranque::marca("show_vault: lista");
+        // Google Drive (061a): nada hasta después del primer cuadro, y nada si no está conectada.
+        self.drive_en_show_vault(arc_vault.root());
 
         i.editor.buffer().set_text("");
         i.content_stack.set_visible_child_name("vacio");
@@ -426,6 +428,7 @@ impl Window {
     /// abierta la misma nota (FR-030). Como todavía no hay editor, nunca hay cambios locales que
     /// se puedan perder.
     pub(super) fn on_disk_changes(&self, paths: Vec<PathBuf>) {
+        self.drive_cambios(&paths);
         if self.0.tag_operation.get() {
             self.0.tag_disk_changes.borrow_mut().extend(paths);
             return;

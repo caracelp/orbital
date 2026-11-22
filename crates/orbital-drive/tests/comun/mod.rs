@@ -26,8 +26,12 @@ pub fn carpeta_temporal(nombre: &str) -> PathBuf {
 }
 
 pub fn cliente(srv: &ServidorFalso) -> Cliente {
+    cliente_de(&srv.url)
+}
+
+pub fn cliente_de(url: &str) -> Cliente {
     Cliente::new(
-        Direcciones::locales(&srv.url),
+        Direcciones::locales(url),
         Credenciales {
             client_id: "id-falso".into(),
             client_secret: "secreto-falso".into(),
@@ -35,6 +39,9 @@ pub fn cliente(srv: &ServidorFalso) -> Cliente {
         },
     )
 }
+
+/// Tamaños chicos para que la prueba de caos ejercite las subidas reanudables.
+pub static SUBIDA_CHICA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct Equipo {
     pub root: PathBuf,
@@ -77,9 +84,14 @@ impl Equipo {
         let estado = Estado::leer(&self.dir_estado).unwrap().unwrap();
         let conexion = Conexion::leer(&self.root).unwrap().unwrap();
         let ev = self.eventos.clone();
+        let mut c = cliente(srv);
+        if SUBIDA_CHICA.load(std::sync::atomic::Ordering::Relaxed) {
+            c.limite_simple = 1024;
+            c.tramo = 2048;
+        }
         self.sinc = Some(Sincronizador::new(
             self.config(),
-            cliente(srv),
+            c,
             estado,
             conexion,
             Box::new(move |e| ev.lock().unwrap().push(e)),

@@ -133,6 +133,7 @@ impl Window {
             MenuItem::new("Mover a la papelera", "win.trash", "Supr"),
         ];
         items.extend(self.items_menu_plegado());
+        items.extend(self.items_menu_drive());
         items
     }
 

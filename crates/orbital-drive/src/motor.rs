@@ -88,8 +88,20 @@ pub enum Evento {
     Aviso(String),
     /// Enlace de Drive pedido con [`Orden::Enlace`].
     Enlace(String, Option<String>),
+    /// Los conflictos abiertos (cuando cambian).
+    Conflictos(Arc<Vec<InfoConflicto>>),
     /// El motor terminó (con el motivo si fue un error).
     Detenido(Option<String>),
+}
+
+/// Un conflicto abierto, para la interfaz.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InfoConflicto {
+    pub ruta: String,
+    /// Ruta relativa de la versión de Drive (`.orbital/conflictos/...`).
+    pub copia: String,
+    pub autor: Option<String>,
+    pub fecha: String,
 }
 
 /// Órdenes para el motor.
@@ -108,6 +120,8 @@ pub enum Orden {
     },
     /// Pedir el enlace de Drive de una ruta.
     Enlace(String),
+    /// Mandar a la papelera de Drive la copia de una ruta que pasó a «solo en este equipo».
+    QuitarDeDrive(String),
     Detener,
 }
 
@@ -156,6 +170,7 @@ pub struct Sincronizador<A: Api> {
     avisos: BTreeSet<String>,
     ultima_completa: Instant,
     ultimo_mapa: Option<Arc<HashMap<String, EstadoArchivo>>>,
+    ultimos_conflictos: Option<Arc<Vec<InfoConflicto>>>,
     /// Firma de los archivos compartidos de `.orbital/` (el vigilante no mira `.orbital/`).
     firmas_orbital: BTreeMap<String, EnDisco>,
     pub ultima: Option<String>,
@@ -200,6 +215,7 @@ impl<A: Api> Sincronizador<A> {
             avisos: BTreeSet::new(),
             ultima_completa: Instant::now(),
             ultimo_mapa: None,
+            ultimos_conflictos: None,
             firmas_orbital: BTreeMap::new(),
             ultima: None,
         };
@@ -780,15 +796,31 @@ impl<A: Api> Sincronizador<A> {
 
     /// Guarda en el historial el texto que se va a reemplazar (nunca se pierde una versión).
     fn al_historial(&self, r: &str, contenido: &[u8]) {
-        if !local::es_texto(r) || contenido.len() as u64 > TOPE_TEXTO {
+        if local::es_texto(r)
+            && contenido.len() as u64 <= TOPE_TEXTO
+            && let (Ok(t), Ok(ruta)) = (
+                std::str::from_utf8(contenido),
+                orbital_vault::RelPath::new(r),
+            )
+            && orbital_vault::historial::guardar_version_en(&self.cfg.root, &ruta, t, "drive")
+                .is_ok()
+        {
             return;
         }
-        if let (Ok(t), Ok(ruta)) = (
-            std::str::from_utf8(contenido),
-            orbital_vault::RelPath::new(r),
-        ) {
-            let _ = orbital_vault::historial::guardar_version_en(&self.cfg.root, &ruta, t, "drive");
+        // Lo que el historial no puede guardar (binario, grande, no UTF-8) va al respaldo: nunca
+        // se descarta (la prueba de caos encontró un binario con nombre `.md`).
+        let destino = local::libre(
+            &self
+                .cfg
+                .root
+                .join(".orbital/respaldo")
+                .join(local::marca_de_tiempo())
+                .join(r),
+        );
+        if let Some(p) = destino.parent() {
+            let _ = fs::create_dir_all(p);
         }
+        let _ = orbital_vault::write::atomic_write(&destino, contenido);
     }
 
     /// Lo que no es texto y se reemplaza va al respaldo de la bóveda.
@@ -949,8 +981,13 @@ impl<A: Api> Sincronizador<A> {
             self.sucio.insert(r.to_owned());
             return Ok(());
         }
+        // Lo que se reemplaza va al historial solo si Drive no lo tiene: el historial guarda 20
+        // versiones por nota y llenarlo con copias de lo que ya está en Drive desplazaría las
+        // únicas (la prueba de caos lo encontró).
         if let EnDisco::Archivo(_) = esperado
             && let Ok(viejo) = fs::read(&destino)
+            && self.estado.registros.get(r).and_then(|b| b.md5.as_deref())
+                != Some(local::md5_bytes(&viejo).as_str())
         {
             self.al_historial(r, &viejo);
         }
@@ -976,8 +1013,20 @@ impl<A: Api> Sincronizador<A> {
                 }
             })
             .collect();
-        let tmp = dir.join(format!("{limpio}.parcial"));
-        // Un tramo de otra versión no sirve para seguir.
+        // El temporal lleva la suma de la versión: un tramo de otra versión nunca se retoma (la
+        // prueba de caos encontró una bajada corrupta así), y los de versiones viejas se borran.
+        let version = n.md5.as_deref().unwrap_or("sin-suma");
+        let tmp = dir.join(format!("{limpio}-{version}.parcial"));
+        if let Ok(rd) = fs::read_dir(&dir) {
+            let prefijo = format!("{limpio}-");
+            for e in rd.flatten() {
+                let nombre = e.file_name();
+                let nombre = nombre.to_string_lossy();
+                if nombre.starts_with(&prefijo) && e.path() != tmp {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
         if fs::metadata(&tmp).is_ok_and(|m| m.len() > n.tam) {
             let _ = fs::remove_file(&tmp);
         }
@@ -989,6 +1038,15 @@ impl<A: Api> Sincronizador<A> {
                 return Ok(None);
             }
             Err(e) => return Err(e),
+        }
+        // Una bajada cortada que el servidor dio por terminada: es un corte de red, y el tramo se
+        // conserva para seguir (la prueba de caos lo encontró).
+        let largo = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        if largo < n.tam {
+            return Err(ErrorApi::SinRed(format!(
+                "bajada incompleta ({largo} de {} bytes)",
+                n.tam
+            )));
         }
         let md5 = local::md5_archivo(&tmp).map_err(|e| ErrorApi::Local(e.to_string()))?;
         if n.md5.as_deref().is_some_and(|m| m != md5) {
@@ -1167,11 +1225,21 @@ impl<A: Api> Sincronizador<A> {
         };
         let destino = self.cfg.root.join(r);
         let copia = self.cfg.root.join(&c.copia);
-        if mia && matches!(local::en_disco(&destino), EnDisco::Archivo(_)) {
-            let f = match local::en_disco(&destino) {
-                EnDisco::Archivo(f) => f,
-                _ => unreachable!(),
-            };
+        if mia && let EnDisco::Archivo(f) = local::en_disco(&destino) {
+            // Si Drive cambió otra vez desde que se abrió el conflicto, se guarda también esa
+            // versión y el conflicto sigue: no se sube nada encima de algo que la usuaria no vio.
+            match self.api.archivo(&c.id) {
+                Ok(a) if !a.papelera && a.md5 != c.md5 => {
+                    let padre = a.padres.first().cloned().unwrap_or_default();
+                    self.poner_nodo(&a, &padre);
+                    let mut disco = HashMap::new();
+                    self.conciliar_conflictos(&mut disco)?;
+                    self.emitir(Evento::Conflicto(r.to_owned()));
+                    return Ok(());
+                }
+                Ok(_) | Err(ErrorApi::NoEncontrado) => {}
+                Err(e) => return Err(e),
+            }
             // Se sube la de este equipo encima de la de Drive (que ya está guardada aparte).
             let b = Registro {
                 id: c.id.clone(),
@@ -1349,6 +1417,70 @@ impl<A: Api> Sincronizador<A> {
             let reglas = Arc::new(self.conexion.solo_local.clone());
             self.emitir(Evento::Estados(m, reglas));
         }
+        let c: Vec<InfoConflicto> = self
+            .estado
+            .conflictos
+            .iter()
+            .map(|(r, c)| InfoConflicto {
+                ruta: r.clone(),
+                copia: c.copia.clone(),
+                autor: c.autor.clone(),
+                fecha: c.fecha.clone(),
+            })
+            .collect();
+        if self.ultimos_conflictos.as_deref() != Some(&c) {
+            let c = Arc::new(c);
+            self.ultimos_conflictos = Some(c.clone());
+            self.emitir(Evento::Conflictos(c));
+        }
+    }
+
+    /// Manda a la papelera de Drive lo que hay en una ruta (y debajo, si es carpeta) que pasó a
+    /// «solo en este equipo». El disco no se toca.
+    pub fn quitar_de_drive(&mut self, r: &str) -> Resultado<()> {
+        let ids: Vec<(String, String)> = self
+            .id_ruta
+            .iter()
+            .filter(|(_, ruta)| {
+                ruta.as_str() == r || ruta.strip_prefix(r).is_some_and(|x| x.starts_with('/'))
+            })
+            .map(|(id, ruta)| (id.clone(), ruta.clone()))
+            .collect();
+        // Primero lo de más arriba: si la carpeta va a la papelera, su contenido va con ella.
+        let mut ids = ids;
+        ids.sort_by_key(|(_, ruta)| ruta.matches('/').count());
+        for (id, ruta) in ids {
+            if !self.estado.nodos.contains_key(&id) {
+                continue;
+            }
+            self.api.a_papelera(&id)?;
+            let hijos: Vec<String> = self
+                .id_ruta
+                .iter()
+                .filter(|(_, x)| {
+                    x.strip_prefix(ruta.as_str())
+                        .is_some_and(|y| y.starts_with('/'))
+                })
+                .map(|(i, _)| i.clone())
+                .collect();
+            for h in hijos {
+                self.quitar_nodo(&h);
+            }
+            self.quitar_nodo(&id);
+        }
+        let quitar: Vec<String> = self
+            .estado
+            .registros
+            .keys()
+            .filter(|x| x.as_str() == r || x.strip_prefix(r).is_some_and(|y| y.starts_with('/')))
+            .cloned()
+            .collect();
+        for x in quitar {
+            self.olvidar(&x);
+        }
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(())
     }
 
     pub fn conflictos(&self) -> usize {
@@ -1478,7 +1610,7 @@ impl Motor {
     /// hilos). `emitir` recibe los eventos en el hilo del motor (la app los pasa a GTK).
     pub fn iniciar<F, E>(cfg: Config, fabrica: F, emitir: E) -> std::io::Result<Self>
     where
-        F: FnOnce() -> Result<Box<dyn Api>, String> + Send + 'static,
+        F: FnOnce(&Estado) -> Result<Box<dyn Api>, String> + Send + 'static,
         E: Fn(Evento) + Send + Sync + 'static,
     {
         let (tx, rx) = mpsc::channel();
@@ -1516,7 +1648,7 @@ fn bucle<F>(
     emitir: Arc<dyn Fn(Evento) + Send + Sync>,
     rx: mpsc::Receiver<Orden>,
 ) where
-    F: FnOnce() -> Result<Box<dyn Api>, String>,
+    F: FnOnce(&Estado) -> Result<Box<dyn Api>, String>,
 {
     let _candado = match Candado::tomar(&cfg.dir_estado) {
         Ok(c) => c,
@@ -1532,7 +1664,7 @@ fn bucle<F>(
         Err(e) => return emitir(Evento::Detenido(Some(e.to_string()))),
     };
     let conexion = Conexion::leer(&cfg.root).ok().flatten().unwrap_or_default();
-    let api = match fabrica() {
+    let api = match fabrica(&estado) {
         Ok(a) => a,
         Err(e) => return emitir(Evento::Detenido(Some(e))),
     };
@@ -1606,6 +1738,14 @@ fn bucle<F>(
             }
             Ok(Orden::Enlace(r)) => {
                 emitir(Evento::Enlace(r.clone(), s.enlace(&r)));
+                continue;
+            }
+            Ok(Orden::QuitarDeDrive(r)) => {
+                if let Err(e) = s.quitar_de_drive(&r) {
+                    emitir(Evento::Aviso(format!(
+                        "No se pudo sacar «{r}» de Drive: {e}"
+                    )));
+                }
                 continue;
             }
             Ok(Orden::Detener) | Err(mpsc::RecvTimeoutError::Disconnected) => {

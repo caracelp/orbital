@@ -1264,10 +1264,12 @@ name = "orbital"
 version = "0.1.0"
 dependencies = [
  "futures-channel",
+ "futures-core",
  "gstreamer",
  "gtk4",
  "libadwaita",
  "orbital-diagramas",
+ "orbital-drive",
  "orbital-formulas",
  "orbital-graficos",
  "orbital-vault",

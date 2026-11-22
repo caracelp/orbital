@@ -25,7 +25,7 @@ pub mod reglas;
 
 pub use api::{Api, Archivo, ErrorApi};
 pub use estado::Estado;
-pub use motor::{EstadoArchivo, Evento, Motor, Orden, Papelera, Resumen};
+pub use motor::{EstadoArchivo, Evento, InfoConflicto, Motor, Orden, Papelera, Resumen};
 pub use reglas::Conexion;
 
 /// Ruta relativa a la bóveda de `.orbital/drive.yaml`.
@@ -34,4 +34,26 @@ pub const ARCHIVO_CONEXION: &str = ".orbital/drive.yaml";
 /// Si la bóveda en `root` está conectada a Drive (solo mira si existe el archivo de conexión).
 pub fn conectada(root: &std::path::Path) -> bool {
     root.join(ARCHIVO_CONEXION).is_file()
+}
+
+/// La API real para el motor de este equipo: credenciales del llavero y cliente de libsoup.
+/// Se llama **dentro** del hilo del motor.
+pub fn api_del_equipo(estado: &Estado) -> Result<Box<dyn Api>, String> {
+    let l = llavero::del_entorno();
+    let c = llavero::leer_cliente(&*l)?
+        .ok_or("faltan el id y el secreto del cliente de Google: conectá la bóveda otra vez")?;
+    let r = llavero::leer_cuenta(&*l, &estado.cuenta)?.ok_or_else(|| {
+        format!(
+            "falta la sesión de Google de {}: iniciá sesión otra vez",
+            estado.cuenta
+        )
+    })?;
+    Ok(Box::new(cliente::Cliente::new(
+        cliente::Direcciones::del_entorno(),
+        cliente::Credenciales {
+            client_id: c.id,
+            client_secret: c.secreto,
+            refresh_token: r,
+        },
+    )))
 }
