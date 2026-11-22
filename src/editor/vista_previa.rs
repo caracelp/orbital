@@ -551,5 +551,11 @@ pub(super) fn resumen_indice(
     if r.notas.len() > 5 {
         s.push_str(&format!("\n… y {} más", r.notas.len() - 5));
     }
+    for h in r.hijas.iter().take(5) {
+        s.push_str(&format!("\n• #{} ({})", h.nombre, h.total()));
+    }
+    if r.hijas.len() > 5 {
+        s.push_str(&format!("\n… y {} sub-etiquetas más", r.hijas.len() - 5));
+    }
     s
 }

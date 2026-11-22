@@ -111,7 +111,8 @@ fn rama_anidada_prioridad_titulos_y_exclusiones() {
         html.contains("<strong><a href=\"wiki/b12.md\">b12</a></strong>"),
         "{html}"
     );
-    assert!(html.contains("<li>#Tesis<ul>"), "{html}");
+    // Sin excluir `plantillas`, la forma más usada es «tesis».
+    assert!(html.contains("<li>#tesis<ul>"), "{html}");
     // Nada se escribió.
     assert_eq!(walk(&root), antes);
     let _ = fs::remove_dir_all(&root);

@@ -87,6 +87,7 @@ fn indice_en_lectura_y_en_vivo() {
             "{t}"
         );
         assert!(editor.has_generated());
+        glib::timeout_future(Duration::from_millis(400)).await;
         capturar(&window, "036-indice-lectura");
         // Etiquetar una nota nueva: entra tras actualizar el índice y volver a dibujar (como
         // `apply_tag_snapshot`).
@@ -99,6 +100,8 @@ fn indice_en_lectura_y_en_vivo() {
         editor.render_now();
         assert!(esperar(|| texto_lectura(&editor).contains("nueva ñ")).await);
         assert!(texto_lectura(&editor).contains("#tesis (3)"));
+        glib::timeout_future(Duration::from_millis(300)).await;
+        capturar(&window, "036-indice-en-vivo");
         // El índice no se escribe en la nota.
         assert_eq!(fs::read_to_string(rel.to_path(&root)).unwrap(), NOTA);
         // Los enlaces: la nota, la etiqueta y «Nota nueva».

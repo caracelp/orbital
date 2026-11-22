@@ -690,6 +690,37 @@ pub fn html_passthrough_con(texto: &str, medios: &Medios) -> String {
 mod tests {
     use super::*;
 
+    /// Los bloques generados (036) se exportan con lo que arma `generado`; sin él, como código.
+    #[test]
+    fn exporta_indice_y_toc_estaticos() {
+        let nota = "# A\n\n```toc\n```\n\n```indice\netiqueta: x\n```\n\n```rust\nfn a() {}\n```\n";
+        let f = |lang: &str, cuerpo: &str| {
+            Some(format!("<nav data-lang=\"{lang}\">{}</nav>", cuerpo.trim()))
+        };
+        let m = Medios {
+            generado: Some(&f),
+            ..Medios::default()
+        };
+        let out = html_md_con(nota, "n.md", &m);
+        assert!(out.contains("<nav data-lang=\"toc\"></nav>"), "{out}");
+        assert!(
+            out.contains("<nav data-lang=\"indice\">etiqueta: x</nav>"),
+            "{out}"
+        );
+        assert!(!out.contains("language-indice"), "{out}");
+        assert!(out.contains("language-rust"), "{out}");
+        // Sin `generado`, el bloque queda como código.
+        let out = html_md(nota, "n.md");
+        assert!(out.contains("language-indice"), "{out}");
+        // En una nota `.html`, el `indice`.
+        let html = "<!doctype html><html><body><pre><code class=\"language-indice\">etiqueta: y\n</code></pre></body></html>";
+        let out = html_passthrough_con(html, &m);
+        assert!(
+            out.contains("<nav data-lang=\"indice\">etiqueta: y</nav>"),
+            "{out}"
+        );
+    }
+
     #[test]
     fn exporta_cuerpo_sin_frontmatter_con_tabla() {
         let nota = "---\ntitulo: Mi nota\ntype: nota\n---\n\n# Encabezado\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- [ ] tarea\n";

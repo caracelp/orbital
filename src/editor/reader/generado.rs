@@ -103,6 +103,7 @@ pub fn complete_generated_con(
             orbital_vault::render::GeneratedKind::Toc => {
                 let d = defaults.get_or_insert_with(toc_defaults);
                 block.kind = toc_block(&g.raw, &encabezados, path, d);
+                fijar_linea(&mut block.kind, block.line);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -181,6 +182,9 @@ pub fn complete_generated_con(
             }
             orbital_vault::render::GeneratedKind::Indice => {
                 block.kind = indice_block(&g.raw, index, interactivo);
+                // Los bloques de adentro llevan la línea de la cerca: si no, la línea 0 (un
+                // encabezado plegable) les pondría flechitas de plegado (028).
+                fijar_linea(&mut block.kind, block.line);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -196,6 +200,26 @@ pub fn complete_generated_con(
         completado = true;
     }
     completado
+}
+
+/// Pone `linea` a todos los bloques de adentro de `kind` (el contenido generado no tiene líneas
+/// propias en el fuente).
+fn fijar_linea(kind: &mut BlockKind, linea: usize) {
+    let bloques = |bs: &mut [Block]| {
+        for b in bs {
+            b.line = linea;
+            fijar_linea(&mut b.kind, linea);
+        }
+    };
+    match kind {
+        BlockKind::Group(bs) => bloques(bs),
+        BlockKind::List { items, .. } => {
+            for it in items {
+                bloques(&mut it.blocks);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Completa los bloques generados de las notas incrustadas en `blocks` (y en las que estas

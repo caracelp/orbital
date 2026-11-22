@@ -582,3 +582,40 @@ fn galeria_en_diapositiva() {
     });
     let _ = std::fs::remove_dir_all(&raiz);
 }
+
+/// OnStage completa los bloques generados (036) sin «Nota nueva»: el índice por etiqueta y la
+/// tabla de contenidos de la diapositiva.
+#[test]
+fn diapositiva_con_indice_y_toc() {
+    use orbital_vault::render::BlockKind;
+    let root = std::env::temp_dir().join(format!("orbital-036-onstage-ñ-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+    std::fs::write(root.join("wiki/a.md"), "#curso/fisica\n").unwrap();
+    let vault = Arc::new(orbital_vault::open(&root).unwrap());
+    let indice = Arc::new(std::sync::RwLock::new(orbital_vault::SearchIndex::build(
+        &vault,
+    )));
+    let ruta = RelPath::new("wiki/charla.md").unwrap();
+    let p = super::preparar(
+        "# Uno\n\n```indice\ncurso\n```\n\n```toc\n```\n",
+        Some(&vault),
+        &ruta,
+        &[],
+        Some(&indice),
+    );
+    let BlockKind::List { items, .. } = &p.doc.blocks[1].kind else {
+        panic!(
+            "se esperaba la lista del índice: {:?}",
+            p.doc.blocks[1].kind
+        );
+    };
+    let texto = format!("{items:?}");
+    assert!(texto.contains("/a.md"), "{texto}");
+    assert!(
+        !texto.contains(crate::editor::reader::NOTA_NUEVA),
+        "{texto}"
+    );
+    assert!(matches!(&p.doc.blocks[2].kind, BlockKind::Group(_)));
+    let _ = std::fs::remove_dir_all(&root);
+}
