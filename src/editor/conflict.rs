@@ -116,6 +116,14 @@ pub fn show_deleted_dialog(
     );
 }
 
+/// Rótulos de la ventana de comparación (el disco en la 002, Drive en la 061).
+pub struct Textos {
+    pub mia: &'static str,
+    pub otra: &'static str,
+    pub usar_otra: &'static str,
+    pub conservar: &'static str,
+}
+
 /// Ventana de comparación lado a lado con líneas distintas coloreadas y `+`/`−` al margen (FR-021).
 pub fn show_compare_window(
     parent: &impl IsA<gtk::Widget>,
@@ -123,6 +131,32 @@ pub fn show_compare_window(
     mine_text: &str,
     disk_text: &str,
     format: Format,
+    on_choice: impl Fn(ConflictChoice) + 'static,
+) {
+    show_compare_window_con(
+        parent,
+        name,
+        mine_text,
+        disk_text,
+        format,
+        Textos {
+            mia: "Mi versión (editor)",
+            otra: "Versión del disco",
+            usar_otra: "Usar la del disco",
+            conservar: "Conservar la mía",
+        },
+        on_choice,
+    );
+}
+
+/// La misma ventana con otros rótulos.
+pub fn show_compare_window_con(
+    parent: &impl IsA<gtk::Widget>,
+    name: &str,
+    mine_text: &str,
+    disk_text: &str,
+    format: Format,
+    textos: Textos,
     on_choice: impl Fn(ConflictChoice) + 'static,
 ) {
     let window = adw::Window::builder()
@@ -144,17 +178,17 @@ pub fn show_compare_window(
     let on_choice = Rc::new(on_choice);
 
     let btn_keep = gtk::Button::builder()
-        .label("Conservar la mía")
+        .label(textos.conservar)
         .css_classes(["suggested-action"])
         .build();
     btn_keep
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Conservar la mía")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.conservar)]);
 
-    let btn_disk = gtk::Button::builder().label("Usar la del disco").build();
+    let btn_disk = gtk::Button::builder().label(textos.usar_otra).build();
     btn_disk
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Usar la del disco")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.usar_otra)]);
 
     let w_close = window.clone();
     let c_keep = on_choice.clone();
@@ -183,7 +217,7 @@ pub fn show_compare_window(
     // Columna izquierda: Mi versión
     let box_left = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label_left = gtk::Label::builder()
-        .label("Mi versión (editor)")
+        .label(textos.mia)
         .css_classes(["heading"])
         .halign(gtk::Align::Center)
         .margin_top(8)
@@ -191,14 +225,14 @@ pub fn show_compare_window(
         .build();
     label_left
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Mi versión (editor)")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.mia)]);
     box_left.append(&label_left);
 
     let (view_left, buffer_left) = code::new_view();
     view_left.set_editable(false);
     view_left
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Mi versión")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.mia)]);
     code::set_language(
         &buffer_left,
         match format {
@@ -217,7 +251,7 @@ pub fn show_compare_window(
     // Columna derecha: Versión del disco
     let box_right = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let label_right = gtk::Label::builder()
-        .label("Versión del disco")
+        .label(textos.otra)
         .css_classes(["heading"])
         .halign(gtk::Align::Center)
         .margin_top(8)
@@ -225,14 +259,14 @@ pub fn show_compare_window(
         .build();
     label_right
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Versión del disco")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.otra)]);
     box_right.append(&label_right);
 
     let (view_right, buffer_right) = code::new_view();
     view_right.set_editable(false);
     view_right
         .upcast_ref::<gtk::Widget>()
-        .update_property(&[gtk::accessible::Property::Label("Versión del disco")]);
+        .update_property(&[gtk::accessible::Property::Label(textos.otra)]);
     code::set_language(
         &buffer_right,
         match format {

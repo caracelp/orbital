@@ -2,6 +2,7 @@ mod bases;
 mod carrusel;
 mod diagrama_ampliado;
 mod diagramas;
+mod drive_dialogo;
 mod ecuaciones;
 mod editor;
 mod export;

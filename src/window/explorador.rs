@@ -12,9 +12,14 @@ impl Window {
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
+            label.set_hexpand(true);
+            // Estado de Google Drive (061a): oculto si la bóveda no está conectada.
+            let drive = gtk::Image::builder().visible(false).margin_end(4).build();
+            drive.add_css_class("dim-label");
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&icon);
             row.append(&label);
+            row.append(&drive);
             let expander = gtk::TreeExpander::new();
             expander.set_child(Some(&row));
             item.set_child(Some(&expander));
@@ -41,10 +46,14 @@ impl Window {
                 .first_child()
                 .and_downcast::<gtk::Image>()
                 .expect("Image");
-            let label = content
-                .last_child()
+            let label = icon
+                .next_sibling()
                 .and_downcast::<gtk::Label>()
                 .expect("Label");
+            let drive = content
+                .last_child()
+                .and_downcast::<gtk::Image>()
+                .expect("Image de Drive");
             icon.set_icon_name(Some(icon_for(entry.kind)));
             label.set_label(&name);
             let what = match entry.kind {
@@ -58,7 +67,23 @@ impl Window {
             } else {
                 ""
             };
-            item.set_accessible_label(&format!("{what} {name}{ro}"));
+            tree_for_bind.drive_pintar_fila(
+                entry.path.as_str(),
+                &drive,
+                item,
+                format!("{what} {name}{ro}"),
+            );
+        });
+        let tree_for_unbind = self.clone();
+        factory.connect_unbind(move |_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().expect("ListItem");
+            if let Some(path) = item
+                .item()
+                .and_downcast::<gtk::TreeListRow>()
+                .and_then(|r| r.item().and_downcast::<gtk::StringObject>())
+            {
+                tree_for_unbind.drive_soltar_fila(path.string().as_str());
+            }
         });
         self.0.list_view.set_factory(Some(&factory));
 

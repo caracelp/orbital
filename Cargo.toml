@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos", "crates/orbital-diagramas"]
+members = ["crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos", "crates/orbital-diagramas", "crates/orbital-drive"]
 # `cargo test`, `cargo clippy` y `cargo build` sin `-p` cubren la app y el núcleo.
-default-members = [".", "crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos", "crates/orbital-diagramas"]
+default-members = [".", "crates/orbital-vault", "crates/orbital-formulas", "crates/orbital-graficos", "crates/orbital-diagramas", "crates/orbital-drive"]
 resolver = "3"
 
 [package]
@@ -15,6 +15,8 @@ pulldown-cmark = { version = "0.13.6", default-features = false, features = ["ht
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_8"] }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
 orbital-diagramas = { version = "0.1.0", path = "crates/orbital-diagramas" }
+# 061: sincronización con Google Drive (solo se usa si la bóveda está conectada).
+orbital-drive = { version = "0.1.0", path = "crates/orbital-drive" }
 orbital-formulas = { version = "0.1.0", path = "crates/orbital-formulas" }
 orbital-graficos = { version = "0.1.0", path = "crates/orbital-graficos" }
 orbital-vault = { version = "0.1.0", path = "crates/orbital-vault" }
@@ -23,8 +25,14 @@ webkit6 = "0.6.1"
 gstreamer = { version = "0.25", default-features = false }
 # Canal de un solo uso (060): ya lo compilan glib y gio, no suma compilación.
 futures-channel = "0.3.34"
+# Ya estaba en el lock (lo trae futures-channel): para leer el canal del motor de Drive.
+futures-core = "0.3.34"
 
 # Máximo rendimiento en las compilaciones de release
+[dev-dependencies]
+# Las pruebas GTK de la 061 hablan con el servidor falso de Drive (nunca con una cuenta real).
+orbital-drive = { version = "0.1.0", path = "crates/orbital-drive", features = ["servidor-falso"] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

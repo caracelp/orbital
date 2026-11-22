@@ -4,6 +4,7 @@ use super::*;
 
 impl Window {
     pub(super) fn setup_actions(&self, app: &adw::Application) {
+        self.setup_drive_actions();
         let open = gio::ActionEntry::builder("open")
             .activate({
                 let this = self.clone();
@@ -483,6 +484,7 @@ impl Window {
             Some("Ctrl+Mayús+O"),
             false,
         ),
+        ("Google Drive…", "drive", None, false),
         ("Preferencias", "preferences", Some("Ctrl+,"), false),
         ("Atajos de teclado", "shortcuts", Some("Ctrl+?"), false),
         (

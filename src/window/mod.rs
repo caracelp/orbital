@@ -32,6 +32,9 @@ mod boveda;
 mod busqueda;
 mod centro;
 mod conexiones;
+mod drive;
+#[cfg(test)]
+mod drive_tests;
 mod enlaces;
 mod esqueleto;
 mod explorador;
@@ -194,6 +197,10 @@ struct Inner {
     plegado_pendiente: Cell<bool>,
     /// Cambios que no llegaron al disco, para repetirlos tras un `Conflict`.
     plegado_acciones: RefCell<Vec<plegado::AccionPlegado>>,
+    /// Google Drive (061a): el motor (si la bóveda está conectada) y lo que avisa.
+    drive: RefCell<drive::DriveUi>,
+    /// Filas visibles del explorador, para repintar su estado de Drive sin rearmar la lista.
+    drive_filas: RefCell<HashMap<String, drive::FilaDrive>>,
 }
 
 /// Ventana de Orbital.
@@ -423,6 +430,8 @@ impl Window {
             plegado_escribiendo: Cell::new(false),
             plegado_pendiente: Cell::new(false),
             plegado_acciones: RefCell::new(Vec::new()),
+            drive: RefCell::default(),
+            drive_filas: RefCell::default(),
         }));
         crate::medir_arranque::marca("Window::new: Inner");
         conexiones::conectar(&this, app);
@@ -490,6 +499,29 @@ impl Window {
     /// la nota abierta (`ORBITAL_CAPTURA_TAMANO=1200x1400`, `ORBITAL_CAPTURA_ENCABEZADO=texto`);
     /// `ORBITAL_CAPTURA_TARJETA=id` muestra la respuesta de esa tarjeta de estudio.
     pub fn preparar_captura(&self) {
+        // 061a: `ORBITAL_CAPTURA_DRIVE=dialogo` abre «Google Drive…»; `=conflicto`, el primer
+        // conflicto (una sola vez: esta función se llama dos veces).
+        static DRIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Ok(que) = std::env::var("ORBITAL_CAPTURA_DRIVE")
+            && !DRIVE.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            match que.as_str() {
+                "dialogo" => self.drive_dialogo(),
+                "conflicto" => {
+                    let primero = self
+                        .0
+                        .drive
+                        .borrow()
+                        .conflictos
+                        .first()
+                        .map(|c| c.ruta.clone());
+                    if let Some(r) = primero {
+                        self.drive_resolver(&r);
+                    }
+                }
+                _ => {}
+            }
+        }
         if let Ok(id) = std::env::var("ORBITAL_CAPTURA_TARJETA") {
             self.0.code_editor.mostrar_respuesta_tarjeta(&id);
         }

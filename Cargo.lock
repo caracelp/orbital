@@ -1264,10 +1264,12 @@ name = "orbital"
 version = "0.1.0"
 dependencies = [
  "futures-channel",
+ "futures-core",
  "gstreamer",
  "gtk4",
  "libadwaita",
  "orbital-diagramas",
+ "orbital-drive",
  "orbital-formulas",
  "orbital-graficos",
  "orbital-vault",
@@ -1283,6 +1285,23 @@ dependencies = [
  "fontdb",
  "mermaid-svg",
  "resvg",
+]
+
+[[package]]
+name = "orbital-drive"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom",
+ "gio",
+ "md-5",
+ "orbital-drive",
+ "orbital-vault",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "soup3",
 ]
 
 [[package]]

@@ -132,6 +132,7 @@ pub(super) fn construir_izquierda() -> Izquierda {
                 "win.open-as",
                 "Ctrl+Mayús+O",
             ),
+            ("Google Drive…", "win.drive", ""),
             ("Preferencias", "win.preferences", "Ctrl+,"),
             ("Atajos de teclado", "win.shortcuts", "Ctrl+?"),
         ],

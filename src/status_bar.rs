@@ -23,6 +23,10 @@ struct Inner {
     seleccion: gtk::Label,
     contadores: gtk::Label,
     contadores_tab: gtk::Label,
+    /// Estado de Google Drive (061a): solo visible con la bóveda conectada.
+    drive: gtk::Button,
+    drive_icono: gtk::Image,
+    drive_texto: gtk::Label,
 }
 
 #[derive(Clone)]
@@ -41,6 +45,17 @@ impl StatusBar {
             .margin_end(20)
             .build();
         let contadores = gtk::Label::new(None);
+        let drive_icono = gtk::Image::from_icon_name("weather-overcast-symbolic");
+        let drive_texto = gtk::Label::new(None);
+        let caja = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        caja.append(&drive_icono);
+        caja.append(&drive_texto);
+        let drive = gtk::Button::builder()
+            .child(&caja)
+            .css_classes(["flat", "orbital-status-drive"])
+            .visible(false)
+            .margin_end(12)
+            .build();
         let ocultar = crate::iconos::boton("abajo", "Ocultar barra inferior");
         let bar = gtk::Box::builder()
             .spacing(10)
@@ -48,6 +63,7 @@ impl StatusBar {
             .build();
         bar.append(&izquierda);
         bar.append(&seleccion);
+        bar.append(&drive);
         bar.append(&contadores);
         bar.append(&ocultar);
 
@@ -70,6 +86,9 @@ impl StatusBar {
             seleccion,
             contadores,
             contadores_tab,
+            drive,
+            drive_icono,
+            drive_texto,
         }));
         let t = this.clone();
         ocultar.connect_clicked(move |_| t.set_abierta(false));
@@ -88,6 +107,34 @@ impl StatusBar {
     /// La pestañita que queda con la barra plegada (va en un `gtk::Overlay` sobre el contenido).
     pub fn tab(&self) -> &gtk::Box {
         &self.0.tab
+    }
+
+    /// Estado de Drive: `None` lo oculta (bóveda sin conectar).
+    pub fn set_drive(&self, estado: Option<(&str, &str, &str)>) {
+        match estado {
+            None => self.0.drive.set_visible(false),
+            Some((icono, texto, detalle)) => {
+                self.0.drive_icono.set_icon_name(Some(icono));
+                self.0.drive_texto.set_text(texto);
+                self.0.drive.set_tooltip_text(Some(detalle));
+                self.0
+                    .drive
+                    .update_property(&[gtk::accessible::Property::Label(&format!(
+                        "Google Drive: {detalle}"
+                    ))]);
+                self.0.drive.set_visible(true);
+            }
+        }
+    }
+
+    pub fn connect_drive(&self, f: impl Fn() + 'static) {
+        self.0.drive.connect_clicked(move |_| f());
+    }
+
+    /// El botón de Drive (pruebas).
+    #[cfg(test)]
+    pub fn drive_boton(&self) -> &gtk::Button {
+        &self.0.drive
     }
 
     pub fn set_abierta(&self, abierta: bool) {
