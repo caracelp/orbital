@@ -36,7 +36,7 @@ jobs:
             gst-plugins-base \
             gst-plugins-good \
             gst-libav \
-            openbox \
+            mutter \
             rust
 
       - uses: actions/checkout@v5
@@ -52,15 +52,20 @@ jobs:
           dbus-uuidgen --ensure
           cargo build -q --tests --bin orbital
           cat > /tmp/diag.sh <<'FIN'
-          openbox >/tmp/openbox.log 2>&1 &
-          sleep 2
+          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+          mkdir -p -m 700 $XDG_RUNTIME_DIR
+          unset DISPLAY
+          mutter --headless --wayland --no-x11 --virtual-monitor 1920x1080 >/tmp/mutter.log 2>&1 &
+          for i in $(seq 50); do [ -S $XDG_RUNTIME_DIR/wayland-0 ] && break; sleep 0.2; done
+          ls -la $XDG_RUNTIME_DIR
+          export WAYLAND_DISPLAY=wayland-0
           for p in editor::ecuaciones_tests::editor_de_ecuaciones_en_codigo editor::galeria_tests::galeria_cuatro_layouts_y_visor editor::galeria_tests::galeria_teclado_y_paginas editor::html::webkit_tests::medios_en_visual_html editor::html::webkit_tests::varios_medios_en_un_renglon_visual_html editor::reader::reader_tests::medios_en_lectura medios::tests::reproductor_carga_al_pedirlo medios::tests::reproductor_se_suelta_al_ocultar_la_vista window::tests::ventana_tests::abre_maximizada_y_vuelve_al_tamano_guardado; do
             echo "=== $p"
             timeout 300 cargo test -q --bin orbital "$p" -- --ignored --exact 2>&1 | grep -v portal | tail -15
           done
-          cat /tmp/openbox.log
+          tail -50 /tmp/mutter.log
           FIN
-          dbus-run-session -- xvfb-run -a -s "-screen 0 1920x1080x24" sh /tmp/diag.sh
+          dbus-run-session -- sh /tmp/diag.sh
 
       - name: Formato
         if: false
