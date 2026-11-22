@@ -508,7 +508,10 @@ impl Window {
                 d.motor = None;
                 d.detenido = motivo;
                 drop(d);
+                crate::drive_remoto::poner_en_linea(false);
                 self.drive_barra();
+                // Lo «solo en Drive» queda bloqueado: no hay motor que lo baje.
+                self.drive_repintar(None);
             }
         }
     }
