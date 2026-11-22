@@ -28,11 +28,11 @@ futures-channel = "0.3.34"
 # Ya estaba en el lock (lo trae futures-channel): para leer el canal del motor de Drive.
 futures-core = "0.3.34"
 
-# Máximo rendimiento en las compilaciones de release
 [dev-dependencies]
 # Las pruebas GTK de la 061 hablan con el servidor falso de Drive (nunca con una cuenta real).
 orbital-drive = { version = "0.1.0", path = "crates/orbital-drive", features = ["servidor-falso"] }
 
+# Máximo rendimiento en las compilaciones de release
 [profile.release]
 opt-level = 3
 lto = "fat"
