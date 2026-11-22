@@ -204,6 +204,35 @@ pub fn dibujar(clave: &Clave) -> Resultado {
     r
 }
 
+/// Dibuja un diagrama a `escala` sin pasar por la caché (el ampliado y el copiado, 059: imágenes
+/// grandes que se usan una vez). Con `fondo`, la imagen queda opaca sobre ese color (copiar:
+/// el texto del tema de papel es oscuro y sobre un fondo oscuro no se leería). Desde cualquier
+/// hilo menos el de GTK.
+pub fn dibujar_a(
+    fuente: &str,
+    tema: Tema,
+    escala: f32,
+    fondo: Option<[u8; 3]>,
+) -> Result<Dibujo, Error> {
+    let d = svg(fuente, tema)?;
+    let mut img = orbital_diagramas::imagen(&d, escala, &fuentes())?;
+    if let Some([r, g, b]) = fondo {
+        // Premultiplicado: color + (1 − alfa) × fondo.
+        for p in img.rgba.as_chunks_mut::<4>().0 {
+            let resto = 255 - u16::from(p[3]);
+            p[0] = (u16::from(p[0]) + resto * u16::from(r) / 255) as u8;
+            p[1] = (u16::from(p[1]) + resto * u16::from(g) / 255) as u8;
+            p[2] = (u16::from(p[2]) + resto * u16::from(b) / 255) as u8;
+            p[3] = 255;
+        }
+    }
+    Ok(Dibujo {
+        ancho: img.ancho,
+        alto: img.alto,
+        bytes: glib::Bytes::from_owned(img.rgba),
+    })
+}
+
 /// Dibuja de antemano los diagramas de un documento (en el hilo de fondo que lo prepara), hasta
 /// [`TOPE_PRECALENTAR`]: los que quedan se dibujan con la nota ya en pantalla.
 pub fn precalentar(claves: impl IntoIterator<Item = Clave>) {

@@ -182,3 +182,83 @@ fn entradas_rotas_no_entran_en_panico() {
         panicos[0]
     );
 }
+
+/// Las secciones de un Gantt alternan tonos del tema: ninguna franja queda con los colores fijos
+/// del motor (la blanca al 20 % salía gris, #444, sobre la base oscura), y dos seguidas no son
+/// iguales.
+#[test]
+fn gantt_secciones_con_tonos_del_tema() {
+    let fuente = "gantt\n    dateFormat YYYY-MM-DD\n    section Uno\n    A :a1, 2026-03-01, 3d\n    section Dos\n    B :2026-03-02, 3d\n    section Tres\n    C :2026-03-03, 3d\n    section Cuatro\n    D :2026-03-04, 3d\n    section Cinco\n    E :2026-03-05, 3d";
+    for tema in [Tema::Oscuro, Tema::Claro, Tema::Html] {
+        let d = svg(fuente, tema).unwrap();
+        // (relleno, opacidad) de cada franja.
+        let franjas: Vec<(&str, &str)> = d
+            .marcado
+            .split("<rect ")
+            .skip(1)
+            .filter_map(|r| r.split("/>").next())
+            .filter(|r| r.contains("stroke=\"none\"") && r.contains("fill-opacity"))
+            .map(|r| {
+                let valor = |a: &str| r.split(a).nth(1).unwrap().split('"').next().unwrap();
+                (valor(" fill=\""), valor("fill-opacity=\""))
+            })
+            .collect();
+        assert!(franjas.len() >= 5, "{tema:?}: {franjas:?}");
+        for (f, _) in &franjas {
+            let f = f.to_ascii_lowercase();
+            assert!(
+                !["#ffffff", "#6666ff", "#fff400"].contains(&f.as_str()),
+                "{tema:?}: {franjas:?}"
+            );
+        }
+        for par in franjas[..5].windows(2) {
+            assert_ne!(par[0], par[1], "{tema:?}: {franjas:?}");
+        }
+    }
+}
+
+/// Respaldo de letras (059): un diagrama ASCII no suma caras; uno con CJK o emoji, si el sistema
+/// tiene una letra que los traiga, los escribe (la imagen tiene tinta donde va el texto) y suma
+/// archivos una sola vez.
+#[test]
+fn letras_de_respaldo_solo_cuando_hacen_falta() {
+    let f = Fuentes::para("sans-serif");
+    let ascii = svg("flowchart LR\n    A[Uno] --> B[Dos]", Tema::Oscuro).unwrap();
+    let antes = f.caras();
+    imagen(&ascii, 1.0, &f).unwrap();
+    assert_eq!(f.caras(), antes, "un diagrama ASCII no carga caras");
+    // Solo el rótulo, sin bordes: la tinta del nodo es la del texto.
+    let tinta = |fuente: &str| {
+        let d = svg(fuente, Tema::Claro).unwrap();
+        let i = imagen(&d, 1.0, &f).unwrap();
+        i.rgba
+            .chunks(4)
+            .filter(|p| p[3] > 0 && (p[0] < 128 || p[1] < 128 || p[2] < 128))
+            .count()
+    };
+    let hay = |c: char| {
+        // fontconfig dice si el sistema tiene alguna cara con la letra: sin ella, la prueba no
+        // puede exigir que se vea.
+        std::process::Command::new("fc-list")
+            .arg(format!(":charset={:x}", c as u32))
+            .output()
+            .is_ok_and(|o| !o.stdout.is_empty())
+    };
+    for c in ['漢', '😀'] {
+        if !hay(c) {
+            eprintln!("sin una letra con «{c}» en el sistema: no se prueba");
+            continue;
+        }
+        let vacio = tinta("flowchart LR\n    A[\" \"]");
+        let con = tinta(&format!("flowchart LR\n    A[\"{c}{c}{c}\"]"));
+        assert!(
+            con > vacio + 20,
+            "«{c}» no se escribió: {con} contra {vacio}"
+        );
+    }
+    let despues = f.caras();
+    assert!(despues >= antes);
+    let d = svg("flowchart LR\n    A[\"漢😀\"]", Tema::Oscuro).unwrap();
+    imagen(&d, 1.0, &f).unwrap();
+    assert_eq!(f.caras(), despues, "los respaldos se cargan una vez");
+}

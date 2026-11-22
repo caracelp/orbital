@@ -1,5 +1,6 @@
 mod bases;
 mod carrusel;
+mod diagrama_ampliado;
 mod diagramas;
 mod ecuaciones;
 mod editor;

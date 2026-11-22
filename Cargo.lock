@@ -1279,6 +1279,7 @@ dependencies = [
 name = "orbital-diagramas"
 version = "0.1.0"
 dependencies = [
+ "fontdb",
  "mermaid-svg",
  "resvg",
 ]

@@ -199,6 +199,8 @@ fn css() -> String {
          .orbital-medio-pantalla { background: #000000; border-radius: 6px; }\n\
          .orbital-carrusel { background: var(--card-bg-color); border-radius: 10px; padding: 8px; }\n\
          .orbital-carrusel:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }\n\
+         .orbital-diagrama:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }\n\
+         .orbital-diagrama-ventana { background: var(--view-bg-color); }\n\
          .orbital-carrusel-escenario { background: #000000; border-radius: 6px; }\n\
          .orbital-carrusel-completo { background: #000000; border-radius: 0; padding: 12px; }\n\
          .orbital-carrusel-leyenda { padding: 4px 10px; border-radius: 6px; }\n\
