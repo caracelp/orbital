@@ -109,13 +109,20 @@ fn main() -> glib::ExitCode {
             .application_id(APP_ID)
             .flags(gio::ApplicationFlags::NON_UNIQUE)
             .build();
-        app.connect_startup(|_| style::apply());
+        app.connect_startup(|_| {
+            medir_arranque::marca("startup (GTK y libadwaita iniciados)");
+            style::apply();
+            medir_arranque::marca("startup: CSS");
+        });
         let capture = std::cell::RefCell::new(capture);
         let folder = std::cell::RefCell::new(folder);
         app.connect_activate(move |app| {
             activate(app, capture.borrow_mut().take(), folder.borrow_mut().take())
         });
-        return app.run_with_args(&[argv0]);
+        medir_arranque::marca("main: aplicación armada");
+        let salida = app.run_with_args(&[argv0]);
+        medir_arranque::marca("fin de run");
+        return salida;
     }
 
     // Uso normal: una sola instancia, como las apps de GNOME. Lanzar Orbital otra vez trae al
@@ -189,6 +196,7 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
     }
     window.present();
     medir_arranque::marca("present");
+    window.fases_del_proximo_cuadro("primer cuadro");
     if let Some(cap) = capture {
         window.set_persist(false);
         let app = app.clone();
@@ -254,7 +262,7 @@ fn activate(app: &adw::Application, capture: Option<Capture>, folder: Option<(Pa
             window.open_path(path).await;
             medir_arranque::marca("bóveda abierta");
             if exit_when_shown {
-                window.fases_del_proximo_cuadro();
+                window.fases_del_proximo_cuadro("cuadro");
                 // Sale después del próximo cuadro: la lista ya está dibujada.
                 window.after_next_frame(move || {
                     medir_arranque::marca("cuadro dibujado");
