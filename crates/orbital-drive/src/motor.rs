@@ -1596,11 +1596,12 @@ impl<A: Api> Sincronizador<A> {
                 ..Default::default()
             };
             self.e().registros.insert(r.to_owned(), b.clone());
+            // El conflicto se quita recién cuando Drive tiene la versión de este equipo: una
+            // subida reanudable guarda el estado al abrir la sesión, y si se cortaba ahí (con un
+            // reinicio) el conflicto ya no figuraba y la versión podía pisarse sin haber subido
+            // nunca (lo encontró la prueba de caos al ejercitar las subidas reanudables).
+            self.subir(r, Some(b), f)?;
             self.e().conflictos.remove(r);
-            if let Err(e) = self.subir(r, Some(b), f) {
-                self.e().conflictos.insert(r.to_owned(), c);
-                return Err(e);
-            }
             self.descartar_copia(r, &copia);
         } else {
             // Gana la de Drive: la de este equipo se guarda antes de reemplazarla.
