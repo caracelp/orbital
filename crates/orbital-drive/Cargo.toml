@@ -7,14 +7,13 @@ description = "Sincronización de la bóveda con Google Drive (061): motor, clie
 publish = false
 
 # Ningún crate nuevo para el proyecto: todos estaban ya en el `Cargo.lock` (libsoup y gio por
-# webkit6; serde, md-5, sha2, base64 y getrandom por otras dependencias; similar por la bóveda).
+# webkit6; serde_json, md-5, sha2, base64 y getrandom por otras dependencias; similar por la bóveda).
 [dependencies]
 base64 = "0.22.1"
 getrandom = "0.4.3"
 gio = "0.22.10"
 md-5 = "0.10.6"
 orbital-vault = { version = "0.1.0", path = "../orbital-vault" }
-serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 similar = "3.2.1"

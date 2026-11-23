@@ -140,7 +140,7 @@ impl std::error::Error for ErrorApi {}
 pub type Resultado<T> = Result<T, ErrorApi>;
 
 /// Sesión de subida reanudable en curso (sobrevive a un reinicio: va al estado del equipo).
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SesionSubida {
     pub url: String,
     pub tam: u64,
@@ -148,11 +148,21 @@ pub struct SesionSubida {
     pub md5: String,
 }
 
+/// Espacio de la cuenta de Drive (`about.storageQuota`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cuota {
+    pub usado: u64,
+    /// `None`: sin límite (algunas cuentas de Workspace).
+    pub limite: Option<u64>,
+}
+
 /// La API de Drive tal como la usa el motor.
 pub trait Api {
     /// Correo de la cuenta.
     fn cuenta(&mut self) -> Resultado<String>;
     fn token_inicio(&mut self) -> Resultado<String>;
+    /// Espacio usado y disponible de la cuenta.
+    fn cuota(&mut self) -> Resultado<Cuota>;
     fn cambios(&mut self, token: &str) -> Resultado<PaginaCambios>;
     /// Hijos (no en la papelera) de una carpeta; devuelve la página siguiente si hay.
     fn hijos(
@@ -200,6 +210,9 @@ impl<T: Api + ?Sized> Api for Box<T> {
     }
     fn token_inicio(&mut self) -> Resultado<String> {
         (**self).token_inicio()
+    }
+    fn cuota(&mut self) -> Resultado<Cuota> {
+        (**self).cuota()
     }
     fn cambios(&mut self, token: &str) -> Resultado<PaginaCambios> {
         (**self).cambios(token)

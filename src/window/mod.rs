@@ -538,13 +538,21 @@ impl Window {
 
     /// Dibuja la ventana en un PNG, sin depender de capturas del compositor.
     pub fn capture(&self, out: &Path) -> Result<(), String> {
-        let w = &self.0.window;
+        self.capture_widget(self.0.window.upcast_ref(), out)
+    }
+
+    /// Captura de un widget cualquiera (un menú emergente, que no sale en la de la ventana).
+    pub fn capture_widget(&self, w: &gtk::Widget, out: &Path) -> Result<(), String> {
         let (width, height) = (w.width(), w.height());
         let paintable = gtk::WidgetPaintable::new(Some(w));
         let snapshot = gtk::Snapshot::new();
         paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
         let node = snapshot.to_node().ok_or("la ventana no dibujó nada")?;
-        let renderer = w.renderer().ok_or("la ventana no tiene renderizador")?;
+        let renderer = self
+            .0
+            .window
+            .renderer()
+            .ok_or("la ventana no tiene renderizador")?;
         let bounds = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
         let texture = renderer.render_texture(node, Some(&bounds));
         texture.save_to_png(out).map_err(|e| e.to_string())

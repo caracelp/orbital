@@ -174,6 +174,69 @@ impl Vault {
         &self.root
     }
 
+    /// Suma a las entradas archivos que no están en la bóveda (lo «solo en Drive», 061b): su
+    /// ruta, tamaño y fecha. Las carpetas que falten se agregan también. Lo que ya está en el
+    /// disco no se duplica. La app registra dónde está cada copia en [`crate::ubicacion`].
+    pub fn agregar_remotos(&mut self, remotos: &[(RelPath, u64, Option<std::time::SystemTime>)]) {
+        if remotos.is_empty() {
+            return;
+        }
+        let structured =
+            self.layout.raw == Presence::Present || self.layout.wiki == Presence::Present;
+        // Las entradas del escaneo ya están ordenadas: se busca en ellas sin armar un conjunto
+        // con todas (con 5000 notas y 5000 marcadores, ese conjunto era la mitad del costo).
+        let n0 = self.entries.len();
+        let mut nuevas: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (path, size, mtime) in remotos {
+            let en_disco = |entries: &[Entry], p: &str| {
+                entries[..n0]
+                    .binary_search_by(|e| e.path.as_str().cmp(p))
+                    .is_ok()
+            };
+            if en_disco(&self.entries, path.as_str())
+                || path.as_str().split('/').any(|c| c.starts_with('.'))
+                || !nuevas.insert(path.as_str().to_owned())
+            {
+                continue;
+            }
+            // Las carpetas de más arriba, si faltan.
+            let partes: Vec<&str> = path.as_str().split('/').collect();
+            let mut fin = 0;
+            for parte in &partes[..partes.len() - 1] {
+                fin += parte.len();
+                let dir = &path.as_str()[..fin];
+                fin += 1;
+                if en_disco(&self.entries, dir) || nuevas.contains(dir) {
+                    continue;
+                }
+                nuevas.insert(dir.to_owned());
+                if let Ok(dir) = RelPath::new(dir) {
+                    let zone = scan::zone_of(&dir, structured);
+                    self.entries.push(Entry {
+                        read_only: zone == crate::Zone::Raw,
+                        path: dir,
+                        kind: crate::EntryKind::Folder,
+                        zone,
+                        size: 0,
+                        mtime: None,
+                    });
+                }
+            }
+            let zone = scan::zone_of(path, structured);
+            let kind = crate::EntryKind::classify(path.file_name(), zone, partes.len() == 1);
+            self.entries.push(Entry {
+                read_only: Entry::compute_read_only(kind, zone, *size),
+                path: path.clone(),
+                kind,
+                zone,
+                size: *size,
+                mtime: *mtime,
+            });
+        }
+        self.entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        self.names = std::sync::OnceLock::new();
+    }
+
     /// Las notas de `wiki/` cuyo nombre sin extensión es `stem` (en minúsculas).
     pub(crate) fn notes_named(&self, stem: &str) -> impl Iterator<Item = &Entry> {
         let names = self.names.get_or_init(|| {

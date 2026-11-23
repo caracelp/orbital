@@ -1297,7 +1297,6 @@ dependencies = [
  "md-5",
  "orbital-drive",
  "orbital-vault",
- "serde",
  "serde_json",
  "sha2",
  "similar",

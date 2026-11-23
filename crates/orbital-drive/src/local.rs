@@ -10,8 +10,6 @@ use gio::prelude::*;
 
 use md5::{Digest, Md5};
 
-use crate::reglas::Conexion;
-
 /// MD5 en hexadecimal (el `md5Checksum` de Drive), leyendo por tramos.
 pub fn md5_archivo(ruta: &Path) -> io::Result<String> {
     let mut f = File::open(ruta)?;
@@ -76,8 +74,9 @@ pub fn en_disco(ruta: &Path) -> EnDisco {
 }
 
 /// Recorre la bóveda: rutas relativas (con `/`) de lo que se sincroniza, con lo que hay.
-/// Salta lo oculto (salvo la configuración compartida de `.orbital/`) y lo «solo en este equipo».
-pub fn recorrer(root: &Path, conexion: &Conexion) -> BTreeMap<String, EnDisco> {
+/// Salta lo oculto (salvo la configuración compartida de `.orbital/`) y lo que `excluida` dice
+/// (lo «solo en este equipo»).
+pub fn recorrer(root: &Path, excluida: &dyn Fn(&str) -> bool) -> BTreeMap<String, EnDisco> {
     let mut out = BTreeMap::new();
     let mut pila = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, rel)) = pila.pop() {
@@ -96,14 +95,14 @@ pub fn recorrer(root: &Path, conexion: &Conexion) -> BTreeMap<String, EnDisco> {
                 for n in crate::reglas::ORBITAL_COMPARTIDOS {
                     let rr = format!(".orbital/{n}");
                     if let EnDisco::Archivo(f) = en_disco(&root.join(&rr))
-                        && !conexion.es_local(&rr)
+                        && !excluida(&rr)
                     {
                         out.insert(rr, EnDisco::Archivo(f));
                     }
                 }
                 continue;
             }
-            if !crate::reglas::sincronizable(&r) || conexion.es_local(&r) {
+            if !crate::reglas::sincronizable(&r) || excluida(&r) {
                 continue;
             }
             if tipo.is_dir() {
@@ -178,12 +177,35 @@ pub fn libre(ruta: &Path) -> PathBuf {
         .expect("hay una ruta libre")
 }
 
-/// Mueve `de` a `a` creando las carpetas que falten.
+/// Mueve `de` a `a` creando las carpetas que falten. Entre discos distintos (la caché de lo
+/// «solo en Drive» puede estar en otro), copia a un temporal junto al destino, lo renombra y
+/// recién entonces borra el original.
 pub fn mover(de: &Path, a: &Path) -> io::Result<()> {
     if let Some(p) = a.parent() {
         fs::create_dir_all(p)?;
     }
-    fs::rename(de, a)
+    match fs::rename(de, a) {
+        Err(e) if e.raw_os_error() == Some(18) => {
+            // EXDEV
+            let tmp = a.with_extension("orbital-copiando");
+            fs::copy(de, &tmp)?;
+            File::open(&tmp)?.sync_all()?;
+            fs::rename(&tmp, a)?;
+            fs::remove_file(de)
+        }
+        r => r,
+    }
+}
+
+/// Copia `de` a `a` (creando las carpetas) pasando por un temporal: `a` nunca queda a medias.
+pub fn copiar(de: &Path, a: &Path) -> io::Result<()> {
+    if let Some(p) = a.parent() {
+        fs::create_dir_all(p)?;
+    }
+    let tmp = a.with_extension("orbital-copiando");
+    fs::copy(de, &tmp)?;
+    File::open(&tmp)?.sync_all()?;
+    fs::rename(&tmp, a)
 }
 
 /// Si `rel` es una nota de texto que se puede fusionar y guardar en el historial.

@@ -112,8 +112,71 @@ impl Conexion {
     }
 }
 
+/// Dónde vive un archivo o carpeta (061b): el selector «Ubicación» del explorador.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Ubicacion {
+    /// Solo en este equipo: nunca se sube (regla compartida en `drive.yaml`).
+    Local,
+    /// En este equipo y en Drive.
+    #[default]
+    Ambos,
+    /// Solo en Drive: no hay copia en la bóveda (un marcador en el explorador).
+    SoloDrive,
+}
+
+impl Ubicacion {
+    pub fn clave(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Ambos => "ambos",
+            Self::SoloDrive => "solo-drive",
+        }
+    }
+
+    pub fn desde_clave(t: &str) -> Option<Self> {
+        match t {
+            "local" => Some(Self::Local),
+            "ambos" => Some(Self::Ambos),
+            "solo-drive" => Some(Self::SoloDrive),
+            _ => None,
+        }
+    }
+
+    /// Texto del selector.
+    pub fn texto(self) -> &'static str {
+        match self {
+            Self::Local => "Solo en este equipo",
+            Self::Ambos => "En ambos",
+            Self::SoloDrive => "Solo en Drive",
+        }
+    }
+}
+
+/// La regla más específica que cubre `rel` (la de la ruta más larga; con la misma ruta, gana la
+/// compartida «solo en este equipo»). `None`: ninguna regla la cubre.
+pub fn ubicacion<'a, I>(reglas: I, rel: &str) -> Option<Ubicacion>
+where
+    I: IntoIterator<Item = (&'a str, Ubicacion)>,
+{
+    let mut mejor: Option<(usize, Ubicacion)> = None;
+    for (r, u) in reglas {
+        if !cubre(r, rel) {
+            continue;
+        }
+        let largo = r.trim_end_matches('/').len();
+        let gana = match mejor {
+            None => true,
+            Some((l, v)) => largo > l || (largo == l && u == Ubicacion::Local && v != u),
+        };
+        if gana {
+            mejor = Some((largo, u));
+        }
+    }
+    mejor.map(|(_, u)| u)
+}
+
 /// Si la regla `r` cubre `rel`: igual, o una carpeta (con o sin `/` final) que la contiene.
-fn cubre(r: &str, rel: &str) -> bool {
+pub fn cubre(r: &str, rel: &str) -> bool {
     let base = r.trim_end_matches('/');
     !base.is_empty()
         && (rel == base
@@ -177,6 +240,26 @@ mod tests {
         assert!(c.es_local("raw/a.png"));
         assert!(!c.es_local("raw/a.png.bak"));
         assert!(c.es_local("wiki/x/y.md"));
+    }
+
+    #[test]
+    fn gana_la_mas_especifica() {
+        let reglas = [
+            ("raw/", Ubicacion::SoloDrive),
+            ("raw/fotos/", Ubicacion::Ambos),
+            ("raw/fotos/grande.png", Ubicacion::SoloDrive),
+            ("wiki/privado", Ubicacion::Local),
+            ("wiki/privado/", Ubicacion::Ambos),
+        ];
+        let u = |rel| ubicacion(reglas.iter().map(|(r, u)| (*r, *u)), rel);
+        assert_eq!(u("raw/video.mp4"), Some(Ubicacion::SoloDrive));
+        assert_eq!(u("raw/fotos/a.png"), Some(Ubicacion::Ambos));
+        assert_eq!(u("raw/fotos/grande.png"), Some(Ubicacion::SoloDrive));
+        assert_eq!(u("wiki/privado/x.md"), Some(Ubicacion::Local));
+        assert_eq!(u("wiki/a.md"), None);
+        for v in [Ubicacion::Local, Ubicacion::Ambos, Ubicacion::SoloDrive] {
+            assert_eq!(Ubicacion::desde_clave(v.clave()), Some(v));
+        }
     }
 
     #[test]

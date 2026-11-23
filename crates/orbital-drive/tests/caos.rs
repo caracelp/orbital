@@ -1,7 +1,10 @@
 //! Prueba de caos (SC-004): dos equipos y la «web de Drive» cambian, renombran y borran los
 //! mismos archivos al azar, con cortes de red, errores del servidor y subidas cortadas a mitad.
-//! Al final se verifica que **ninguna versión se perdió** y que los dos equipos y Drive quedaron
-//! iguales. `ORBITAL_CAOS_OPS=N` y `ORBITAL_CAOS_SEMILLA=S` cambian el largo y la semilla.
+//! Desde la 061b, además, los dos equipos cambian la ubicación de archivos y carpetas («solo en
+//! Drive» / «en ambos») y los predeterminados para lo nuevo, editan las copias de lo «solo en
+//! Drive», y «Liberar espacio» se corta a mitad (como un corte de luz, con reinicio).
+//! Al final se verifica que **ninguna versión se perdió** y que los dos equipos (lo que ven: la
+//! bóveda más lo «solo en Drive») y Drive quedaron iguales. `ORBITAL_CAOS_OPS=N` y `ORBITAL_CAOS_SEMILLA=S` cambian el largo y la semilla.
 
 mod comun;
 
@@ -83,9 +86,56 @@ fn texto(n: u64, quien: &str, r: &str) -> Vec<u8> {
     }
 }
 
-/// Agrega a `debe` todo lo que hay ahora en el equipo (lo que existía en un ciclo exitoso).
+/// Agrega a `debe` todo lo que hay ahora en el equipo (lo que existía en un ciclo exitoso), las
+/// copias de lo «solo en Drive» incluidas (pueden tener cambios sin subir).
 fn anotar(debe: &mut BTreeSet<Vec<u8>>, e: &Equipo) {
     debe.extend(e.arbol().into_values());
+    debe.extend(e.copias());
+}
+
+/// Cambia la ubicación de un archivo o de una carpeta, o los predeterminados (061b).
+fn actuar_ubicacion(e: &mut Equipo, az: &mut Azar, quien: &str) {
+    use orbital_drive::reglas::Ubicacion;
+    let carpetas = ["wiki/", "wiki/sub/", "raw/", "wiki/otra/"];
+    let u = [Ubicacion::SoloDrive, Ubicacion::Ambos][az.hasta(2)];
+    match az.hasta(6) {
+        0..=2 => {
+            let r = NOMBRES[az.hasta(NOMBRES.len())];
+            let u = if az.hasta(4) == 0 { None } else { Some(u) };
+            e.s().ubicar(r, u);
+            traza(format!("{quien}: ubicación {r} = {u:?}"));
+        }
+        3 | 4 => {
+            let c = carpetas[az.hasta(carpetas.len())];
+            let u = if az.hasta(4) == 0 { None } else { Some(u) };
+            e.s().ubicar(c, u);
+            traza(format!("{quien}: ubicación {c} = {u:?}"));
+        }
+        _ => {
+            let l = [Ubicacion::Ambos, Ubicacion::SoloDrive][az.hasta(2)];
+            e.s().predeterminados(l, u);
+            traza(format!("{quien}: predeterminados local={l:?} remoto={u:?}"));
+        }
+    }
+}
+
+/// Edita la copia de la caché de algo «solo en Drive» (como el editor de Orbital).
+fn editar_copia(e: &mut Equipo, az: &mut Azar, n: &mut u64, quien: &str) {
+    let marcas = e.marcadores();
+    if marcas.is_empty() {
+        return;
+    }
+    let r = marcas[az.hasta(marcas.len())].clone();
+    match e.s().traer(&r) {
+        Ok(copia) => {
+            *n += 1;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::fs::write(&copia, texto(*n, quien, &r)).unwrap();
+            e.s().marcar([r.clone()]);
+            traza(format!("{quien}: edita la copia de {r} = {quien} {n}"));
+        }
+        Err(m) => traza(format!("{quien}: no trajo {r} ({m})")),
+    }
 }
 
 fn actuar_local(e: &mut Equipo, az: &mut Azar, n: &mut u64, quien: &str) {
@@ -239,7 +289,7 @@ fn caos_nunca_pierde_nada() {
             srv.datos().caido = false;
             traza("red vuelve".into());
         }
-        match az.hasta(22) {
+        match az.hasta(27) {
             0..=4 => actuar_local(&mut a, &mut az, &mut n, "a"),
             5..=9 => actuar_local(&mut b, &mut az, &mut n, "b"),
             10..=11 => actuar_web(&srv, &raiz, &mut az, &mut n),
@@ -291,6 +341,42 @@ fn caos_nunca_pierde_nada() {
                 srv.datos().fallar(Falla::CortarSubida(1500));
             }
             21 => renombre_simultaneo(&srv, &raiz, &mut a, &mut b, &mut az),
+            22 => actuar_ubicacion(&mut a, &mut az, "a"),
+            23 => actuar_ubicacion(&mut b, &mut az, "b"),
+            24 => {
+                if az.hasta(2) == 0 {
+                    editar_copia(&mut a, &mut az, &mut n, "a")
+                } else {
+                    editar_copia(&mut b, &mut az, &mut n, "b")
+                }
+            }
+            25 => {
+                // «Liberar espacio» cortado a mitad (después de guardar el estado, antes de
+                // sacar la copia), y Orbital que vuelve a arrancar.
+                let (e, q) = if az.hasta(2) == 0 {
+                    (&mut a, "a")
+                } else {
+                    (&mut b, "b")
+                };
+                e.s().cortar_liberar = true;
+                let r = e.ciclo();
+                e.s().cortar_liberar = false;
+                traza(format!(
+                    "{q}: ciclo con corte al liberar -> {r:?}; reinicio"
+                ));
+                cortes += 1;
+                e.arrancar(&srv);
+            }
+            26 => {
+                // Orbital se cierra y vuelve a abrir (el estado sale del disco).
+                let (e, q) = if az.hasta(2) == 0 {
+                    (&mut a, "a")
+                } else {
+                    (&mut b, "b")
+                };
+                e.arrancar(&srv);
+                traza(format!("{q}: reinicio"));
+            }
             _ => {}
         }
     }
@@ -313,6 +399,8 @@ fn caos_nunca_pierde_nada() {
     // 1. Nada se perdió: cada versión que existió en un ciclo exitoso está en algún lado.
     let mut hay: BTreeSet<Vec<u8>> = a.todo().into_iter().collect();
     hay.extend(b.todo());
+    hay.extend(a.copias());
+    hay.extend(b.copias());
     hay.extend(srv.datos().todas_las_versiones());
     let perdidas: Vec<String> = debe
         .iter()
@@ -331,18 +419,58 @@ fn caos_nunca_pierde_nada() {
     }
     assert!(perdidas.is_empty(), "versiones perdidas: {perdidas:#?}");
 
-    // 2. Los dos equipos y Drive quedaron iguales.
+    // 2. Los dos equipos (lo que ven: la bóveda más lo «solo en Drive») y Drive quedaron iguales,
+    // y lo «solo en Drive» no está en la bóveda.
     let remoto = srv.datos().arbol(&raiz);
     assert!(a.conflictos().is_empty() && b.conflictos().is_empty());
-    assert_eq!(
-        a.arbol().keys().collect::<Vec<_>>(),
-        remoto.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(a.arbol(), remoto, "A igual a Drive");
-    assert_eq!(b.arbol(), remoto, "B igual a Drive");
+    let (sin, orbital): (
+        std::collections::BTreeMap<_, _>,
+        std::collections::BTreeMap<_, _>,
+    ) = remoto
+        .clone()
+        .into_iter()
+        .partition(|(r, _)| !r.starts_with(".orbital"));
+    for e in [&mut a, &mut b] {
+        let v = e.vista(&srv);
+        assert_eq!(
+            v.keys().collect::<Vec<_>>(),
+            sin.keys().collect::<Vec<_>>(),
+            "registros: {:?}\nnodos: {:?}",
+            e.s()
+                .estado
+                .registros
+                .iter()
+                .map(|(r, b)| format!("{r}={}{}", b.id, if b.solo_drive { "·d" } else { "" }))
+                .collect::<Vec<_>>(),
+            {
+                let st = &e.sinc.as_ref().unwrap().estado;
+                let mut x: Vec<String> = st
+                    .rutas()
+                    .into_iter()
+                    .map(|(id, r)| format!("{r}={id}:{:?}", st.nodos[&id].md5))
+                    .collect();
+                x.sort();
+                x
+            }
+        );
+        assert_eq!(v, sin, "lo que ve el equipo es igual a Drive");
+        let cfg: std::collections::BTreeMap<_, _> = e
+            .arbol()
+            .into_iter()
+            .filter(|(r, _)| r.starts_with(".orbital"))
+            .collect();
+        assert_eq!(cfg, orbital, "la configuración compartida");
+        for m in e.marcadores() {
+            assert!(
+                !e.root.join(&m).exists(),
+                "«{m}» es solo en Drive y está en la bóveda"
+            );
+        }
+    }
+    let marcas = (a.marcadores().len(), b.marcadores().len());
     let d = srv.datos();
     eprintln!(
-        "caos: {ops} operaciones, {} versiones vigiladas, {exitos} ciclos bien, {fallos} cortados, {cortes} fallas provocadas, {} pedidos, {} tramos de subida cortados y {} subidas retomadas",
+        "caos: {ops} operaciones, {} versiones vigiladas, {exitos} ciclos bien, {fallos} cortados, {cortes} fallas provocadas, {marcas:?} solo en Drive al final (A, B), {} pedidos, {} tramos de subida cortados y {} subidas retomadas",
         debe.len(),
         d.pedidos,
         d.cortadas,

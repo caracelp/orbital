@@ -5,6 +5,8 @@
 
 use super::*;
 
+use orbital_drive::motor::Reglas;
+use orbital_drive::reglas::Ubicacion;
 use orbital_drive::{EstadoArchivo, Evento, InfoConflicto, Motor, Orden, Resumen};
 
 /// Lo que crea la API dentro del hilo del motor.
@@ -19,7 +21,15 @@ pub(super) struct DriveUi {
     /// Sube con cada arranque del motor: los eventos de un motor viejo se ignoran.
     generacion: u64,
     pub(super) estados: Arc<HashMap<String, EstadoArchivo>>,
-    pub(super) reglas: Arc<Vec<String>>,
+    pub(super) reglas: Arc<Reglas>,
+    /// Lo «solo en Drive» que ya se bajó en esta sesión (se abre sin volver a preguntar).
+    frescos: std::collections::HashSet<String>,
+    /// La nota «solo en Drive» que se está bajando para abrirla.
+    abriendo: Option<String>,
+    /// Embeds «solo en Drive» pedidos al motor (no se piden dos veces).
+    pedidos: std::collections::HashSet<String>,
+    /// La ruta abierta que se le avisó al motor (no se libera mientras está abierta).
+    abierta: Option<String>,
     pub(super) conflictos: Arc<Vec<InfoConflicto>>,
     pub(super) resumen: Option<Resumen>,
     pub(super) detenido: Option<String>,
@@ -39,6 +49,8 @@ pub(super) struct FilaDrive {
 pub(super) enum EstadoFila {
     Drive(EstadoArchivo),
     Local,
+    /// «Solo en Drive» y sin conexión: no se puede abrir.
+    Bloqueado,
 }
 
 impl EstadoFila {
@@ -48,7 +60,9 @@ impl EstadoFila {
             Self::Drive(EstadoArchivo::Subiendo) => "go-up-symbolic",
             Self::Drive(EstadoArchivo::Bajando) => "go-down-symbolic",
             Self::Drive(EstadoArchivo::Conflicto) => "dialog-warning-symbolic",
-            Self::Local => "computer-symbolic",
+            Self::Drive(EstadoArchivo::SoloDrive) => "folder-remote-symbolic",
+            Self::Drive(EstadoArchivo::Local) | Self::Local => "computer-symbolic",
+            Self::Bloqueado => "system-lock-screen-symbolic",
         }
     }
 
@@ -58,7 +72,9 @@ impl EstadoFila {
             Self::Drive(EstadoArchivo::Subiendo) => "subiendo a Drive",
             Self::Drive(EstadoArchivo::Bajando) => "bajando de Drive",
             Self::Drive(EstadoArchivo::Conflicto) => "en conflicto con Drive",
-            Self::Local => "solo en este equipo",
+            Self::Drive(EstadoArchivo::SoloDrive) => "solo en Drive",
+            Self::Drive(EstadoArchivo::Local) | Self::Local => "solo en este equipo",
+            Self::Bloqueado => "solo en Drive, bloqueado sin conexión",
         }
     }
 }
@@ -68,12 +84,69 @@ impl EstadoFila {
 #[cfg(test)]
 pub(super) static PRUEBA: std::sync::Mutex<Option<(String, PathBuf)>> = std::sync::Mutex::new(None);
 
-/// Si una regla «solo en este equipo» cubre `rel`.
-fn cubre(reglas: &[String], rel: &str) -> bool {
-    reglas.iter().any(|r| {
-        let b = r.trim_end_matches('/');
-        !b.is_empty() && (rel == b || rel.strip_prefix(b).is_some_and(|x| x.starts_with('/')))
-    })
+/// Carpetas del estado y de la caché de Drive de una bóveda en este equipo (en las pruebas, las
+/// temporales de [`PRUEBA`]).
+pub(super) fn carpetas(root: &Path) -> (PathBuf, PathBuf) {
+    #[cfg(test)]
+    if let Some((_, dir)) = PRUEBA.lock().unwrap().clone() {
+        return (dir.clone(), dir.join("cache"));
+    }
+    (
+        orbital_drive::estado::carpeta_estado(root),
+        orbital_drive::estado::carpeta_cache(root),
+    )
+}
+
+/// Registra dónde está la copia de cada archivo «solo en Drive» (para el índice, los embeds y el
+/// guardado). `false` si ya estaba igual.
+fn registrar_marcadores(root: &Path, marcas: &[orbital_drive::estado::Marcador]) -> bool {
+    let (_, cache) = carpetas(root);
+    let mapa: HashMap<String, PathBuf> = marcas
+        .iter()
+        .map(|m| {
+            (
+                m.ruta.clone(),
+                orbital_drive::estado::ruta_copia(&cache, &m.id, &m.nombre),
+            )
+        })
+        .collect();
+    if orbital_vault::ubicacion::igual(root, &mapa) {
+        return false;
+    }
+    orbital_vault::ubicacion::registrar(root, mapa);
+    true
+}
+
+/// En el hilo del escaneo (`prepare`), sin red: suma a la bóveda lo «solo en Drive» que dejó
+/// anotado el motor. Una bóveda sin Drive cuesta una mirada al disco.
+pub(super) fn marcadores_al_escanear(v: &mut Vault) {
+    let root = v.root().to_path_buf();
+    if !orbital_drive::conectada(&root) {
+        orbital_vault::ubicacion::registrar(&root, HashMap::new());
+        return;
+    }
+    let (dir, _) = carpetas(&root);
+    let marcas = orbital_drive::estado::leer_marcadores(&dir);
+    let remotos: Vec<(RelPath, u64, Option<std::time::SystemTime>)> = marcas
+        .iter()
+        .filter_map(|m| {
+            let p = RelPath::new(&m.ruta).ok()?;
+            let t = (m.mtime > 0)
+                .then(|| std::time::UNIX_EPOCH + std::time::Duration::from_secs(m.mtime as u64));
+            Some((p, m.tam, t))
+        })
+        .collect();
+    v.agregar_remotos(&remotos);
+    registrar_marcadores(&root, &marcas);
+}
+
+/// Una regla para el selector: carpetas con `/` final.
+fn ruta_regla(rel: &str, carpeta: bool) -> String {
+    if carpeta {
+        format!("{}/", rel.trim_end_matches('/'))
+    } else {
+        rel.to_owned()
+    }
 }
 
 impl Window {
@@ -94,6 +167,10 @@ impl Window {
             d.conflictos = Arc::default();
             d.resumen = None;
             d.detenido = None;
+            d.frescos.clear();
+            d.abriendo = None;
+            d.pedidos.clear();
+            d.abierta = None;
         }
         // Las filas anotadas son las de la lista nueva (las viejas se sueltan al desligarse).
         self.drive_repintar(None);
@@ -116,6 +193,7 @@ impl Window {
         let mut fabrica: Fabrica = Box::new(orbital_drive::api_del_equipo);
         #[cfg(test)]
         if let Some((url, dir)) = PRUEBA.lock().unwrap().clone() {
+            cfg.dir_cache = dir.join("cache");
             cfg.dir_estado = dir;
             cfg.papelera = orbital_drive::Papelera::Boveda;
             cfg.espera_subida = std::time::Duration::from_millis(300);
@@ -154,6 +232,11 @@ impl Window {
         };
         self.drive_barra();
         self.drive_senales();
+        // Lo «solo en Drive» que se pidió abrir antes de que arrancara el motor.
+        let pendiente = self.0.drive.borrow().abriendo.clone();
+        if let Some(r) = pendiente {
+            self.drive_orden(Orden::Traer(r));
+        }
         let this = self.clone();
         glib::spawn_future_local(async move {
             use futures_core::Stream;
@@ -173,6 +256,12 @@ impl Window {
         if std::mem::replace(&mut self.0.drive.borrow_mut().señales, true) {
             return;
         }
+        let weak = Rc::downgrade(&self.0);
+        crate::drive_remoto::configurar(Rc::new(move |rel| {
+            if let Some(i) = weak.upgrade() {
+                Window(i).drive_pedir_embed(rel);
+            }
+        }));
         let this = self.clone();
         self.0.window.connect_is_active_notify(move |w| {
             this.drive_orden(Orden::Foco(w.is_active()));
@@ -186,6 +275,142 @@ impl Window {
     pub(super) fn drive_orden(&self, o: Orden) {
         if let Some(m) = &self.0.drive.borrow().motor {
             m.enviar(o);
+        }
+    }
+
+    /// Si hay conexión con Drive para bajar lo «solo en Drive».
+    pub(super) fn drive_en_linea(&self) -> bool {
+        let d = self.0.drive.borrow();
+        d.motor.is_some()
+            && d.resumen
+                .as_ref()
+                .is_none_or(|r| r.en_linea && r.pausa.is_none())
+    }
+
+    /// Si `rel` está «solo en Drive» (un marcador: no hay copia en la bóveda).
+    pub(super) fn drive_es_marcador(&self, rel: &str) -> bool {
+        self.0
+            .drive
+            .borrow()
+            .root
+            .as_deref()
+            .is_some_and(|root| orbital_vault::ubicacion::resolver(root, rel).is_some())
+    }
+
+    /// Antes de abrir una entrada (desde `show_entry`): lo «solo en Drive» se baja primero (con
+    /// conexión) o se explica por qué no se abre (sin conexión). `true`: no abrir todavía.
+    pub(super) fn drive_antes_de_abrir(&self, entry: &Entry) -> bool {
+        let rel = entry.path.as_str();
+        if entry.kind == EntryKind::Folder || !self.drive_es_marcador(rel) {
+            self.drive_avisar_abierta(Some(rel));
+            return false;
+        }
+        let nombre = entry.path.file_name().to_owned();
+        *self.0.current_entry.borrow_mut() = None;
+        let arrancando = {
+            let d = self.0.drive.borrow();
+            d.motor.is_none() && d.detenido.is_none()
+        };
+        if !arrancando && !self.drive_en_linea() {
+            self.drive_pagina(
+                "system-lock-screen-symbolic",
+                "Solo en Drive",
+                &format!("«{nombre}» no está en este equipo y no hay conexión con Google Drive: se va a poder abrir cuando vuelva la red."),
+            );
+            return true;
+        }
+        if self.0.drive.borrow().frescos.contains(rel) {
+            self.drive_avisar_abierta(Some(rel));
+            return false;
+        }
+        self.0.drive.borrow_mut().abriendo = Some(rel.to_owned());
+        self.drive_pagina(
+            "folder-remote-symbolic",
+            "Bajando de Drive…",
+            &format!("«{nombre}» está solo en Drive: se abre apenas termine de bajar. La copia queda en la caché de este equipo, fuera de la bóveda."),
+        );
+        // Si el motor todavía no arrancó (recién abierta la bóveda), lo pide al arrancar.
+        self.drive_orden(Orden::Traer(rel.to_owned()));
+        true
+    }
+
+    /// Muestra la página vacía del centro con un aviso (lo «solo en Drive» que no se abre).
+    fn drive_pagina(&self, icono: &str, titulo: &str, texto: &str) {
+        let i = &self.0;
+        if let Some(p) = i
+            .content_stack
+            .child_by_name("vacio")
+            .and_downcast::<adw::StatusPage>()
+        {
+            p.set_icon_name(Some(icono));
+            p.set_title(titulo);
+            p.set_description(Some(texto));
+        }
+        i.content_stack.set_visible_child_name("vacio");
+        i.list_view.announce(
+            &format!("{titulo}. {texto}"),
+            gtk::AccessibleAnnouncementPriority::Medium,
+        );
+    }
+
+    /// Respuesta del motor a un pedido de copia (abrir o embed).
+    fn drive_traido(&self, rel: &str, res: Result<PathBuf, String>) {
+        let abriendo = {
+            let mut d = self.0.drive.borrow_mut();
+            d.pedidos.remove(rel);
+            if res.is_ok() {
+                d.frescos.insert(rel.to_owned());
+            }
+            if d.abriendo.as_deref() == Some(rel) {
+                d.abriendo = None;
+                true
+            } else {
+                false
+            }
+        };
+        match (abriendo, res) {
+            (true, Ok(_)) => {
+                if let Some(e) = self.entry(rel) {
+                    self.show_entry(e);
+                }
+            }
+            (true, Err(m)) => self.drive_pagina(
+                "dialog-warning-symbolic",
+                "No se pudo bajar de Drive",
+                &format!("«{rel}»: {m}"),
+            ),
+            (false, Ok(_)) => {
+                // Un embed: se vuelve a dibujar la nota abierta.
+                if !self.0.code_editor.has_pending() {
+                    self.0.code_editor.render_now();
+                }
+            }
+            (false, Err(_)) => {}
+        }
+    }
+
+    /// Un embed «solo en Drive» sin copia (desde la Lectura).
+    fn drive_pedir_embed(&self, rel: String) {
+        if !self.drive_en_linea() || !self.0.drive.borrow_mut().pedidos.insert(rel.clone()) {
+            return;
+        }
+        self.drive_orden(Orden::Traer(rel));
+    }
+
+    /// Le dice al motor qué nota está abierta (no se libera espacio de la nota que se edita).
+    fn drive_avisar_abierta(&self, rel: Option<&str>) {
+        let cambia = {
+            let mut d = self.0.drive.borrow_mut();
+            let nueva = rel.map(str::to_owned);
+            if d.abierta == nueva {
+                false
+            } else {
+                d.abierta = nueva;
+                true
+            }
+        };
+        if cambia {
+            self.drive_orden(Orden::Abierta(rel.map(str::to_owned)));
         }
     }
 
@@ -227,9 +452,39 @@ impl Window {
                 self.drive_repintar(Some(&r));
             }
             Evento::Resumen(r) => {
-                self.0.drive.borrow_mut().resumen = Some(r);
+                let cambia_red = {
+                    let mut d = self.0.drive.borrow_mut();
+                    let antes = d.resumen.as_ref().map(|x| x.en_linea);
+                    let ahora = r.en_linea;
+                    d.resumen = Some(r);
+                    antes != Some(ahora)
+                };
+                crate::drive_remoto::poner_en_linea(self.drive_en_linea());
                 self.drive_barra();
+                if cambia_red {
+                    // «Solo en Drive» ↔ «bloqueado sin conexión».
+                    self.drive_repintar(None);
+                }
             }
+            Evento::Marcadores(m) => {
+                let Some(root) = self.0.drive.borrow().root.clone() else {
+                    return;
+                };
+                if registrar_marcadores(&root, &m) {
+                    // El árbol, el índice y el grafo con lo «solo en Drive» de ahora.
+                    let this = self.clone();
+                    glib::spawn_future_local(async move {
+                        let actual = this
+                            .0
+                            .current_entry
+                            .borrow()
+                            .as_ref()
+                            .map(|e| e.path.clone());
+                        this.reload(actual).await;
+                    });
+                }
+            }
+            Evento::Traido(r, res) => self.drive_traido(&r, res),
             Evento::Conflictos(c) => {
                 self.0.drive.borrow_mut().conflictos = c;
             }
@@ -263,21 +518,105 @@ impl Window {
                 d.motor = None;
                 d.detenido = motivo;
                 drop(d);
+                crate::drive_remoto::poner_en_linea(false);
                 self.drive_barra();
+                // Lo «solo en Drive» queda bloqueado: no hay motor que lo baje.
+                self.drive_repintar(None);
             }
         }
     }
 
     /// Estado de una ruta para el explorador (`None`: bóveda sin conectar o ruta sin datos).
     pub(super) fn drive_estado(&self, rel: &str) -> Option<EstadoFila> {
+        if self.drive_es_marcador(rel) {
+            // Sin conexión, lo «solo en Drive» queda bloqueado (antes de saberlo, no).
+            let conocido = {
+                let d = self.0.drive.borrow();
+                d.motor.is_some() || d.resumen.is_some() || d.detenido.is_some()
+            };
+            return Some(if conocido && !self.drive_en_linea() {
+                EstadoFila::Bloqueado
+            } else {
+                EstadoFila::Drive(EstadoArchivo::SoloDrive)
+            });
+        }
         let d = self.0.drive.borrow();
         if d.motor.is_none() && d.resumen.is_none() {
             return None;
         }
-        if cubre(&d.reglas, rel) {
+        let regla =
+            orbital_drive::reglas::ubicacion(d.reglas.iter().map(|(r, u)| (r.as_str(), *u)), rel);
+        if regla == Some(Ubicacion::Local) {
             return Some(EstadoFila::Local);
         }
-        d.estados.get(rel).copied().map(EstadoFila::Drive)
+        match d.estados.get(rel).copied() {
+            // Una carpeta «solo en Drive» con todo al día.
+            Some(EstadoArchivo::Ambos) if regla == Some(Ubicacion::SoloDrive) => {
+                Some(EstadoFila::Drive(EstadoArchivo::SoloDrive))
+            }
+            e => e.map(EstadoFila::Drive),
+        }
+    }
+
+    /// La ubicación de una ruta para el selector: la regla que la cubre o, sin regla, lo que es.
+    pub(super) fn drive_ubicacion(&self, rel: &str) -> Ubicacion {
+        let regla = {
+            let d = self.0.drive.borrow();
+            orbital_drive::reglas::ubicacion(d.reglas.iter().map(|(r, u)| (r.as_str(), *u)), rel)
+        };
+        if let Some(u) = regla {
+            return u;
+        }
+        match self.drive_estado(rel) {
+            Some(EstadoFila::Drive(EstadoArchivo::SoloDrive)) | Some(EstadoFila::Bloqueado) => {
+                Ubicacion::SoloDrive
+            }
+            Some(EstadoFila::Local) | Some(EstadoFila::Drive(EstadoArchivo::Local)) => {
+                Ubicacion::Local
+            }
+            _ => Ubicacion::Ambos,
+        }
+    }
+
+    /// Cambia la ubicación de una ruta (el selector del explorador y del menú de la nota).
+    pub(super) fn drive_ubicar(&self, rel: &str, carpeta: bool, u: Ubicacion) {
+        let regla = ruta_regla(rel, carpeta);
+        let compartida = self
+            .0
+            .drive
+            .borrow()
+            .reglas
+            .iter()
+            .any(|(r, x)| *x == Ubicacion::Local && r.trim_end_matches('/') == rel);
+        match u {
+            Ubicacion::Local => {
+                self.drive_orden(Orden::Ubicar(regla.clone(), None));
+                self.drive_poner_local(&regla, true);
+            }
+            _ => {
+                if compartida {
+                    let actual: Vec<String> = self
+                        .0
+                        .drive
+                        .borrow()
+                        .reglas
+                        .iter()
+                        .filter(|(r, x)| *x == Ubicacion::Local && r.trim_end_matches('/') == rel)
+                        .map(|(r, _)| r.clone())
+                        .collect();
+                    for r in actual {
+                        self.drive_poner_local(&r, false);
+                    }
+                }
+                self.drive_orden(Orden::Ubicar(regla, Some(u)));
+            }
+        }
+        let nombre = rel.rsplit('/').next().unwrap_or(rel);
+        self.toast(&match u {
+            Ubicacion::SoloDrive => format!("«{nombre}» va a quedar solo en Drive: la copia de este equipo se saca cuando Drive confirme que tiene la misma versión"),
+            Ubicacion::Ambos => format!("«{nombre}» va a estar en este equipo y en Drive"),
+            Ubicacion::Local => format!("«{nombre}» queda solo en este equipo"),
+        });
     }
 
     /// Pinta el estado de una fila del explorador y la anota para repintarla después.
@@ -414,6 +753,7 @@ impl Window {
                 detenido: d.detenido.clone(),
                 conflictos: d.conflictos.to_vec(),
                 cliente,
+                reglas: d.reglas.to_vec(),
             };
             drop(d);
             let t = this.clone();
@@ -431,6 +771,10 @@ impl Window {
             Pedido::Ahora => self.drive_orden(Orden::Ahora),
             Pedido::Resolver(r) => self.drive_resolver(&r),
             Pedido::PonerLocal(r, local) => self.drive_poner_local(&r, local),
+            Pedido::QuitarRegla(r) => self.drive_orden(Orden::Ubicar(r, None)),
+            Pedido::Predeterminados(local, remoto) => {
+                self.drive_orden(Orden::Predeterminados { local, remoto })
+            }
             Pedido::Desconectar => {
                 let dir = orbital_drive::estado::carpeta_estado(root);
                 {
@@ -612,17 +956,8 @@ impl Window {
                 "",
             ));
         }
-        let local = self.drive_estado(&ruta) == Some(EstadoFila::Local);
-        items.push(MenuItem::new(
-            if local {
-                "Sincronizar con Drive"
-            } else {
-                "Solo en este equipo (no subir a Drive)"
-            },
-            "win.drive-solo-local",
-            "",
-        ));
-        if !local {
+        items.extend(self.items_ubicacion(&ruta, false));
+        if self.drive_ubicacion(&ruta) != Ubicacion::Local {
             items.push(MenuItem::new(
                 "Copiar enlace de Drive",
                 "win.drive-enlace",
@@ -630,6 +965,22 @@ impl Window {
             ));
         }
         items
+    }
+
+    /// «Ubicación: Solo en este equipo · Solo en Drive · En ambos», con la actual marcada.
+    pub(super) fn items_ubicacion(&self, rel: &str, carpeta: bool) -> Vec<MenuItem> {
+        let actual = self.drive_ubicacion(rel);
+        let tipo = if carpeta { "c" } else { "a" };
+        [Ubicacion::Local, Ubicacion::SoloDrive, Ubicacion::Ambos]
+            .into_iter()
+            .map(|u| {
+                let mut m =
+                    MenuItem::new(&format!("Ubicación: {}", u.texto()), "win.drive-ubicar", "");
+                m.target = Some(format!("{}\u{1f}{tipo}\u{1f}{rel}", u.clave()));
+                m.marcado = Some(u == actual);
+                m
+            })
+            .collect()
     }
 
     /// Acciones `win.drive*`.
@@ -670,17 +1021,38 @@ impl Window {
             })
             .build();
         let this = self.clone();
-        let solo_local = gio::ActionEntry::builder("drive-solo-local")
-            .activate(move |_: &adw::ApplicationWindow, _, _| {
-                if let Some(r) = ruta_actual(&this) {
-                    let local = this.drive_estado(&r) == Some(EstadoFila::Local);
-                    this.drive_poner_local(&r, !local);
+        let ubicar = gio::ActionEntry::builder("drive-ubicar")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(move |_: &adw::ApplicationWindow, _, p| {
+                let Some(t) = p.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let mut partes = t.splitn(3, '\u{1f}');
+                if let (Some(u), Some(tipo), Some(rel)) =
+                    (partes.next(), partes.next(), partes.next())
+                    && let Some(u) = Ubicacion::desde_clave(u)
+                {
+                    this.drive_ubicar(rel, tipo == "c", u);
                 }
             })
             .build();
-        self.0
-            .window
-            .add_action_entries([abrir, resolver, resolver_nota, enlace, solo_local]);
+        let this = self.clone();
+        let enlace_de = gio::ActionEntry::builder("drive-enlace-de")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(move |_: &adw::ApplicationWindow, _, p| {
+                if let Some(r) = p.and_then(|v| v.get::<String>()) {
+                    this.drive_orden(Orden::Enlace(r));
+                }
+            })
+            .build();
+        self.0.window.add_action_entries([
+            abrir,
+            resolver,
+            resolver_nota,
+            enlace,
+            ubicar,
+            enlace_de,
+        ]);
         let this = self.clone();
         self.0.status.connect_drive(move || this.drive_dialogo());
     }

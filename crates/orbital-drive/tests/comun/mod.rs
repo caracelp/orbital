@@ -72,6 +72,7 @@ impl Equipo {
         Config {
             papelera: Papelera::Boveda,
             dir_estado: self.dir_estado.clone(),
+            dir_cache: self.base.join("cache"),
             ..Config::new(&self.root)
         }
     }
@@ -141,6 +142,51 @@ impl Equipo {
         let mut out = BTreeMap::new();
         recorrer(&self.root, &self.root, &mut out, true);
         out.into_values().collect()
+    }
+
+    /// Las copias de la caché de lo «solo en Drive» (abiertas, editadas o extractos).
+    pub fn copias(&self) -> Vec<Vec<u8>> {
+        let mut out = BTreeMap::new();
+        let c = self.base.join("cache/copias");
+        recorrer(&c, &c, &mut out, true);
+        out.into_values().collect()
+    }
+
+    /// Lo que la usuaria ve: la bóveda más lo «solo en Drive», con el contenido de Drive (o de
+    /// la copia de la caché si tiene cambios sin subir), sin `.orbital/`.
+    pub fn vista(&self, srv: &ServidorFalso) -> BTreeMap<String, Vec<u8>> {
+        let mut v: BTreeMap<String, Vec<u8>> = self
+            .arbol()
+            .into_iter()
+            .filter(|(r, _)| !r.starts_with(".orbital"))
+            .collect();
+        let cache = self.base.join("cache");
+        let e = &self.sinc.as_ref().unwrap().estado;
+        let marcas: Vec<(String, String, String)> = e
+            .registros
+            .iter()
+            .filter(|(_, b)| b.solo_drive)
+            .map(|(r, b)| (r.clone(), b.id.clone(), e.nodos[&b.id].nombre.clone()))
+            .collect();
+        for (r, id, nombre) in marcas {
+            let copia = orbital_drive::estado::ruta_copia(&cache, &id, &nombre);
+            let contenido = fs::read(&copia)
+                .ok()
+                .unwrap_or_else(|| srv.datos().archivos[&id].contenido.clone());
+            v.insert(r, contenido);
+        }
+        v
+    }
+
+    /// Rutas «solo en Drive».
+    pub fn marcadores(&mut self) -> Vec<String> {
+        self.s()
+            .estado
+            .registros
+            .iter()
+            .filter(|(_, b)| b.solo_drive)
+            .map(|(r, _)| r.clone())
+            .collect()
     }
 
     pub fn conflictos(&mut self) -> Vec<String> {
