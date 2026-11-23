@@ -138,6 +138,93 @@ fn editar_copia(e: &mut Equipo, az: &mut Azar, n: &mut u64, quien: &str) {
     }
 }
 
+/// Una bajada de lo «solo en Drive» que la usuaria cancela a mitad (a veces con la red cortada o
+/// un tramo cortado antes): no queda nada a medias de ese archivo y el motor sigue sano.
+fn bajada_cancelada(e: &mut Equipo, az: &mut Azar, pedido: &mut u64, quien: &str) {
+    let marcas = e.marcadores();
+    if marcas.is_empty() {
+        return;
+    }
+    let r = marcas[az.hasta(marcas.len())].clone();
+    let id = e.s().estado.registros[&r].id.clone();
+    *pedido += 1;
+    let en = az.hasta(3000) as u64;
+    e.s().cancelador.cancelar_en(*pedido, en);
+    let res = e.s().traer_pedido(&r, *pedido);
+    traza(format!("{quien}: bajada de {r} cancelada en {en} B -> {res:?}"));
+    if res.as_deref().is_err_and(|m| m == orbital_drive::motor::CANCELADA) {
+        let quedan: Vec<String> = e
+            .parciales()
+            .into_iter()
+            .filter(|p| p.starts_with(&format!("{id}-")))
+            .collect();
+        assert!(quedan.is_empty(), "bajada cancelada a medias: {quedan:?}");
+    }
+}
+
+/// Renombra, mueve o manda a la papelera algo «solo en Drive» como desde el explorador: sin
+/// conexión (o si se corta en el intento) queda en cola. A veces la web toca el mismo archivo
+/// mientras tanto (lo edita, lo renombra, lo borra o le quita el nombre).
+fn cambio_en_cola(
+    srv: &ServidorFalso,
+    raiz: &str,
+    e: &mut Equipo,
+    az: &mut Azar,
+    n: &mut u64,
+    quien: &str,
+) {
+    let marcas = e.marcadores();
+    if marcas.is_empty() {
+        return;
+    }
+    let r = marcas[az.hasta(marcas.len())].clone();
+    let id = e.s().estado.registros[&r].id.clone();
+    let en_linea = !srv.datos().caido && az.hasta(3) == 0;
+    if az.hasta(4) == 0 {
+        let res = e.s().pedir_borrar(&r, en_linea);
+        traza(format!("{quien}: papelera {r} (en línea {en_linea}) -> {res:?}"));
+    } else {
+        let destino = NOMBRES[az.hasta(NOMBRES.len())];
+        if destino == r || e.root.join(destino).exists() {
+            return;
+        }
+        let res = e.s().pedir_mover(&r, destino, en_linea);
+        traza(format!(
+            "{quien}: mueve {r} -> {destino} (en línea {en_linea}) -> {res:?}"
+        ));
+    }
+    if az.hasta(2) == 0 {
+        return;
+    }
+    // La web, mientras tanto, sobre el mismo archivo.
+    let mut d = srv.datos();
+    if !d.archivos.get(&id).is_some_and(|a| !a.papelera) {
+        return;
+    }
+    match az.hasta(4) {
+        0 | 1 => {
+            *n += 1;
+            let c = texto(*n, "web", &r);
+            d.editar(&id, &c, "Web");
+            traza(format!("web: edita (cruzado) {r} = web {n}"));
+        }
+        2 => {
+            d.a_papelera(&id);
+            traza(format!("web: papelera (cruzado) {r}"));
+        }
+        _ => {
+            // Otro archivo toma el nombre que se pidió (o el mismo se renombra en su carpeta).
+            let destino = NOMBRES[az.hasta(NOMBRES.len())];
+            if r.rsplit_once('/').map(|x| x.0) == destino.rsplit_once('/').map(|x| x.0)
+                && d.buscar(destino, raiz).is_none()
+            {
+                d.renombrar(&id, destino.rsplit_once('/').unwrap().1);
+                traza(format!("web: renombra (cruzado) {r} -> {destino}"));
+            }
+        }
+    }
+}
+
 fn actuar_local(e: &mut Equipo, az: &mut Azar, n: &mut u64, quien: &str) {
     let r = NOMBRES[az.hasta(NOMBRES.len())];
     // Nunca se edita un archivo en conflicto sin resolverlo antes (la versión es de la usuaria).
@@ -284,12 +371,13 @@ fn caos_nunca_pierde_nada() {
     anotar(&mut debe, &b);
     let (mut exitos, mut fallos, mut cortes) = (0, 0, 0);
     let mut vuelve_la_red = 0usize;
+    let mut pedido = 0u64;
     for op in 0..ops {
         if op == vuelve_la_red && srv.datos().caido {
             srv.datos().caido = false;
             traza("red vuelve".into());
         }
-        match az.hasta(27) {
+        match az.hasta(31) {
             0..=4 => actuar_local(&mut a, &mut az, &mut n, "a"),
             5..=9 => actuar_local(&mut b, &mut az, &mut n, "b"),
             10..=11 => actuar_web(&srv, &raiz, &mut az, &mut n),
@@ -376,6 +464,35 @@ fn caos_nunca_pierde_nada() {
                 };
                 e.arrancar(&srv);
                 traza(format!("{q}: reinicio"));
+            }
+            27 | 28 => {
+                let (e, q) = if az.hasta(2) == 0 {
+                    (&mut a, "a")
+                } else {
+                    (&mut b, "b")
+                };
+                cambio_en_cola(&srv, &raiz, e, &mut az, &mut n, q);
+            }
+            29 | 30 => {
+                let (e, q) = if az.hasta(2) == 0 {
+                    (&mut a, "a")
+                } else {
+                    (&mut b, "b")
+                };
+                // A veces con un tramo cortado antes o sin red.
+                match az.hasta(4) {
+                    0 if srv.datos().fallas_pendientes() < 2 => {
+                        cortes += 1;
+                        srv.datos().fallar(Falla::CortarBajada(30));
+                    }
+                    1 => {
+                        srv.datos().caido = true;
+                        vuelve_la_red = op + 1 + az.hasta(6);
+                        traza("red caída".into());
+                    }
+                    _ => {}
+                }
+                bajada_cancelada(e, &mut az, &mut pedido, q);
             }
             _ => {}
         }

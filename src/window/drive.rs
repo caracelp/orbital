@@ -16,16 +16,19 @@ type Fabrica =
 /// Lo que la ventana sabe de Drive.
 #[derive(Default)]
 pub(super) struct DriveUi {
-    motor: Option<Motor>,
+    pub(super) motor: Option<Motor>,
     root: Option<PathBuf>,
     /// Sube con cada arranque del motor: los eventos de un motor viejo se ignoran.
     generacion: u64,
     pub(super) estados: Arc<HashMap<String, EstadoArchivo>>,
     pub(super) reglas: Arc<Reglas>,
     /// Lo «solo en Drive» que ya se bajó en esta sesión (se abre sin volver a preguntar).
-    frescos: std::collections::HashSet<String>,
-    /// La nota «solo en Drive» que se está bajando para abrirla.
-    abriendo: Option<String>,
+    pub(super) frescos: std::collections::HashSet<String>,
+    /// Lo «solo en Drive» que se está bajando para abrirlo (acá o con otra aplicación).
+    pub(super) bajada: Option<super::drive_bajada::Bajada>,
+    pub(super) siguiente_pedido: u64,
+    /// Carpetas de copias de la caché abiertas con otra aplicación (sus cambios se suben).
+    pub(super) vigiladas: HashMap<PathBuf, gio::FileMonitor>,
     /// Embeds «solo en Drive» pedidos al motor (no se piden dos veces).
     pedidos: std::collections::HashSet<String>,
     /// La ruta abierta que se le avisó al motor (no se libera mientras está abierta).
@@ -61,6 +64,7 @@ impl EstadoFila {
             Self::Drive(EstadoArchivo::Bajando) => "go-down-symbolic",
             Self::Drive(EstadoArchivo::Conflicto) => "dialog-warning-symbolic",
             Self::Drive(EstadoArchivo::SoloDrive) => "folder-remote-symbolic",
+            Self::Drive(EstadoArchivo::Pendiente) => "document-open-recent-symbolic",
             Self::Drive(EstadoArchivo::Local) | Self::Local => "computer-symbolic",
             Self::Bloqueado => "system-lock-screen-symbolic",
         }
@@ -73,6 +77,9 @@ impl EstadoFila {
             Self::Drive(EstadoArchivo::Bajando) => "bajando de Drive",
             Self::Drive(EstadoArchivo::Conflicto) => "en conflicto con Drive",
             Self::Drive(EstadoArchivo::SoloDrive) => "solo en Drive",
+            Self::Drive(EstadoArchivo::Pendiente) => {
+                "solo en Drive, cambio pendiente: se aplica en Drive cuando vuelva la red"
+            }
             Self::Drive(EstadoArchivo::Local) | Self::Local => "solo en este equipo",
             Self::Bloqueado => "solo en Drive, bloqueado sin conexión",
         }
@@ -168,9 +175,13 @@ impl Window {
             d.resumen = None;
             d.detenido = None;
             d.frescos.clear();
-            d.abriendo = None;
             d.pedidos.clear();
             d.abierta = None;
+            d.vigiladas.clear();
+        }
+        let vieja = self.0.drive.borrow_mut().bajada.take();
+        if let Some(b) = vieja {
+            self.drive_soltar_bajada(b);
         }
         // Las filas anotadas son las de la lista nueva (las viejas se sueltan al desligarse).
         self.drive_repintar(None);
@@ -233,9 +244,8 @@ impl Window {
         self.drive_barra();
         self.drive_senales();
         // Lo «solo en Drive» que se pidió abrir antes de que arrancara el motor.
-        let pendiente = self.0.drive.borrow().abriendo.clone();
-        if let Some(r) = pendiente {
-            self.drive_orden(Orden::Traer(r));
+        if let Some((r, pedido)) = self.drive_bajada_pendiente() {
+            self.drive_orden(Orden::Traer(r, pedido));
         }
         let this = self.clone();
         glib::spawn_future_local(async move {
@@ -323,19 +333,12 @@ impl Window {
             self.drive_avisar_abierta(Some(rel));
             return false;
         }
-        self.0.drive.borrow_mut().abriendo = Some(rel.to_owned());
-        self.drive_pagina(
-            "folder-remote-symbolic",
-            "Bajando de Drive…",
-            &format!("«{nombre}» está solo en Drive: se abre apenas termine de bajar. La copia queda en la caché de este equipo, fuera de la bóveda."),
-        );
-        // Si el motor todavía no arrancó (recién abierta la bóveda), lo pide al arrancar.
-        self.drive_orden(Orden::Traer(rel.to_owned()));
+        self.drive_bajar(rel, super::drive_bajada::ParaQue::Abrir);
         true
     }
 
     /// Muestra la página vacía del centro con un aviso (lo «solo en Drive» que no se abre).
-    fn drive_pagina(&self, icono: &str, titulo: &str, texto: &str) {
+    pub(super) fn drive_pagina(&self, icono: &str, titulo: &str, texto: &str) {
         let i = &self.0;
         if let Some(p) = i
             .content_stack
@@ -353,39 +356,24 @@ impl Window {
         );
     }
 
-    /// Respuesta del motor a un pedido de copia (abrir o embed).
-    fn drive_traido(&self, rel: &str, res: Result<PathBuf, String>) {
-        let abriendo = {
+    /// Respuesta del motor a un pedido de copia (abrir, «Abrir con» o embed).
+    fn drive_traido(&self, rel: &str, pedido: u64, res: Result<PathBuf, String>) {
+        {
             let mut d = self.0.drive.borrow_mut();
             d.pedidos.remove(rel);
             if res.is_ok() {
                 d.frescos.insert(rel.to_owned());
             }
-            if d.abriendo.as_deref() == Some(rel) {
-                d.abriendo = None;
-                true
-            } else {
-                false
+        }
+        if self.drive_bajada_terminada(rel, pedido, &res) {
+            return;
+        }
+        if res.is_ok() {
+            // Un embed: se vuelve a dibujar la nota abierta.
+            crate::drive_remoto::terminado(rel);
+            if !self.0.code_editor.has_pending() {
+                self.0.code_editor.render_now();
             }
-        };
-        match (abriendo, res) {
-            (true, Ok(_)) => {
-                if let Some(e) = self.entry(rel) {
-                    self.show_entry(e);
-                }
-            }
-            (true, Err(m)) => self.drive_pagina(
-                "dialog-warning-symbolic",
-                "No se pudo bajar de Drive",
-                &format!("«{rel}»: {m}"),
-            ),
-            (false, Ok(_)) => {
-                // Un embed: se vuelve a dibujar la nota abierta.
-                if !self.0.code_editor.has_pending() {
-                    self.0.code_editor.render_now();
-                }
-            }
-            (false, Err(_)) => {}
         }
     }
 
@@ -394,7 +382,7 @@ impl Window {
         if !self.drive_en_linea() || !self.0.drive.borrow_mut().pedidos.insert(rel.clone()) {
             return;
         }
-        self.drive_orden(Orden::Traer(rel));
+        self.drive_orden(Orden::Traer(rel, 0));
     }
 
     /// Le dice al motor qué nota está abierta (no se libera espacio de la nota que se edita).
@@ -484,7 +472,13 @@ impl Window {
                     });
                 }
             }
-            Evento::Traido(r, res) => self.drive_traido(&r, res),
+            Evento::Traido(r, pedido, res) => self.drive_traido(&r, pedido, res),
+            Evento::Progreso {
+                ruta,
+                pedido,
+                bajado,
+                total,
+            } => self.drive_progreso(&ruta, pedido, bajado, total),
             Evento::Conflictos(c) => {
                 self.0.drive.borrow_mut().conflictos = c;
             }
@@ -529,6 +523,10 @@ impl Window {
     /// Estado de una ruta para el explorador (`None`: bóveda sin conectar o ruta sin datos).
     pub(super) fn drive_estado(&self, rel: &str) -> Option<EstadoFila> {
         if self.drive_es_marcador(rel) {
+            // Un renombre en cola (sin conexión): «pendiente» hasta que llegue a Drive.
+            if self.0.drive.borrow().estados.get(rel) == Some(&EstadoArchivo::Pendiente) {
+                return Some(EstadoFila::Drive(EstadoArchivo::Pendiente));
+            }
             // Sin conexión, lo «solo en Drive» queda bloqueado (antes de saberlo, no).
             let conocido = {
                 let d = self.0.drive.borrow();
@@ -1037,6 +1035,15 @@ impl Window {
             })
             .build();
         let this = self.clone();
+        let abrir_con_de = gio::ActionEntry::builder("abrir-con-de")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(move |_: &adw::ApplicationWindow, _, p| {
+                if let Some(r) = p.and_then(|v| v.get::<String>()) {
+                    this.abrir_con_otra(&r);
+                }
+            })
+            .build();
+        let this = self.clone();
         let enlace_de = gio::ActionEntry::builder("drive-enlace-de")
             .parameter_type(Some(glib::VariantTy::STRING))
             .activate(move |_: &adw::ApplicationWindow, _, p| {
@@ -1052,6 +1059,7 @@ impl Window {
             enlace,
             ubicar,
             enlace_de,
+            abrir_con_de,
         ]);
         let this = self.clone();
         self.0.status.connect_drive(move || this.drive_dialogo());

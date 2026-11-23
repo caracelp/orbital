@@ -157,6 +157,19 @@ pub fn a_papelera(root: &Path, rel: &str, papelera: &Papelera) -> io::Result<()>
     fs::rename(&origen, &destino)
 }
 
+/// Un id de Drive como nombre de archivo (lo que no es letra, número, `-` o `_` pasa a `_`).
+pub fn id_limpio(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Una ruta que no existe todavía (agrega ` (2)`, ` (3)`… antes de la extensión).
 pub fn libre(ruta: &Path) -> PathBuf {
     if fs::symlink_metadata(ruta).is_err() {

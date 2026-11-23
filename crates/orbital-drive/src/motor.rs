@@ -22,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::api::{Api, Archivo, Cuota, ErrorApi, Resultado};
-use crate::estado::{self, Candado, Conflicto, Estado, Marcador, Nodo, Registro};
+use crate::estado::{self, Candado, Conflicto, Estado, Marcador, Nodo, Pendiente, Registro};
 pub use crate::local::Papelera;
 use crate::local::{self, EnDisco, Firma};
 use crate::reglas::{self, Conexion, Ubicacion};
@@ -53,6 +53,9 @@ pub enum EstadoArchivo {
     SoloDrive,
     /// Nuevo en este equipo y sin subir por el predeterminado «Solo en este equipo».
     Local,
+    /// «Solo en Drive» con un cambio en cola (renombrado o movido sin conexión): se aplica en
+    /// Drive cuando vuelva la red.
+    Pendiente,
 }
 
 impl EstadoArchivo {
@@ -61,7 +64,7 @@ impl EstadoArchivo {
         match self {
             Self::Ambos | Self::SoloDrive | Self::Local => 0,
             Self::Bajando => 1,
-            Self::Subiendo => 2,
+            Self::Subiendo | Self::Pendiente => 2,
             Self::Conflicto => 3,
         }
     }
@@ -98,8 +101,17 @@ pub enum Evento {
     Estados(Arc<HashMap<String, EstadoArchivo>>, Arc<Reglas>),
     /// Lo «solo en Drive» cambió (la app lo suma al árbol; también quedó en `marcadores`).
     Marcadores(Arc<Vec<Marcador>>),
-    /// Respuesta a [`Orden::Traer`]: dónde quedó la copia para abrirla, o por qué no se pudo.
-    Traido(String, Result<PathBuf, String>),
+    /// Respuesta a [`Orden::Traer`]: dónde quedó la copia para abrirla, o por qué no se pudo
+    /// (también si se canceló: [`CANCELADA`]), con el número de pedido.
+    Traido(String, u64, Result<PathBuf, String>),
+    /// Cuánto lleva bajado lo que se pidió con [`Orden::Traer`] (bytes; como mucho unas 8 veces
+    /// por segundo).
+    Progreso {
+        ruta: String,
+        pedido: u64,
+        bajado: u64,
+        total: u64,
+    },
     /// Una ruta cambió de estado (subidas y bajadas largas).
     Uno(String, EstadoArchivo),
     Resumen(Resumen),
@@ -153,8 +165,9 @@ pub enum Orden {
         local: Ubicacion,
         remoto: Ubicacion,
     },
-    /// Traer a la caché un archivo «solo en Drive» para abrirlo o mostrarlo incrustado.
-    Traer(String),
+    /// Traer a la caché un archivo «solo en Drive» para abrirlo o mostrarlo incrustado. El número
+    /// es el pedido, para cancelarlo con [`Motor::cancelar`] (0: no se cancela).
+    Traer(String, u64),
     /// La nota abierta en el editor: no se le libera espacio mientras se edita.
     Abierta(Option<String>),
     /// Mandar a la papelera de Drive un archivo «solo en Drive» (borrarlo desde el explorador).
@@ -165,6 +178,52 @@ pub enum Orden {
         a: String,
     },
     Detener,
+}
+
+/// Lo que dice [`Evento::Traido`] cuando la usuaria canceló la bajada.
+pub const CANCELADA: &str = "se canceló";
+
+/// Pedidos de [`Orden::Traer`] cancelados. Se comparte entre la app y el hilo del motor: el
+/// motor está ocupado bajando y no lee órdenes, así que mira esto entre tramo y tramo.
+/// Cada pedido cancelado lleva desde cuántos bytes bajados se corta (0: enseguida).
+#[derive(Clone, Debug, Default)]
+pub struct Cancelador(Arc<std::sync::Mutex<BTreeMap<u64, u64>>>);
+
+impl Cancelador {
+    fn mapa(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, u64>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn cancelar(&self, pedido: u64) {
+        self.cancelar_en(pedido, 0);
+    }
+
+    /// Cancela el pedido cuando lleve `bytes` bajados (la prueba de caos corta así a mitad).
+    pub fn cancelar_en(&self, pedido: u64, bytes: u64) {
+        if pedido != 0 {
+            self.mapa().insert(pedido, bytes);
+        }
+    }
+
+    /// Si el pedido está cancelado para lo que lleva bajado.
+    fn cortar(&self, pedido: u64, hay: u64) -> bool {
+        pedido != 0 && self.mapa().get(&pedido).is_some_and(|t| hay >= *t)
+    }
+
+    fn cancelado(&self, pedido: u64) -> bool {
+        pedido != 0 && self.mapa().contains_key(&pedido)
+    }
+
+    fn olvidar(&self, pedido: u64) {
+        self.mapa().remove(&pedido);
+    }
+}
+
+/// La bajada que se está mostrando (la de un [`Orden::Traer`]).
+struct EnCurso {
+    ruta: String,
+    pedido: u64,
+    ultimo: Option<Instant>,
 }
 
 /// Configuración del motor.
@@ -234,6 +293,9 @@ pub struct Sincronizador<A: Api> {
     /// Solo pruebas: corta «Liberar espacio» justo después de guardar el estado y antes de sacar
     /// la copia de la bóveda (como un corte de luz).
     pub cortar_liberar: bool,
+    /// Pedidos cancelados (compartido con la app).
+    pub cancelador: Cancelador,
+    en_curso: Option<EnCurso>,
 }
 
 fn padre_de(rel: &str) -> &str {
@@ -285,6 +347,8 @@ impl<A: Api> Sincronizador<A> {
             cuota: None,
             abierta: None,
             cortar_liberar: false,
+            cancelador: Cancelador::default(),
+            en_curso: None,
         };
         s.indexar();
         s
@@ -424,6 +488,9 @@ impl<A: Api> Sincronizador<A> {
             self.listado_inicial()?;
         } else {
             self.traer_cambios()?;
+        }
+        if !self.estado.cola.is_empty() {
+            self.aplicar_cola()?;
         }
         let completa = std::mem::take(&mut self.completa);
         let mut disco: HashMap<String, EnDisco> = HashMap::new();
@@ -1257,16 +1324,7 @@ impl<A: Api> Sincronizador<A> {
         n: &Nodo,
     ) -> Resultado<Option<PathBuf>> {
         fs::create_dir_all(dir).map_err(|e| ErrorApi::Local(e.to_string()))?;
-        let limpio: String = id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        let limpio = local::id_limpio(id);
         // El temporal lleva la suma de la versión: un tramo de otra versión nunca se retoma (la
         // prueba de caos encontró una bajada corrupta así), y los de versiones viejas se borran.
         let version = n.md5.as_deref().unwrap_or("sin-suma");
@@ -1284,8 +1342,36 @@ impl<A: Api> Sincronizador<A> {
         if fs::metadata(&tmp).is_ok_and(|m| m.len() > n.tam) {
             let _ = fs::remove_file(&tmp);
         }
-        match self.api.bajar(id, &tmp) {
+        // El progreso, solo de lo que se pidió abrir; entre tramo y tramo se mira si se canceló.
+        let (en_curso, cancelador, emitir) =
+            (&mut self.en_curso, &self.cancelador, &mut self.emitir);
+        let total = n.tam;
+        let res = self.api.bajar(id, &tmp, &mut |hay| {
+            let Some(c) = en_curso.as_mut() else {
+                return true;
+            };
+            if cancelador.cortar(c.pedido, hay) {
+                return false;
+            }
+            let ahora = Instant::now();
+            if c.ultimo.is_none_or(|t| ahora - t >= Duration::from_millis(120)) || hay >= total {
+                c.ultimo = Some(ahora);
+                emitir(Evento::Progreso {
+                    ruta: c.ruta.clone(),
+                    pedido: c.pedido,
+                    bajado: hay.min(total),
+                    total,
+                });
+            }
+            true
+        });
+        match res {
             Ok(()) => {}
+            Err(ErrorApi::Cancelada) => {
+                // Nada a medias en la caché: el tramo se borra (no se retoma).
+                let _ = fs::remove_file(&tmp);
+                return Err(ErrorApi::Cancelada);
+            }
             Err(ErrorApi::NoEncontrado) => {
                 let _ = fs::remove_file(&tmp);
                 self.quitar_nodo(id);
@@ -2016,6 +2102,49 @@ impl<A: Api> Sincronizador<A> {
         Ok(())
     }
 
+    /// Como [`Self::traer`], con el progreso ([`Evento::Progreso`]) y cancelable con el número de
+    /// pedido. Cancelada, no queda nada a medias en la caché y el estado no cambia.
+    pub fn traer_pedido(&mut self, r: &str, pedido: u64) -> Result<PathBuf, String> {
+        if self.cancelador.cortar(pedido, 0) {
+            self.cancelador.olvidar(pedido);
+            self.soltar_parcial(r);
+            return Err(CANCELADA.into());
+        }
+        self.en_curso = Some(EnCurso {
+            ruta: r.to_owned(),
+            pedido,
+            ultimo: None,
+        });
+        let res = self.traer(r);
+        self.en_curso = None;
+        let cancelado = res.is_err() && self.cancelador.cancelado(pedido);
+        self.cancelador.olvidar(pedido);
+        match res {
+            Err(_) if cancelado => {
+                self.soltar_parcial(r);
+                Err(CANCELADA.into())
+            }
+            x => x,
+        }
+    }
+
+    /// Borra lo bajado a medias de lo «solo en Drive» en `r` (también un tramo de un corte de
+    /// red anterior, que se habría retomado): cancelar no deja nada a medias en la caché. La
+    /// prueba de caos encontró un tramo que quedaba al cancelar antes de empezar.
+    fn soltar_parcial(&self, r: &str) {
+        let Some(b) = self.estado.registros.get(r) else {
+            return;
+        };
+        let prefijo = format!("{}-", local::id_limpio(&b.id));
+        if let Ok(rd) = fs::read_dir(self.cfg.dir_cache.join("parcial")) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&prefijo) {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+
     /// Trae a la caché un archivo «solo en Drive» para abrirlo (con conexión). Devuelve la ruta de
     /// la copia. Si la copia tiene cambios sin subir, se devuelve esa.
     pub fn traer(&mut self, r: &str) -> Result<PathBuf, String> {
@@ -2053,7 +2182,12 @@ impl<A: Api> Sincronizador<A> {
         match self.bajar_copia(r, &b.id, &n) {
             Ok(true) => {}
             Ok(false) => return Err("cambió en Drive mientras bajaba; probá otra vez".into()),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                // `bajar_copia` avisó «bajando»: se vuelve a mandar el mapa (sigue como estaba).
+                self.ultimo_mapa = None;
+                self.emitir_estados();
+                return Err(e.to_string());
+            }
         }
         let copia = self.ubicar_copia(&b);
         tocar(&copia);
@@ -2129,6 +2263,244 @@ impl<A: Api> Sincronizador<A> {
         self.ubicar_copia(&b);
         let _ = self.estado.guardar(&self.cfg.dir_estado);
         self.emitir_estados();
+        Ok(())
+    }
+
+    // --- cambios en cola (sin conexión) --------------------------------------------------------
+
+    /// Renombra o mueve lo «solo en Drive»: con conexión, en Drive enseguida; sin conexión (o si
+    /// la red se corta en el intento), queda en cola y la bóveda lo muestra hecho. `true`: quedó
+    /// en cola.
+    pub fn pedir_mover(&mut self, de: &str, a: &str, en_linea: bool) -> Resultado<bool> {
+        if en_linea && self.estado.cola.is_empty() {
+            match self.mover_marcador(de, a) {
+                Ok(()) => return Ok(false),
+                Err(e) if e.transitorio() => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.encolar_mover(de, a)?;
+        Ok(true)
+    }
+
+    /// Como [`Self::pedir_mover`], para mandar a la papelera de Drive.
+    pub fn pedir_borrar(&mut self, r: &str, en_linea: bool) -> Resultado<bool> {
+        if en_linea && self.estado.cola.is_empty() {
+            match self.borrar_marcador(r) {
+                Ok(()) => return Ok(false),
+                Err(e) if e.transitorio() => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.encolar_borrar(r)?;
+        Ok(true)
+    }
+
+    /// Anota un renombre de lo «solo en Drive» para cuando vuelva la red. El registro pasa ya a
+    /// la ruta nueva (el explorador lo muestra ahí, «pendiente»); la copia de la caché no se toca.
+    pub fn encolar_mover(&mut self, de: &str, a: &str) -> Resultado<()> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(de)
+            .filter(|b| b.solo_drive && !b.carpeta)
+            .cloned()
+        else {
+            return Err(ErrorApi::Local(format!("«{de}» no está solo en Drive")));
+        };
+        if de == a {
+            return Ok(());
+        }
+        if self.estado.registros.contains_key(a) || self.cfg.root.join(a).exists() {
+            return Err(ErrorApi::Local(format!("ya hay algo en «{a}»")));
+        }
+        let origen = match self.estado.cola.get(&b.id) {
+            Some(Pendiente::Mover { de: primero, .. }) => primero.clone(),
+            _ => de.to_owned(),
+        };
+        let e = self.e();
+        e.registros.remove(de);
+        e.registros.insert(a.to_owned(), b.clone());
+        if let Some(u) = e.reglas.remove(de) {
+            e.reglas.insert(a.to_owned(), u);
+        }
+        e.cola.insert(
+            b.id.clone(),
+            Pendiente::Mover {
+                de: origen,
+                a: a.to_owned(),
+            },
+        );
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(())
+    }
+
+    /// Anota mandar a la papelera de Drive lo «solo en Drive» para cuando vuelva la red. Sale ya
+    /// del explorador. Si la copia de la caché tenía cambios sin subir, van antes al historial.
+    pub fn encolar_borrar(&mut self, r: &str) -> Resultado<()> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(r)
+            .filter(|b| b.solo_drive && !b.carpeta)
+            .cloned()
+        else {
+            return Err(ErrorApi::Local(format!("«{r}» no está solo en Drive")));
+        };
+        let copia = self.ubicar_copia(&b);
+        if self.md5_copia(&b, &copia).is_some_and(|(_, m)| m != b.md5)
+            && let Ok(c) = fs::read(&copia)
+        {
+            self.al_historial(r, &c);
+        }
+        let e = self.e();
+        e.registros.remove(r);
+        e.reglas.remove(r);
+        e.cola.insert(
+            b.id.clone(),
+            Pendiente::Borrar {
+                ruta: r.to_owned(),
+                md5: b.md5.clone(),
+            },
+        );
+        let _ = self.estado.guardar(&self.cfg.dir_estado);
+        self.emitir_estados();
+        Ok(())
+    }
+
+    /// Una ruta libre en Drive y en la bóveda para `a` (con ` (2)`, ` (3)`… si otro archivo de
+    /// Drive ya tiene ese nombre; `id` es el que se mueve).
+    fn ruta_libre(&self, a: &str, id: &str) -> String {
+        let ocupada = |r: &str| {
+            self.ruta_id.get(r).is_some_and(|x| x != id)
+                || self.estado.registros.get(r).is_some_and(|b| b.id != id)
+                || self.cfg.root.join(r).exists()
+        };
+        if !ocupada(a) {
+            return a.to_owned();
+        }
+        let (padre, nombre) = (padre_de(a), nombre_de(a));
+        let (base, ext) = match nombre.rsplit_once('.') {
+            Some((b, e)) if !b.is_empty() => (b, format!(".{e}")),
+            _ => (nombre, String::new()),
+        };
+        (2..)
+            .map(|k| unir(padre, &format!("{base} ({k}){ext}")))
+            .find(|r| !ocupada(r))
+            .expect("hay un nombre libre")
+    }
+
+    /// Aplica en Drive los cambios en cola (al principio de cada ciclo, después de traer los
+    /// cambios remotos y antes de conciliar: así lo que cambió en Drive mientras tanto ya se
+    /// conoce). Nunca se pierde una versión:
+    /// - renombrado en cola y en Drive cambió el contenido: se renombra igual (mismo id; la copia
+    ///   y el extracto se renuevan después);
+    /// - renombrado en cola y otro archivo tomó ese nombre en Drive: queda con ` (2)`;
+    /// - renombrado en cola y se borró en Drive: se suelta la cola y sigue el camino de siempre
+    ///   (si la copia tenía cambios, vuelve a la bóveda y se sube);
+    /// - a la papelera en cola y cambió en Drive: no se manda a la papelera, vuelve a aparecer.
+    fn aplicar_cola(&mut self) -> Resultado<()> {
+        let cola: Vec<(String, Pendiente)> = self
+            .estado
+            .cola
+            .iter()
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect();
+        for (id, p) in cola {
+            match p {
+                Pendiente::Mover { de, a } => self.aplicar_mover(&id, &de, &a)?,
+                Pendiente::Borrar { ruta, md5 } => self.aplicar_borrar(&id, &ruta, md5)?,
+            }
+            self.e().cola.remove(&id);
+        }
+        Ok(())
+    }
+
+    fn aplicar_mover(&mut self, id: &str, de: &str, a: &str) -> Resultado<()> {
+        let Some(b) = self
+            .estado
+            .registros
+            .get(a)
+            .filter(|b| b.id == id && b.solo_drive)
+            .cloned()
+        else {
+            return Ok(()); // ya no está ahí (se trajo a la bóveda, se volvió a mover…)
+        };
+        let Some(n) = self.estado.nodos.get(id).cloned() else {
+            // Se borró en Drive mientras tanto: lo resuelve `conciliar_marcador` (la copia
+            // editada vuelve a la bóveda y se sube; si no, Drive la tiene en su papelera).
+            self.sucio.insert(a.to_owned());
+            return Ok(());
+        };
+        let destino = self.ruta_libre(a, id);
+        if destino != a {
+            let e = self.e();
+            e.registros.remove(a);
+            e.registros.insert(destino.clone(), b.clone());
+            if let Some(u) = e.reglas.remove(a) {
+                e.reglas.insert(destino.clone(), u);
+            }
+            // Si el ciclo se corta antes de llegar a Drive, la cola ya apunta a la ruta nueva.
+            e.cola.insert(
+                id.to_owned(),
+                Pendiente::Mover {
+                    de: de.to_owned(),
+                    a: destino.clone(),
+                },
+            );
+            self.avisar(
+                &format!("renombre:{destino}"),
+                format!("En Drive ya había otro «{}»: «{de}» quedó como «{}».", nombre_de(a), nombre_de(&destino)),
+            );
+        }
+        let padre_nuevo = self.carpeta_remota(padre_de(&destino))?;
+        let cambia_nombre = n.nombre != nombre_de(&destino);
+        let cambia_padre = n.padre != padre_nuevo;
+        if cambia_nombre || cambia_padre {
+            match self.api.actualizar(
+                id,
+                cambia_nombre.then_some(nombre_de(&destino)),
+                cambia_padre.then_some(padre_nuevo.as_str()),
+                cambia_padre.then_some(n.padre.as_str()),
+            ) {
+                Ok(x) => self.poner_nodo(&x, &padre_nuevo),
+                Err(ErrorApi::NoEncontrado) => self.quitar_nodo(id),
+                Err(e) => return Err(e),
+            }
+            self.ubicar_copia(&b);
+        }
+        self.sucio.insert(destino);
+        Ok(())
+    }
+
+    fn aplicar_borrar(&mut self, id: &str, ruta: &str, md5: Option<String>) -> Resultado<()> {
+        let nombre = self.estado.nodos.get(id).map(|n| n.nombre.clone());
+        let copia = estado::ruta_copia(
+            &self.cfg.dir_cache,
+            id,
+            nombre.as_deref().unwrap_or("archivo"),
+        );
+        match self.estado.nodos.get(id) {
+            None => {} // ya no está en Drive
+            Some(n) if n.md5 != md5 => {
+                // Cambió en Drive después de mandarlo a la papelera sin conexión: esa versión
+                // no se manda a la papelera. Vuelve como algo nuevo de Drive.
+                if let Some(r) = self.id_ruta.get(id).cloned() {
+                    self.sucio.insert(r);
+                }
+                self.avisar(
+                    &format!("conservado:{ruta}"),
+                    format!("«{ruta}» cambió en Drive mientras esperaba para ir a la papelera: se conservó la versión nueva."),
+                );
+            }
+            Some(_) => {
+                self.api.a_papelera(id)?;
+                self.quitar_nodo(id);
+            }
+        }
+        let _ = fs::remove_file(&copia);
+        let _ = fs::remove_dir(copia.parent().unwrap_or(Path::new("")));
         Ok(())
     }
 
@@ -2357,6 +2729,13 @@ impl<A: Api> Sincronizador<A> {
         for r in &self.locales_defecto {
             m.insert(r.clone(), EstadoArchivo::Local);
         }
+        for p in self.estado.cola.values() {
+            if let Pendiente::Mover { a, .. } = p
+                && self.estado.registros.contains_key(a)
+            {
+                m.insert(a.clone(), EstadoArchivo::Pendiente);
+            }
+        }
         // Carpetas: el peor estado de su contenido.
         let hojas: Vec<(String, EstadoArchivo)> = m
             .iter()
@@ -2470,7 +2849,7 @@ impl<A: Api> Sincronizador<A> {
     }
 
     pub fn por_subir(&self) -> usize {
-        self.pendientes.len() + self.estado.subidas.len() + self.sucio.len()
+        self.pendientes.len() + self.estado.subidas.len() + self.sucio.len() + self.estado.cola.len()
     }
 
     /// El enlace de Drive de una ruta.
@@ -2549,7 +2928,7 @@ fn traer_conexion(api: &mut dyn Api, root: &Path, carpeta: &str) -> Resultado<()
         .map_err(|e| ErrorApi::Local(e.to_string()))?;
     let tmp = destino.with_extension("yaml.parcial");
     let _ = fs::remove_file(&tmp);
-    api.bajar(&yaml.id, &tmp)?;
+    api.bajar(&yaml.id, &tmp, &mut |_| true)?;
     fs::rename(&tmp, &destino).map_err(|e| ErrorApi::Local(e.to_string()))
 }
 
@@ -2585,6 +2964,7 @@ pub fn id_de_enlace(texto: &str) -> Option<String> {
 pub struct Motor {
     tx: mpsc::Sender<Orden>,
     hilo: Option<JoinHandle<()>>,
+    cancelador: Cancelador,
 }
 
 impl Motor {
@@ -2596,17 +2976,25 @@ impl Motor {
         E: Fn(Evento) + Send + Sync + 'static,
     {
         let (tx, rx) = mpsc::channel();
+        let cancelador = Cancelador::default();
+        let c = cancelador.clone();
         let hilo = std::thread::Builder::new()
             .name("orbital-drive".into())
-            .spawn(move || bucle(cfg, fabrica, Arc::new(emitir), rx))?;
+            .spawn(move || bucle(cfg, fabrica, Arc::new(emitir), rx, c))?;
         Ok(Self {
             tx,
             hilo: Some(hilo),
+            cancelador,
         })
     }
 
     pub fn enviar(&self, o: Orden) {
         let _ = self.tx.send(o);
+    }
+
+    /// Cancela un [`Orden::Traer`] (aunque el motor esté bajando: no espera a que lea la orden).
+    pub fn cancelar(&self, pedido: u64) {
+        self.cancelador.cancelar(pedido);
     }
 
     /// Pide terminar y espera a que el hilo guarde el estado.
@@ -2629,6 +3017,7 @@ fn bucle<F>(
     fabrica: F,
     emitir: Arc<dyn Fn(Evento) + Send + Sync>,
     rx: mpsc::Receiver<Orden>,
+    cancelador: Cancelador,
 ) where
     F: FnOnce(&Estado) -> Result<Box<dyn Api>, String>,
 {
@@ -2652,6 +3041,7 @@ fn bucle<F>(
     };
     let em = emitir.clone();
     let mut s = Sincronizador::new(cfg.clone(), api, estado, conexion, Box::new(move |e| em(e)));
+    s.cancelador = cancelador;
     let mut activo = true;
     let mut en_linea = true;
     let mut pausa: Option<String> = None;
@@ -2751,30 +3141,36 @@ fn bucle<F>(
                 emitir(resumen(&s, en_linea, false, &pausa, &error));
                 continue;
             }
-            Ok(Orden::Traer(r)) => {
+            Ok(Orden::Traer(r, pedido)) => {
                 let res = if en_linea {
-                    s.traer(&r)
+                    s.traer_pedido(&r, pedido)
                 } else {
+                    s.cancelador.olvidar(pedido);
                     Err("no hay conexión".into())
                 };
-                emitir(Evento::Traido(r, res));
+                emitir(Evento::Traido(r, pedido, res));
                 continue;
             }
             Ok(Orden::Borrar(r)) => {
-                if let Err(e) = s.borrar_marcador(&r) {
-                    emitir(Evento::Aviso(format!(
+                match s.pedir_borrar(&r, en_linea && pausa.is_none()) {
+                    Ok(true) if en_linea => proximo = Instant::now(),
+                    Ok(_) => {}
+                    Err(e) => emitir(Evento::Aviso(format!(
                         "No se pudo mandar «{r}» a la papelera de Drive: {e}"
-                    )));
+                    ))),
                 }
                 emitir(resumen(&s, en_linea, false, &pausa, &error));
                 continue;
             }
             Ok(Orden::Mover { de, a }) => {
-                if let Err(e) = s.mover_marcador(&de, &a) {
-                    emitir(Evento::Aviso(format!(
+                match s.pedir_mover(&de, &a, en_linea && pausa.is_none()) {
+                    Ok(true) if en_linea => proximo = Instant::now(),
+                    Ok(_) => {}
+                    Err(e) => emitir(Evento::Aviso(format!(
                         "No se pudo mover «{de}» en Drive: {e}"
-                    )));
+                    ))),
                 }
+                emitir(resumen(&s, en_linea, false, &pausa, &error));
                 continue;
             }
             Ok(Orden::Detener) | Err(mpsc::RecvTimeoutError::Disconnected) => {

@@ -586,7 +586,12 @@ impl Api for Cliente {
         }
     }
 
-    fn bajar(&mut self, id: &str, destino: &Path) -> Resultado<()> {
+    fn bajar(
+        &mut self,
+        id: &str,
+        destino: &Path,
+        progreso: &mut dyn FnMut(u64) -> bool,
+    ) -> Resultado<()> {
         let ya = std::fs::metadata(destino).map(|m| m.len()).unwrap_or(0);
         let url = self.url(&format!("/drive/v3/files/{}?alt=media", escapar(id)));
         let mut intento = 0;
@@ -638,6 +643,11 @@ impl Api for Cliente {
                 .open(destino)
                 .map_err(|e| ErrorApi::Local(e.to_string()))?;
             let mut buf = vec![0u8; 256 * 1024];
+            let mut hay = if estado == 206 { ya } else { 0 };
+            if !progreso(hay) {
+                let _ = flujo.close(gio::Cancellable::NONE);
+                return Err(ErrorApi::Cancelada);
+            }
             loop {
                 let n = flujo
                     .read(&mut buf, gio::Cancellable::NONE)
@@ -647,6 +657,11 @@ impl Api for Cliente {
                 }
                 f.write_all(&buf[..n])
                     .map_err(|e| ErrorApi::Local(e.to_string()))?;
+                hay += n as u64;
+                if !progreso(hay) {
+                    let _ = flujo.close(gio::Cancellable::NONE);
+                    return Err(ErrorApi::Cancelada);
+                }
             }
             f.sync_all().map_err(|e| ErrorApi::Local(e.to_string()))?;
             return Ok(());

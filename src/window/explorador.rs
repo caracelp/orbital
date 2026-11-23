@@ -173,7 +173,14 @@ impl Window {
             return None;
         }
         let carpeta = self.entry(rel).is_some_and(|e| e.kind == EntryKind::Folder);
-        let mut items = self.items_ubicacion(rel, carpeta);
+        let mut items = Vec::new();
+        if !carpeta {
+            // Lo «solo en Drive» se baja antes, con el progreso y «Cancelar» (061b).
+            let mut m = MenuItem::new("Abrir con otra aplicación", "win.abrir-con-de", "");
+            m.target = Some(rel.to_owned());
+            items.push(m);
+        }
+        items.extend(self.items_ubicacion(rel, carpeta));
         if self.drive_ubicacion(rel) != orbital_drive::reglas::Ubicacion::Local {
             let mut m = MenuItem::new("Copiar enlace de Drive", "win.drive-enlace-de", "");
             m.target = Some(rel.to_owned());

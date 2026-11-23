@@ -4,6 +4,7 @@
 //! Sin conexión, el marcador explica por qué no se ve.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -15,6 +16,48 @@ type Pedir = Rc<dyn Fn(String)>;
 thread_local! {
     static PEDIR: RefCell<Option<Pedir>> = const { RefCell::new(None) };
     static EN_LINEA: Cell<bool> = const { Cell::new(false) };
+    /// Los marcadores de lugar que esperan cada archivo (para mostrar cuánto falta).
+    static ESPERAN: RefCell<HashMap<String, Vec<Espera>>> = RefCell::new(HashMap::new());
+}
+
+/// Un marcador de lugar que espera su copia.
+struct Espera {
+    fila: gtk::glib::WeakRef<gtk::Box>,
+    texto: gtk::glib::WeakRef<gtk::Label>,
+    nombre: String,
+    /// El último cuarto que se dijo en el nombre accesible (no se cambia en cada tramo).
+    cuarto: Cell<u8>,
+}
+
+/// Cuánto lleva bajado un archivo que esperan embeds: el porcentaje en el texto, y en el nombre
+/// accesible solo cada 25 %.
+pub fn progreso(rel: &str, bajado: u64, total: u64) {
+    ESPERAN.with(|e| {
+        let mut e = e.borrow_mut();
+        let Some(v) = e.get_mut(rel) else {
+            return;
+        };
+        v.retain(|x| x.texto.upgrade().is_some());
+        let pct = (bajado.min(total) * 100).checked_div(total).unwrap_or(100);
+        for x in v.iter() {
+            let texto = format!("Bajando de Drive: «{}»… {pct} %", x.nombre);
+            if let Some(l) = x.texto.upgrade() {
+                l.set_label(&texto);
+            }
+            let cuarto = (pct / 25).min(4) as u8;
+            if cuarto != x.cuarto.get()
+                && let Some(f) = x.fila.upgrade()
+            {
+                x.cuarto.set(cuarto);
+                f.update_property(&[gtk::accessible::Property::Label(&texto)]);
+            }
+        }
+    });
+}
+
+/// Llegó la copia: los marcadores de lugar de ese archivo ya no esperan (la nota se redibuja).
+pub fn terminado(rel: &str) {
+    ESPERAN.with(|e| e.borrow_mut().remove(rel));
 }
 
 /// La ventana se anota para recibir los pedidos (la ruta relativa del archivo).
@@ -45,11 +88,13 @@ pub fn marcador_de_lugar(ruta: &Path) -> gtk::Widget {
         .margin_bottom(6)
         .css_classes(["dim-label"])
         .build();
+    let mut espera = None;
     let texto = if en_linea {
-        if let Some((_, rel)) = orbital_vault::ubicacion::origen(ruta)
-            && let Some(p) = PEDIR.with(|p| p.borrow().clone())
-        {
-            p(rel);
+        if let Some((_, rel)) = orbital_vault::ubicacion::origen(ruta) {
+            if let Some(p) = PEDIR.with(|p| p.borrow().clone()) {
+                p(rel.clone());
+            }
+            espera = Some(rel);
         }
         fila.append(&adw::Spinner::new());
         format!("Bajando de Drive: «{nombre}»…")
@@ -64,5 +109,15 @@ pub fn marcador_de_lugar(ruta: &Path) -> gtk::Widget {
         .build();
     fila.append(&l);
     fila.update_property(&[gtk::accessible::Property::Label(&texto)]);
+    if let Some(rel) = espera {
+        ESPERAN.with(|e| {
+            e.borrow_mut().entry(rel).or_default().push(Espera {
+                fila: fila.downgrade(),
+                texto: l.downgrade(),
+                nombre,
+                cuarto: Cell::new(0),
+            })
+        });
+    }
     fila.upcast()
 }

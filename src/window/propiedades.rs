@@ -417,7 +417,7 @@ impl Window {
             return;
         }
         match vault.resolve_link(from, resource) {
-            orbital_vault::Resolution::Found(p) => self.launch_file(&p.to_path(vault.root())),
+            orbital_vault::Resolution::Found(p) => self.abrir_con_otra(p.as_str()),
             _ => self.toast(&format!("No encontré la fuente «{resource}»")),
         }
     }

@@ -81,10 +81,10 @@ impl Window {
             .build();
         self.0.window.add_action_entries([
             simple("open-external", |w| {
+                // Lo «solo en Drive» se baja antes (061b).
                 let entry = w.0.current_entry.borrow().clone();
-                let root = w.0.vault.borrow().as_ref().map(|v| v.root().to_path_buf());
-                if let (Some(e), Some(root)) = (entry, root) {
-                    w.launch_file(&e.path.to_path(&root));
+                if let Some(e) = entry {
+                    w.abrir_con_otra(e.path.as_str());
                 }
             }),
             simple("preferences", Window::show_preferences),
