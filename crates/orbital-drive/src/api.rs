@@ -109,6 +109,8 @@ pub enum ErrorApi {
     Servidor(u16, String),
     /// Error local (disco) al subir o bajar.
     Local(String),
+    /// La usuaria canceló la bajada (061b): no es un error del motor ni de la red.
+    Cancelada,
 }
 
 impl ErrorApi {
@@ -131,6 +133,7 @@ impl fmt::Display for ErrorApi {
             Self::NoEncontrado => write!(f, "el archivo ya no está en Drive"),
             Self::Servidor(c, m) => write!(f, "error de Google Drive ({c}: {m})"),
             Self::Local(m) => write!(f, "error en el disco ({m})"),
+            Self::Cancelada => write!(f, "se canceló"),
         }
     }
 }
@@ -191,7 +194,15 @@ pub trait Api {
         al_abrir: &mut dyn FnMut(&SesionSubida),
     ) -> Resultado<Archivo>;
     /// Baja el contenido a `destino`; si `destino` ya tiene un tramo, sigue desde ahí.
-    fn bajar(&mut self, id: &str, destino: &Path) -> Resultado<()>;
+    /// `progreso` recibe los bytes que ya tiene `destino` después de cada tramo leído; si
+    /// devuelve `false`, la bajada se corta con [`ErrorApi::Cancelada`] (lo bajado queda en
+    /// `destino`: lo borra quien llama).
+    fn bajar(
+        &mut self,
+        id: &str,
+        destino: &Path,
+        progreso: &mut dyn FnMut(u64) -> bool,
+    ) -> Resultado<()>;
     /// Renombra o mueve (el id no cambia).
     fn actualizar(
         &mut self,
@@ -249,8 +260,13 @@ impl<T: Api + ?Sized> Api for Box<T> {
     ) -> Resultado<Archivo> {
         (**self).subir_cambio(id, ruta, sesion, al_abrir)
     }
-    fn bajar(&mut self, id: &str, destino: &Path) -> Resultado<()> {
-        (**self).bajar(id, destino)
+    fn bajar(
+        &mut self,
+        id: &str,
+        destino: &Path,
+        progreso: &mut dyn FnMut(u64) -> bool,
+    ) -> Resultado<()> {
+        (**self).bajar(id, destino, progreso)
     }
     fn actualizar(
         &mut self,

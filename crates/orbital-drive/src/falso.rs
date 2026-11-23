@@ -71,6 +71,8 @@ pub struct Datos {
     pub cortadas: u64,
     /// De lo que llega en un tramo cortado se conserva un múltiplo de esto (Drive: 256 KiB).
     pub granulo: usize,
+    /// Bajadas lentas (para ver el progreso y cancelar): tramos de este tamaño con esta pausa.
+    pub ritmo_bajada: Option<(usize, Duration)>,
 }
 
 impl Datos {
@@ -775,6 +777,7 @@ fn manejar(
                             .ok()
                     })
                     .unwrap_or(0);
+                let ritmo = d.ritmo_bajada;
                 drop(d);
                 if desde > 0 && desde >= a.contenido.len() {
                     return responder(s, 416, &[], b"");
@@ -790,6 +793,20 @@ fn manejar(
                     let _ = s.write_all(h.as_bytes());
                     let _ = s.write_all(&parte[..n.min(parte.len())]);
                     let _ = s.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+                if let Some((tramo, pausa)) = ritmo {
+                    let h = format!(
+                        "HTTP/1.1 {codigo} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        parte.len()
+                    );
+                    let _ = s.write_all(h.as_bytes());
+                    for t in parte.chunks(tramo.max(1)) {
+                        if s.write_all(t).and_then(|()| s.flush()).is_err() {
+                            return; // el cliente cortó (canceló)
+                        }
+                        std::thread::sleep(pausa);
+                    }
                     return;
                 }
                 return responder(s, codigo, &[], parte);

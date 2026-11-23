@@ -80,6 +80,17 @@ pub struct Conflicto {
     pub fecha: String,
 }
 
+/// Un cambio de lo «solo en Drive» hecho sin conexión, que espera la red (061b). La bóveda y el
+/// explorador ya lo muestran hecho; Drive lo recibe en el próximo ciclo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pendiente {
+    /// Renombrar o mover: estaba en `de` y la usuaria lo puso en `a` (el registro ya está en `a`).
+    Mover { de: String, a: String },
+    /// Mandar a la papelera de Drive lo que estaba en `ruta`, si Drive sigue teniendo la versión
+    /// `md5` (si cambió en Drive mientras tanto, se conserva).
+    Borrar { ruta: String, md5: Option<String> },
+}
+
 /// Todo el estado de un equipo para una bóveda.
 #[derive(Clone, Debug, Default)]
 pub struct Estado {
@@ -103,6 +114,8 @@ pub struct Estado {
     pub nuevo_local: Ubicacion,
     /// Qué pasa con lo que aparece nuevo en Drive y no tiene regla.
     pub nuevo_remoto: Ubicacion,
+    /// Cambios de lo «solo en Drive» hechos sin conexión, por id de Drive (uno por archivo).
+    pub cola: BTreeMap<String, Pendiente>,
 }
 
 /// Un archivo «solo en Drive», tal como lo lee la app al escanear (sin red).
@@ -294,6 +307,14 @@ impl Estado {
         for (r, u) in &self.reglas {
             linea(&mut s, &["U", r, u.clave()]);
         }
+        for (id, p) in &self.cola {
+            match p {
+                Pendiente::Mover { de, a } => linea(&mut s, &["Q", id, "m", de, a, ""]),
+                Pendiente::Borrar { ruta, md5 } => {
+                    linea(&mut s, &["Q", id, "b", ruta, "", &o(md5)])
+                }
+            }
+        }
         s
     }
 
@@ -392,6 +413,17 @@ impl Estado {
                     if let Some(u) = Ubicacion::desde_clave(&k(2)) {
                         e.reglas.insert(k(1), u);
                     }
+                }
+                "Q" if c.len() >= 6 => {
+                    let p = match k(2).as_str() {
+                        "m" => Pendiente::Mover { de: k(3), a: k(4) },
+                        "b" => Pendiente::Borrar {
+                            ruta: k(3),
+                            md5: op(&k(5)),
+                        },
+                        _ => return Err(malo(l)),
+                    };
+                    e.cola.insert(k(1), p);
                 }
                 _ => return Err(malo(l)),
             }
@@ -693,12 +725,27 @@ mod tests {
         );
         e.reglas.insert("raw/".into(), Ubicacion::SoloDrive);
         e.nuevo_remoto = Ubicacion::SoloDrive;
+        e.cola.insert(
+            "m".into(),
+            Pendiente::Mover {
+                de: "wiki/vie\tja.md".into(),
+                a: "wiki/nota.md".into(),
+            },
+        );
+        e.cola.insert(
+            "q".into(),
+            Pendiente::Borrar {
+                ruta: "raw/v.mp4".into(),
+                md5: Some("ff".into()),
+            },
+        );
         let dir = std::env::temp_dir().join(format!("orbital-drive-estado-{}", std::process::id()));
         e.guardar(&dir).unwrap();
         let l = Estado::leer(&dir).unwrap().unwrap();
         assert_eq!(l.nodos, e.nodos);
         assert_eq!(l.registros, e.registros);
         assert_eq!(l.reglas, e.reglas);
+        assert_eq!(l.cola, e.cola);
         assert_eq!(l.nuevo_remoto, Ubicacion::SoloDrive);
         let _c = Candado::tomar(&dir).unwrap();
         assert!(Candado::tomar(&dir).is_err());

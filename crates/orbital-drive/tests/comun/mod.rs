@@ -178,6 +178,17 @@ impl Equipo {
         v
     }
 
+    /// Bajadas a medias en la caché (`cache/parcial`).
+    pub fn parciales(&self) -> Vec<String> {
+        fs::read_dir(self.base.join("cache/parcial"))
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Rutas «solo en Drive».
     pub fn marcadores(&mut self) -> Vec<String> {
         self.s()

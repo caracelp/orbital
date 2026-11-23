@@ -289,17 +289,22 @@ impl Window {
             return;
         }
         // «Solo en Drive» (061b): se renombra o mueve en Drive (mismo id); no hay nada en el disco.
+        // Sin conexión queda en cola: el explorador lo muestra ya, «pendiente», y se aplica en
+        // Drive al volver la red (aunque se cierre Orbital).
         if self.drive_es_marcador(from.as_str()) {
-            if !self.drive_en_linea() {
-                return self.toast(
-                    "Está solo en Drive y no hay conexión: se puede renombrar cuando vuelva la red",
-                );
-            }
+            let en_linea = self.drive_en_linea();
             self.drive_orden(orbital_drive::Orden::Mover {
                 de: from.as_str().to_owned(),
                 a: to.as_str().to_owned(),
             });
-            return self.toast(&format!("«{}» se renombra en Drive", from.file_name()));
+            return self.toast(&if en_linea {
+                format!("«{}» se renombra en Drive", from.file_name())
+            } else {
+                format!(
+                    "Sin conexión: «{}» se renombra en Drive cuando vuelva la red",
+                    from.file_name()
+                )
+            });
         }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
@@ -475,15 +480,21 @@ impl Window {
             return;
         }
         // «Solo en Drive» (061b): a la papelera de Drive (se recupera desde la web).
+        // Sin conexión queda en cola (sale ya del explorador; va a la papelera al volver la red).
         if self.drive_es_marcador(path.as_str()) {
-            if !self.drive_en_linea() {
-                return self.toast("Está solo en Drive y no hay conexión: se puede mandar a la papelera cuando vuelva la red");
-            }
+            let en_linea = self.drive_en_linea();
             self.drive_orden(orbital_drive::Orden::Borrar(path.as_str().to_owned()));
-            return self.toast(&format!(
-                "«{}» se mandó a la papelera de Google Drive",
-                path.file_name()
-            ));
+            return self.toast(&if en_linea {
+                format!(
+                    "«{}» se mandó a la papelera de Google Drive",
+                    path.file_name()
+                )
+            } else {
+                format!(
+                    "Sin conexión: «{}» va a la papelera de Google Drive cuando vuelva la red",
+                    path.file_name()
+                )
+            });
         }
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
