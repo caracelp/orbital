@@ -69,7 +69,9 @@ const NOMBRES: &[&str] = &[
 fn texto(n: u64, quien: &str, r: &str) -> Vec<u8> {
     if r.ends_with(".bin") {
         let mut v = format!("BIN {quien} {n}\n").into_bytes();
-        v.extend((0..(n % 5000) as u32).map(|i| (i % 251) as u8));
+        // Tamaños repartidos hasta 5000 B: los de más de 1 KB van por subida reanudable (antes
+        // `n % 5000` no pasaba de unos 600 B y la prueba nunca cortaba una subida a mitad).
+        v.extend((0..(n * 37 % 5000) as u32).map(|i| (i % 251) as u8));
         v
     } else {
         // Varios renglones: a veces se tocan renglones distintos (fusión), a veces el mismo.

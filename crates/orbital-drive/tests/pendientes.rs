@@ -30,17 +30,7 @@ fn a_y_b(srv: &ServidorFalso) -> (Equipo, Equipo, String) {
 
 /// Lo que hay en las carpetas de bajadas a medias de la caché.
 fn a_medias(b: &Equipo) -> Vec<String> {
-    let mut v = Vec::new();
-    for d in ["cache/parcial"] {
-        let dir = b.root.parent().unwrap().join(d);
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            v.extend(
-                rd.flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned()),
-            );
-        }
-    }
-    v
+    b.parciales()
 }
 
 fn progresos(b: &Equipo) -> Vec<(u64, u64)> {
