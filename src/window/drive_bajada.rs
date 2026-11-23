@@ -12,6 +12,13 @@ use super::*;
 use crate::drive_progreso::Medidor;
 use orbital_drive::Orden;
 
+#[cfg(test)]
+thread_local! {
+    /// Solo pruebas: lo que se habría abierto con otra aplicación.
+    pub(super) static LANZADAS: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Para qué se baja.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ParaQue {
@@ -27,8 +34,21 @@ pub(super) struct Bajada {
     medidor: Medidor,
     barra: gtk::ProgressBar,
     detalle: gtk::Label,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) cancelar: gtk::Button,
     /// El diálogo de «Abrir con» (para abrir, la página del centro).
     dialogo: Option<adw::Dialog>,
+}
+
+#[cfg(test)]
+impl Bajada {
+    pub(super) fn barra_fraccion(&self) -> f64 {
+        self.barra.fraction()
+    }
+
+    pub(super) fn barra_texto(&self) -> String {
+        self.barra.text().map(|t| t.to_string()).unwrap_or_default()
+    }
 }
 
 /// La barra, el detalle y «Cancelar».
@@ -39,7 +59,10 @@ fn vista(nombre: &str) -> (gtk::Box, gtk::ProgressBar, gtk::Label, gtk::Button) 
         .halign(gtk::Align::Center)
         .width_request(320)
         .build();
-    let barra = gtk::ProgressBar::builder().show_text(true).text("0 %").build();
+    let barra = gtk::ProgressBar::builder()
+        .show_text(true)
+        .text("0 %")
+        .build();
     barra.update_property(&[gtk::accessible::Property::Label(&format!(
         "Bajada de «{nombre}»"
     ))]);
@@ -174,6 +197,7 @@ impl Window {
             medidor: Medidor::new(&nombre),
             barra,
             detalle,
+            cancelar: cancelar.clone(),
             dialogo: dialogo.clone(),
         });
         match dialogo {
@@ -253,9 +277,7 @@ impl Window {
         let Some(b) = d.bajada.as_mut().filter(|b| b.pedido == pedido) else {
             return;
         };
-        let l = b
-            .medidor
-            .avanzar(std::time::Instant::now(), bajado, total);
+        let l = b.medidor.avanzar(std::time::Instant::now(), bajado, total);
         b.barra.set_fraction(l.fraccion);
         b.barra.set_text(Some(&l.porcentaje));
         b.detalle.set_label(&l.detalle);
@@ -305,7 +327,13 @@ impl Window {
     /// «Abrir con otra aplicación» de cualquier archivo de la bóveda: lo «solo en Drive» se baja
     /// antes (con el mismo progreso y «Cancelar»); sin conexión se explica por qué no.
     pub(super) fn abrir_con_otra(&self, rel: &str) {
-        let Some(root) = self.0.vault.borrow().as_ref().map(|v| v.root().to_path_buf()) else {
+        let Some(root) = self
+            .0
+            .vault
+            .borrow()
+            .as_ref()
+            .map(|v| v.root().to_path_buf())
+        else {
             return;
         };
         if !self.drive_es_marcador(rel) {
@@ -336,6 +364,10 @@ impl Window {
     /// Abre la copia de la caché con la aplicación del sistema y la vigila: si esa aplicación la
     /// guarda, el motor sube el cambio.
     fn drive_lanzar_copia(&self, copia: &Path) {
+        // En las pruebas no se abre otra aplicación de verdad: se anota.
+        #[cfg(test)]
+        LANZADAS.with(|l| l.borrow_mut().push(copia.to_path_buf()));
+        #[cfg(not(test))]
         self.launch_file(copia);
         let Some(dir) = copia.parent() else {
             return;

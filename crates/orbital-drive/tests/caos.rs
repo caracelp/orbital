@@ -151,8 +151,13 @@ fn bajada_cancelada(e: &mut Equipo, az: &mut Azar, pedido: &mut u64, quien: &str
     let en = az.hasta(3000) as u64;
     e.s().cancelador.cancelar_en(*pedido, en);
     let res = e.s().traer_pedido(&r, *pedido);
-    traza(format!("{quien}: bajada de {r} cancelada en {en} B -> {res:?}"));
-    if res.as_deref().is_err_and(|m| m == orbital_drive::motor::CANCELADA) {
+    traza(format!(
+        "{quien}: bajada de {r} cancelada en {en} B -> {res:?}"
+    ));
+    if res
+        .as_deref()
+        .is_err_and(|m| m == orbital_drive::motor::CANCELADA)
+    {
         let quedan: Vec<String> = e
             .parciales()
             .into_iter()
@@ -182,7 +187,9 @@ fn cambio_en_cola(
     let en_linea = !srv.datos().caido && az.hasta(3) == 0;
     if az.hasta(4) == 0 {
         let res = e.s().pedir_borrar(&r, en_linea);
-        traza(format!("{quien}: papelera {r} (en línea {en_linea}) -> {res:?}"));
+        traza(format!(
+            "{quien}: papelera {r} (en línea {en_linea}) -> {res:?}"
+        ));
     } else {
         let destino = NOMBRES[az.hasta(NOMBRES.len())];
         if destino == r || e.root.join(destino).exists() {

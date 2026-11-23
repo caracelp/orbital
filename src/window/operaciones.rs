@@ -485,7 +485,10 @@ impl Window {
             let en_linea = self.drive_en_linea();
             self.drive_orden(orbital_drive::Orden::Borrar(path.as_str().to_owned()));
             return self.toast(&if en_linea {
-                format!("«{}» se mandó a la papelera de Google Drive", path.file_name())
+                format!(
+                    "«{}» se mandó a la papelera de Google Drive",
+                    path.file_name()
+                )
             } else {
                 format!(
                     "Sin conexión: «{}» va a la papelera de Google Drive cuando vuelva la red",

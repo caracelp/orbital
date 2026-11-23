@@ -466,3 +466,208 @@ fn drive_solo_en_drive_marcadores_y_apertura() {
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     });
 }
+
+/// Las parciales (bajadas a medias) de la caché de la prueba.
+fn parciales(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir.join("cache/parcial"))
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pendientes de la 061b: bajar algo grande para abrirlo muestra el progreso y se cancela sin
+/// dejar nada a medias; «Abrir con otra aplicación» lo baja antes (diálogo con el mismo progreso)
+/// y sube lo que esa aplicación guarda; sin conexión, renombrar lo «solo en Drive» queda en cola
+/// («pendiente» en el explorador) y se aplica al volver la red.
+#[test]
+#[ignore = "requiere GTK"]
+fn drive_pendientes_progreso_cola_y_abrir_con() {
+    let app = app_de_prueba();
+    app.register(None::<&gio::Cancellable>).unwrap();
+    glib::MainContext::default().block_on(async {
+        let srv = ServidorFalso::iniciar();
+        let (root, dir, raiz) = preparar_solo_drive(&srv);
+        // Un video grande «solo en Drive», creado en la web.
+        {
+            let mut d = srv.datos();
+            let raw = d.buscar("raw", &raiz).unwrap();
+            let v: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+            d.crear(&raw, "Viaje.mp4", &v, "Web");
+        }
+        *drive::PRUEBA.lock().unwrap() = Some((srv.url.clone(), dir.clone()));
+        let window = Window::new(&app);
+        window.set_persist(false);
+        window.0.window.set_default_size(1100, 800);
+        window.present();
+        let (v, tree, meta) = prepare(orbital_vault::open(&root).unwrap());
+        window.show_vault(v, tree, meta);
+        esperar("el motor arranca", || window.drive_activo()).await;
+        let w = window.clone();
+        esperar("el video llega como marcador", move || {
+            w.drive_es_marcador("raw/Viaje.mp4") && w.entry("raw/Viaje.mp4").is_some()
+        })
+        .await;
+        let w = window.clone();
+        esperar("en línea", move || w.drive_en_linea()).await;
+        let captura = std::env::var("ORBITAL_CAPTURA_DIR").ok();
+
+        // 1. Abrir: el progreso real en el centro, con «Cancelar».
+        srv.datos().ritmo_bajada = Some((32 * 1024, std::time::Duration::from_millis(30)));
+        window.show_entry(window.entry("raw/Viaje.mp4").unwrap());
+        let w = window.clone();
+        esperar("avanza", move || {
+            w.0.drive
+                .borrow()
+                .bajada
+                .as_ref()
+                .is_some_and(|b| b.barra_fraccion() > 0.0)
+        })
+        .await;
+        assert_eq!(
+            window.0.content_stack.visible_child_name().as_deref(),
+            Some("drive-bajada")
+        );
+        if let Some(d) = &captura {
+            glib::timeout_future(std::time::Duration::from_millis(1800)).await;
+            window
+                .capture(&Path::new(d).join("061b-progreso.png"))
+                .unwrap();
+        }
+        let (texto, boton) = {
+            let d = window.0.drive.borrow();
+            let b = d.bajada.as_ref().unwrap();
+            (b.barra_texto(), b.cancelar.clone())
+        };
+        assert!(texto.ends_with('%'), "{texto}");
+        assert_eq!(boton.label().as_deref(), Some("Cancelar"));
+        boton.emit_clicked();
+        let w = window.clone();
+        esperar("la página dice cancelada", move || {
+            w.0.content_stack
+                .child_by_name("vacio")
+                .and_downcast::<adw::StatusPage>()
+                .is_some_and(|p| p.title() == "Bajada cancelada")
+        })
+        .await;
+        let d2 = dir.clone();
+        esperar("nada a medias", move || parciales(&d2).is_empty()).await;
+        assert!(window.0.current_entry.borrow().is_none());
+        // El motor sigue sano: el resumen sigue llegando y sin errores.
+        window.drive_orden(orbital_drive::Orden::Ahora);
+        let w = window.clone();
+        esperar("ciclo sin error", move || {
+            w.0.drive
+                .borrow()
+                .resumen
+                .as_ref()
+                .is_some_and(|r| r.error.is_none() && !r.sincronizando)
+        })
+        .await;
+
+        // 2. «Abrir con otra aplicación»: lo baja antes, en un diálogo con el mismo progreso.
+        window.abrir_con_otra("raw/Viaje.mp4");
+        let w = window.clone();
+        esperar("el diálogo avanza", move || {
+            w.0.drive.borrow().bajada.as_ref().is_some_and(|b| {
+                b.para == drive_bajada::ParaQue::AbrirCon && b.barra_fraccion() > 0.0
+            })
+        })
+        .await;
+        if let Some(d) = &captura {
+            glib::timeout_future(std::time::Duration::from_millis(1800)).await;
+            window
+                .capture(&Path::new(d).join("061b-abrir-con.png"))
+                .unwrap();
+        }
+        srv.datos().ritmo_bajada = None;
+        esperar("se abrió la copia", || {
+            drive_bajada::LANZADAS.with(|l| !l.borrow().is_empty())
+        })
+        .await;
+        let copia = drive_bajada::LANZADAS.with(|l| l.borrow()[0].clone());
+        assert!(copia.starts_with(dir.join("cache")), "la copia de la caché");
+        assert_eq!(std::fs::metadata(&copia).unwrap().len(), 3_000_000);
+        assert!(!root.join("raw/Viaje.mp4").exists());
+        // La otra aplicación guarda la copia (escribiendo otro archivo y renombrándolo encima):
+        // el cambio sube.
+        glib::timeout_future(std::time::Duration::from_millis(300)).await;
+        let tmp = copia.with_extension("tmp");
+        std::fs::write(&tmp, b"video recortado por otra app").unwrap();
+        std::fs::rename(&tmp, &copia).unwrap();
+        let (s2, r2) = (srv.datos.clone(), raiz.clone());
+        esperar("el cambio llega a Drive", move || {
+            let d = s2.lock().unwrap();
+            d.buscar("raw/Viaje.mp4", &r2)
+                .is_some_and(|id| d.archivos[&id].contenido == b"video recortado por otra app")
+        })
+        .await;
+
+        // 3. Sin conexión: renombrar queda en cola, «pendiente».
+        srv.datos().caido = true;
+        window.drive_orden(orbital_drive::Orden::Red(false));
+        let w = window.clone();
+        esperar("sin conexión", move || !w.drive_en_linea()).await;
+        window
+            .do_rename(
+                RelPath::new("wiki/Remota.md").unwrap(),
+                RelPath::new("wiki/Remota en cola.md").unwrap(),
+                false,
+            )
+            .await;
+        let w = window.clone();
+        esperar("la fila nueva, pendiente", move || {
+            w.entry("wiki/Remota en cola.md").is_some()
+                && w.drive_estado("wiki/Remota en cola.md")
+                    == Some(drive::EstadoFila::Drive(
+                        orbital_drive::EstadoArchivo::Pendiente,
+                    ))
+        })
+        .await;
+        assert!(window.entry("wiki/Remota.md").is_none());
+        window.mostrar_en_explorador("wiki/Remota en cola.md");
+        let w = window.clone();
+        esperar("la fila pintada pendiente", move || {
+            w.0.drive_filas
+                .borrow()
+                .get("wiki/Remota en cola.md")
+                .is_some_and(|f| {
+                    f.icono.upgrade().is_some_and(|i| {
+                        i.icon_name().as_deref() == Some("document-open-recent-symbolic")
+                    }) && f
+                        .item
+                        .upgrade()
+                        .is_some_and(|it| it.accessible_label().contains("cambio pendiente"))
+                })
+        })
+        .await;
+        if let Some(d) = &captura {
+            glib::timeout_future(std::time::Duration::from_millis(400)).await;
+            window
+                .capture(&Path::new(d).join("061b-pendiente.png"))
+                .unwrap();
+        }
+        // Vuelve la red: se aplica en Drive (mismo id) y deja de estar pendiente.
+        let id = srv.datos().buscar("wiki/Remota.md", &raiz).unwrap();
+        srv.datos().caido = false;
+        window.drive_orden(orbital_drive::Orden::Red(true));
+        let (s2, r2, id2) = (srv.datos.clone(), raiz.clone(), id.clone());
+        esperar("renombrada en Drive", move || {
+            s2.lock().unwrap().buscar("wiki/Remota en cola.md", &r2) == Some(id2.clone())
+        })
+        .await;
+        let w = window.clone();
+        esperar("ya no pendiente", move || {
+            w.drive_estado("wiki/Remota en cola.md")
+                == Some(drive::EstadoFila::Drive(
+                    orbital_drive::EstadoArchivo::SoloDrive,
+                ))
+        })
+        .await;
+        window.0.window.destroy();
+        *drive::PRUEBA.lock().unwrap() = None;
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    });
+}

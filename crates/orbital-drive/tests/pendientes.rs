@@ -34,7 +34,10 @@ fn a_medias(b: &Equipo) -> Vec<String> {
     for d in ["cache/parcial"] {
         let dir = b.root.parent().unwrap().join(d);
         if let Ok(rd) = std::fs::read_dir(dir) {
-            v.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()));
+            v.extend(
+                rd.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned()),
+            );
         }
     }
     v
@@ -135,7 +138,11 @@ fn renombrar_sin_conexion_queda_en_cola_y_sobrevive_al_reinicio() {
     let (_a, mut b, id) = a_y_b(&srv);
     let fid = srv.datos().buscar("raw/video.mp4", &id).unwrap();
     sin_red(&srv);
-    assert!(b.s().pedir_mover("raw/video.mp4", "raw/viaje.mp4", false).unwrap());
+    assert!(
+        b.s()
+            .pedir_mover("raw/video.mp4", "raw/viaje.mp4", false)
+            .unwrap()
+    );
     // La bóveda lo muestra hecho y «pendiente».
     assert!(b.marcadores().contains(&"raw/viaje.mp4".to_owned()));
     assert!(!b.marcadores().contains(&"raw/video.mp4".to_owned()));
@@ -146,7 +153,11 @@ fn renombrar_sin_conexion_queda_en_cola_y_sobrevive_al_reinicio() {
     let m = orbital_drive::estado::leer_marcadores(&b.dir_estado);
     assert!(m.iter().any(|x| x.ruta == "raw/viaje.mp4"));
     // Otro cambio sin conexión sobre lo mismo: se juntan en uno.
-    assert!(b.s().pedir_mover("raw/viaje.mp4", "wiki/viaje.mp4", false).unwrap());
+    assert!(
+        b.s()
+            .pedir_mover("raw/viaje.mp4", "wiki/viaje.mp4", false)
+            .unwrap()
+    );
     assert_eq!(b.s().estado.cola.len(), 1);
     assert!(b.ciclo().is_err());
     // Orbital se cierra sin red y vuelve a abrir: la cola sigue.
@@ -178,7 +189,10 @@ fn renombrar_en_cola_y_la_web_lo_cambia() {
     srv.datos().renombrar(&nid, "nota web.md");
     b.sincronizar();
     // Gana el renombre de la usuaria (es lo último que pidió); el contenido nuevo no se pierde.
-    assert_eq!(srv.datos().buscar("wiki/Nota final.md", &id), Some(nid.clone()));
+    assert_eq!(
+        srv.datos().buscar("wiki/Nota final.md", &id),
+        Some(nid.clone())
+    );
     assert_eq!(
         srv.datos().archivos[&nid].contenido,
         b"# Nota\n\ndesde la web\n"
@@ -206,7 +220,9 @@ fn renombrar_en_cola_a_un_nombre_que_tomo_otro() {
     con_red(&srv);
     // La web crea otro «nueva.md» antes de que vuelva la red de B.
     let wiki = srv.datos().buscar("wiki", &id).unwrap();
-    let otro = srv.datos().crear(&wiki, "nueva.md", b"# De la web\n", "Web");
+    let otro = srv
+        .datos()
+        .crear(&wiki, "nueva.md", b"# De la web\n", "Web");
     b.sincronizar();
     let mut m = b.marcadores();
     m.sort();
@@ -234,7 +250,10 @@ fn renombrar_en_cola_y_la_web_lo_borra_con_cambios_en_la_copia() {
     srv.datos().a_papelera(&nid);
     b.sincronizar();
     // El cambio de B no se pierde: vuelve como archivo nuevo en la ruta que pidió.
-    let nueva = srv.datos().buscar("wiki/movida.md", &id).expect("se volvió a subir");
+    let nueva = srv
+        .datos()
+        .buscar("wiki/movida.md", &id)
+        .expect("se volvió a subir");
     assert_eq!(
         srv.datos().archivos[&nueva].contenido,
         b"# Nota\n\ncambio de B sin subir\n"
@@ -252,7 +271,10 @@ fn borrar_sin_conexion_y_al_volver_la_red() {
     b.arrancar(&srv);
     con_red(&srv);
     b.sincronizar();
-    assert!(srv.datos().archivos[&vid].papelera, "a la papelera de Drive");
+    assert!(
+        srv.datos().archivos[&vid].papelera,
+        "a la papelera de Drive"
+    );
     assert!(!b.marcadores().contains(&"raw/video.mp4".to_owned()));
     assert!(b.s().estado.cola.is_empty());
 }
@@ -265,7 +287,8 @@ fn borrar_en_cola_y_la_web_lo_cambia_se_conserva() {
     sin_red(&srv);
     b.s().pedir_borrar("wiki/otra.md", false).unwrap();
     con_red(&srv);
-    srv.datos().editar(&nid, b"# Otra\n\nversion nueva de la web\n", "Web");
+    srv.datos()
+        .editar(&nid, b"# Otra\n\nversion nueva de la web\n", "Web");
     b.sincronizar();
     assert!(!srv.datos().archivos[&nid].papelera, "no fue a la papelera");
     assert!(
@@ -292,7 +315,11 @@ fn con_conexion_va_directo_y_si_se_corta_queda_en_cola() {
     let srv = ServidorFalso::iniciar();
     let (_a, mut b, id) = a_y_b(&srv);
     let nid = srv.datos().buscar("wiki/nota.md", &id).unwrap();
-    assert!(!b.s().pedir_mover("wiki/nota.md", "wiki/n2.md", true).unwrap());
+    assert!(
+        !b.s()
+            .pedir_mover("wiki/nota.md", "wiki/n2.md", true)
+            .unwrap()
+    );
     assert_eq!(srv.datos().archivos[&nid].nombre, "n2.md");
     // La red se corta justo en el intento: queda en cola en vez de perderse.
     sin_red(&srv);

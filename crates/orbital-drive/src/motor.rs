@@ -1354,7 +1354,10 @@ impl<A: Api> Sincronizador<A> {
                 return false;
             }
             let ahora = Instant::now();
-            if c.ultimo.is_none_or(|t| ahora - t >= Duration::from_millis(120)) || hay >= total {
+            if c.ultimo
+                .is_none_or(|t| ahora - t >= Duration::from_millis(120))
+                || hay >= total
+            {
                 c.ultimo = Some(ahora);
                 emitir(Evento::Progreso {
                     ruta: c.ruta.clone(),
@@ -2451,7 +2454,11 @@ impl<A: Api> Sincronizador<A> {
             );
             self.avisar(
                 &format!("renombre:{destino}"),
-                format!("En Drive ya había otro «{}»: «{de}» quedó como «{}».", nombre_de(a), nombre_de(&destino)),
+                format!(
+                    "En Drive ya había otro «{}»: «{de}» quedó como «{}».",
+                    nombre_de(a),
+                    nombre_de(&destino)
+                ),
             );
         }
         let padre_nuevo = self.carpeta_remota(padre_de(&destino))?;
@@ -2849,7 +2856,10 @@ impl<A: Api> Sincronizador<A> {
     }
 
     pub fn por_subir(&self) -> usize {
-        self.pendientes.len() + self.estado.subidas.len() + self.sucio.len() + self.estado.cola.len()
+        self.pendientes.len()
+            + self.estado.subidas.len()
+            + self.sucio.len()
+            + self.estado.cola.len()
     }
 
     /// El enlace de Drive de una ruta.
