@@ -175,6 +175,23 @@ impl Pestanas {
         i.sincronizando.set(false);
     }
 
+    /// Asigna o quita el ícono de la pestaña de `clave` (062).
+    pub fn set_icono(&self, clave: &str, icon: Option<&gtk::gio::Icon>) {
+        if let Some(t) = self.0.pestanas.borrow().iter().find(|t| t.clave == clave) {
+            t.pagina.set_icon(icon);
+        }
+    }
+
+    /// Claves de todas las pestañas abiertas.
+    pub fn claves_abiertas(&self) -> Vec<String> {
+        self.0
+            .pestanas
+            .borrow()
+            .iter()
+            .map(|t| t.clave.clone())
+            .collect()
+    }
+
     /// Guarda el estado de vista de la nota de `clave` (antes de dejarla).
     pub fn guardar_estado(&self, clave: &str, estado: Estado) {
         if let Some(t) = self

@@ -44,6 +44,7 @@ mod galeria_lateral;
 #[cfg(test)]
 mod galeria_lateral_tests;
 mod historial;
+mod iconos;
 mod izquierda;
 mod listas;
 mod nota;
@@ -202,6 +203,11 @@ struct Inner {
     drive: RefCell<drive::DriveUi>,
     /// Filas visibles del explorador, para repintar su estado de Drive sin rearmar la lista.
     drive_filas: RefCell<HashMap<String, drive::FilaDrive>>,
+    /// Íconos personalizados (062): `.orbital/iconos.yaml` y SVGs locales de `.orbital/iconos/`.
+    iconos: RefCell<Option<orbital_vault::IconosSnapshot>>,
+    iconos_escribiendo: Cell<bool>,
+    iconos_pendiente: Cell<bool>,
+    iconos_sesion: Cell<u64>,
 }
 
 /// Ventana de Orbital.
@@ -433,6 +439,10 @@ impl Window {
             plegado_acciones: RefCell::new(Vec::new()),
             drive: RefCell::default(),
             drive_filas: RefCell::default(),
+            iconos: RefCell::new(None),
+            iconos_escribiendo: Cell::new(false),
+            iconos_pendiente: Cell::new(false),
+            iconos_sesion: Cell::new(0),
         }));
         crate::medir_arranque::marca("Window::new: Inner");
         conexiones::conectar(&this, app);

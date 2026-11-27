@@ -745,6 +745,21 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
                 let d = if *display { "$$" } else { "$" };
                 out.push_str(&escape(&format!("{d}{tex}{d}")));
             }
+            Inline::Icon(nombre) => {
+                if let Some(ic) = crate::iconos_catalogo::buscar(nombre) {
+                    out.push_str("<span class=\"orbital-inline-icon\" style=\"display:inline-flex;vertical-align:-0.15em\">");
+                    out.push_str(&crate::iconos_catalogo::svg_de_trazo(
+                        ic.trazo,
+                        "currentColor",
+                        Some(ic.etiqueta),
+                    ));
+                    out.push_str("</span>");
+                } else {
+                    out.push(':');
+                    out.push_str(&escape(nombre));
+                    out.push(':');
+                }
+            }
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push_str("<br>"),
         }

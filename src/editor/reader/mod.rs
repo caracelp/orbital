@@ -173,6 +173,8 @@ struct Inner {
     /// Bloques de primer nivel con código por resaltar en reposo (055).
     resaltar: RefCell<Vec<resaltar::Pendiente>>,
     resaltar_programado: Cell<bool>,
+    /// SVGs locales de `.orbital/iconos/` para resolver `:nombre:` en línea (062).
+    iconos_locales: RefCell<Vec<orbital_vault::SvgLocal>>,
 }
 
 #[derive(Clone)]
@@ -260,6 +262,7 @@ impl Reader {
             diagramas: RefCell::new(Vec::new()),
             resaltar: RefCell::new(Vec::new()),
             resaltar_programado: Cell::new(false),
+            iconos_locales: RefCell::new(Vec::new()),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -333,6 +336,11 @@ impl Reader {
     /// La vista de texto del lector.
     pub fn text_view(&self) -> &gtk::TextView {
         &self.0.view
+    }
+
+    /// Registra los SVGs locales de `.orbital/iconos/` para `:nombre:` en línea (062).
+    pub fn set_iconos_locales(&self, svgs: Vec<orbital_vault::SvgLocal>) {
+        *self.0.iconos_locales.borrow_mut() = svgs;
     }
 
     /// Limpia los resaltados de búsqueda en la vista formateada.

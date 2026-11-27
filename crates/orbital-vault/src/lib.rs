@@ -24,6 +24,8 @@ pub mod galeria;
 pub mod historial;
 pub mod html_edit;
 pub mod html_text;
+pub mod iconos;
+pub mod iconos_catalogo;
 pub mod importar;
 pub mod indice;
 pub mod link_graph;
@@ -65,6 +67,10 @@ pub use error::VaultError;
 pub use fold::fold;
 pub use historial::{leer_version, versiones as versiones_historial};
 pub use html_text::html_text;
+pub use iconos::{
+    AsignacionIcono, IconoResuelto, IconosConfig, IconosSnapshot, MetaNotaIcono, ReglaIcono,
+    SvgLocal, TipoRegla,
+};
 pub use link_graph::LinkGraph;
 pub use links::{
     BacklinkRef, LinkKind, LinkOccurrence, LinkTarget, Resolution, extract_links,

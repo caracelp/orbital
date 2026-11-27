@@ -126,12 +126,26 @@ pub fn filter_commands(commands: &[CommandEntry], query: &str, limit: usize) -> 
 
 pub struct SwitcherDialog;
 
+/// Resolvedor opcional de íconos personalizados para el selector rápido (062).
+pub type IconResolver = Rc<dyn Fn(&str) -> Option<gtk::gdk::Paintable>>;
+
 impl SwitcherDialog {
     /// Presenta el selector rápido de notas como un diálogo modal.
     pub fn present<F: Fn(RelPath) + 'static>(
         parent: &impl IsA<gtk::Widget>,
         candidates: Vec<CompletionCandidate>,
         recent_paths: Vec<String>,
+        on_chosen: F,
+    ) {
+        Self::present_with_icons(parent, candidates, recent_paths, None, on_chosen);
+    }
+
+    /// Como [`Self::present`], mostrando íconos personalizados en cada nota (062).
+    pub fn present_with_icons<F: Fn(RelPath) + 'static>(
+        parent: &impl IsA<gtk::Widget>,
+        candidates: Vec<CompletionCandidate>,
+        recent_paths: Vec<String>,
+        icon_resolver: Option<IconResolver>,
         on_chosen: F,
     ) {
         let on_pick = move |pick: Pick| {
@@ -148,6 +162,7 @@ impl SwitcherDialog {
                 candidates: Rc::new(candidates),
                 recent_paths,
             },
+            icon_resolver,
             Rc::new(on_pick),
         );
     }
@@ -169,6 +184,7 @@ impl SwitcherDialog {
             "Escribir parte de un comando…",
             "Buscar comando",
             Source::Commands(Rc::new(commands)),
+            None,
             Rc::new(on_pick),
         );
     }
@@ -181,6 +197,7 @@ impl SwitcherDialog {
         placeholder: &str,
         entry_label: &str,
         source: Source,
+        icon_resolver: Option<IconResolver>,
         on_pick: Rc<dyn Fn(Pick)>,
     ) -> (adw::Dialog, gtk::SearchEntry) {
         let dialog = adw::Dialog::builder()
@@ -257,7 +274,8 @@ impl SwitcherDialog {
             item.set_child(Some(&container));
         });
 
-        factory.connect_bind(|_, item| {
+        let resolver_bind = icon_resolver.clone();
+        factory.connect_bind(move |_, item| {
             let item = item.downcast_ref::<gtk::ListItem>().expect("ListItem");
             let Some(switcher_item) = item.item().and_downcast::<SwitcherItem>() else {
                 return;
@@ -277,6 +295,7 @@ impl SwitcherDialog {
                 return;
             }
 
+            let icon_img = children[0].downcast_ref::<gtk::Image>().expect("Image");
             let text_box = children[1].downcast_ref::<gtk::Box>().expect("Box");
             let name_label = text_box
                 .first_child()
@@ -293,6 +312,15 @@ impl SwitcherDialog {
                     candidate,
                     is_recent,
                 } => {
+                    if let Some(p) = resolver_bind
+                        .as_ref()
+                        .and_then(|f| f(candidate.path.as_str()))
+                    {
+                        icon_img.set_paintable(Some(&p));
+                        icon_img.set_pixel_size(16);
+                    } else {
+                        icon_img.set_icon_name(Some("text-x-generic-symbolic"));
+                    }
                     name_label.set_text(&candidate.stem);
 
                     // Subtítulo: carpeta y título/alias si difiere
@@ -657,6 +685,7 @@ mod tests {
                         false,
                     ),
                 ])),
+                None,
                 Rc::new(move |pick: Pick| {
                     if let Pick::Command(command) = pick {
                         corridos.borrow_mut().push(command.action);

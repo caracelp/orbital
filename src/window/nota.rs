@@ -65,6 +65,7 @@ impl Window {
             *i.current_entry.borrow_mut() = Some(entry.clone());
             i.pestanas
                 .abrir(entry.path.as_str(), entry.path.file_name());
+            this.aplicar_icono_pestana(entry.path.as_str());
             this.refresh_backlinks();
             i.content_title.set_title(entry.path.file_name());
             let mut subtitle = entry.path.to_string();

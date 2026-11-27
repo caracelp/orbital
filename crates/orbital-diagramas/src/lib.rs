@@ -279,6 +279,39 @@ pub fn imagen(d: &Diagrama, escala: f32, fuentes: &Fuentes) -> Result<Imagen, Er
     })
 }
 
+/// Rasteriza un archivo SVG de ícono a un cuadrado de `lado × lado` píxeles físicos (sin cargar
+/// fuentes del sistema). Si se pasa `color` (`#rrggbb`), reemplaza `currentColor`.
+pub fn rasterizar_svg_icono(svg: &str, lado: u32, color: Option<&str>) -> Option<Imagen> {
+    use resvg::{tiny_skia, usvg};
+    let lado = lado.clamp(8, 256);
+    let owned;
+    let fuente = match color {
+        Some(c) if svg.contains("currentColor") => {
+            owned = svg.replace("currentColor", c);
+            owned.as_str()
+        }
+        _ => svg,
+    };
+    let tree = usvg::Tree::from_str(fuente, &usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let (w, h) = (size.width(), size.height());
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let scale = (lado as f32 / w).min(lado as f32 / h);
+    let dx = (lado as f32 - w * scale) / 2.0;
+    let dy = (lado as f32 - h * scale) / 2.0;
+    let mut pixmap = tiny_skia::Pixmap::new(lado, lado)?;
+    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Some(Imagen {
+        ancho: lado,
+        alto: lado,
+        escala: 1.0,
+        rgba: pixmap.take(),
+    })
+}
+
 /// Dibuja las imágenes PNG del árbol (las de los emoji de color, que `resvg` deja sin dibujar).
 fn imagenes_png(
     grupo: &resvg::usvg::Group,
