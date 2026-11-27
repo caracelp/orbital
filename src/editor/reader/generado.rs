@@ -79,19 +79,26 @@ pub fn complete_generated_con(
         // de lo incrustado.
         if !matches!(block.kind, BlockKind::Generated(_)) {
             let mut huella = String::new();
-            if completar_incrustados(
+            let incrustado = completar_incrustados(
                 std::slice::from_mut(block),
                 index,
                 raiz,
                 &mut huella,
                 interactivo,
-            ) {
+            );
+            let inline_dv =
+                super::dataview::evaluar_inlines(std::slice::from_mut(block), index, path);
+            if incrustado || inline_dv {
                 completado = true;
-                // Un índice incrustado depende del índice de la bóveda: entra en el hash.
+                // Un índice incrustado o una expresión inline `= ...` depende del índice de la bóveda: entra en el hash.
                 if let Some(h) = hashes.get_mut(n) {
-                    let mut bytes = h.to_le_bytes().to_vec();
-                    bytes.extend_from_slice(huella.as_bytes());
-                    *h = orbital_vault::write::hash(&bytes);
+                    if inline_dv {
+                        *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
+                    } else {
+                        let mut bytes = h.to_le_bytes().to_vec();
+                        bytes.extend_from_slice(huella.as_bytes());
+                        *h = orbital_vault::write::hash(&bytes);
+                    }
                 }
             }
             continue;
@@ -112,6 +119,15 @@ pub fn complete_generated_con(
             }
             orbital_vault::render::GeneratedKind::Consulta => {
                 block.kind = super::consulta::consulta_block(&g.raw, index, raiz);
+                if let Some(h) = hashes.get_mut(n) {
+                    *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
+                }
+                completado = true;
+                continue;
+            }
+            orbital_vault::render::GeneratedKind::Dataview => {
+                block.kind = super::dataview::dataview_block(&g.raw, index, path);
+                fijar_linea(&mut block.kind, block.line);
                 if let Some(h) = hashes.get_mut(n) {
                     *h = orbital_vault::write::hash(format!("{:?}", block.kind).as_bytes());
                 }
@@ -315,6 +331,7 @@ pub fn generado_html(
             let pares: Vec<(u8, &str)> = h.iter().map(|(n, t)| (*n, t.as_str())).collect();
             Some(orbital_vault::toc::html(&o, &pares))
         }
+        "dataview" | "dv" => super::dataview::html_bloque(cuerpo, index, href),
         _ => None,
     }
 }

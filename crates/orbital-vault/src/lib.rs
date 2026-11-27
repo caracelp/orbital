@@ -14,6 +14,7 @@ pub mod carrusel;
 pub mod colores;
 pub mod config;
 pub mod consulta;
+pub mod dataview;
 pub mod diff;
 pub mod edit_plan;
 pub mod enlaces;

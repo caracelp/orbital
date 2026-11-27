@@ -1249,6 +1249,12 @@ impl Reader {
                         self.inlines(s, end, children, &more);
                     }
                 }
+                Inline::DataviewExpr(expr) => {
+                    let mut more = tags.to_vec();
+                    more.extend(table.lookup("emph"));
+                    let refs: Vec<&gtk::TextTag> = more.iter().collect();
+                    buf.insert_with_tags(end, &format!("= {expr}"), &refs);
+                }
                 // Un salto simple dentro del párrafo es un salto de línea. Va con
                 // las etiquetas del contexto, así la línea siguiente conserva la sangría del
                 // callout, la cita o el ítem.

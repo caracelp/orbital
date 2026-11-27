@@ -1095,5 +1095,21 @@ Opcionalmente, una o más líneas `<!-- TBLFM: ... -->` inmediatamente debajo de
 - Referencias: `@I` (primera fila de datos), `@>` (última fila), `@-1` (fila anterior), rangos `@I..@-1`.
 - Funciones: `sum`, `avg`/`mean`, `min`, `max`, `count`, `round` y aritmética `+`, `-`, `*`, `/` con paréntesis.
 
+## Consultas Dataview sin JavaScript
+
+Orbital evalúa bloques ` ```dataview ` (o ` ```dv `) y expresiones en línea `` `= <expr>` `` en Rust puro sobre el índice en memoria, sin incrustar ni ejecutar JavaScript en las notas (el archivo en disco conserva solo Markdown plano).
+
+- **Vistas**:
+  - `TABLE [WITHOUT ID] <expr [AS "Título"]>, ...`: tabla de notas con enlaces clicables.
+  - `LIST [<expr>]`: lista con viñetas (y un valor opcional por nota).
+  - `TASK`: agregación de tareas Markdown `- [ ]` / `- [x]` de las notas que cumplen `FROM`/`WHERE`.
+  - `CALENDAR <expr_fecha>`: grilla mensual agrupada por año y mes con las notas de cada día.
+- **Cláusulas**: `FROM` (`#etiqueta`, `"carpeta"`, `[[Nota]]`, `outgoing([[Nota]])`, combinaciones `AND`/`OR`/`-`/`!`), `WHERE`, `FLATTEN <expr> [AS nombre]`, `GROUP BY <expr> [AS nombre]` (expone `key` y `rows`), `SORT <expr> [ASC|DESC], ...`, `LIMIT <N>`.
+- **Campos implícitos**: `file.name`, `file.path`, `file.folder`, `file.link`, `file.tags`, `file.etags`, `file.outlinks`, `file.inlinks`, `file.ctime`, `file.mtime`, `file.cday`, `file.mday`, `file.day`, `file.tasks`; y `this.*` para referenciar propiedades de la nota abierta.
+- **Campos inline en el texto**: además de `clave:: valor` al inicio de línea, se admiten `[clave:: valor]` (se muestra como `clave: valor` en Lectura) y `(clave:: valor)` (oculta la clave y muestra solo `valor` en Lectura).
+- **Expresiones en línea**: `` `= this.estado` `` o `` `= length(this.file.inlinks)` `` se evalúan en Lectura contra la nota actual y el índice.
+- **Funciones**: `length`, `contains`, `icontains`, `econtains`, `startswith`, `endswith`, `lower`, `upper`, `replace`, `regexmatch`, `substring`, `split`, `join`, `round`, `floor`, `ceil`, `abs`, `min`, `max`, `sum`, `average`, `default`, `choice`, `typeof`, `number`, `string`, `date`, `dur`, `dateformat`, `striptime`, `link`, `flat`, `unique`, `reverse`, `sort`, `slice`, `filter(lista, (x) => ...)`, `map(lista, (x) => ...)`, `all`, `any`, `none`, `nonnull`.
+
+
 
 

@@ -799,6 +799,11 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
             }
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push_str("<br>"),
+            Inline::DataviewExpr(expr) => {
+                out.push_str("<code>= ");
+                out.push_str(&escape(expr));
+                out.push_str("</code>");
+            }
         }
     }
 }

@@ -65,6 +65,17 @@ impl Default for SearchOptions {
     }
 }
 
+/// Tarea Markdown `- [ ]` / `- [x]` indexada para consultas `TASK` (065).
+#[derive(Clone, Debug)]
+pub struct TaskDoc {
+    pub text: String,
+    pub completed: bool,
+    pub status: char,
+    pub line: usize,
+    pub tags: Vec<String>,
+    pub props: Vec<(String, PropValue)>,
+}
+
 /// Documento indexado en memoria (R1).
 #[derive(Clone, Debug)]
 pub struct Doc {
@@ -86,6 +97,10 @@ pub struct Doc {
     /// Relaciones con tipo de la parte Conexiones (049): clave del tipo y nombre del destino,
     /// los dos sin mayúsculas ni tildes.
     pub relaciones: Vec<(String, String)>,
+    /// Enlaces salientes normalizados (065: `file.outlinks` / `file.inlinks` / `FROM [[Nota]]`).
+    pub outlinks: Vec<String>,
+    /// Tareas Markdown `- [ ]` / `- [x]` de la nota (065: vista `TASK`).
+    pub tasks: Vec<TaskDoc>,
 }
 
 /// Índice de búsqueda en memoria para toda la bóveda.
@@ -662,8 +677,28 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
             .collect()
     };
 
+    // Enlaces salientes normalizados (065: file.outlinks / file.inlinks / FROM [[Nota]]).
+    let mut outlinks: Vec<String> = crate::links::extract_links(text, is_html)
+        .into_iter()
+        .filter_map(|l| {
+            let k = clave_destino(&l.target.path);
+            (!k.is_empty()).then_some(k)
+        })
+        .collect();
+    outlinks.sort();
+    outlinks.dedup();
+
+    // Tareas Markdown `- [ ]` / `- [x]` (065: vista TASK).
+    let tasks = if is_html {
+        Vec::new()
+    } else {
+        extraer_tareas(text)
+    };
+
     Doc {
         relaciones,
+        outlinks,
+        tasks,
         zone,
         folded,
         line_starts,
@@ -677,6 +712,55 @@ fn build_doc(path: &RelPath, zone: Zone, text: &str) -> Doc {
         modified: None,
         created: None,
     }
+}
+
+/// Extrae las líneas de tarea (`- [ ]`, `* [x]`, `+ [X]`, etc.) fuera de cercas de código (065).
+fn extraer_tareas(text: &str) -> Vec<TaskDoc> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (idx, raw_line) in text.lines().enumerate() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let after_bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "));
+        let Some(after_bullet) = after_bullet else {
+            continue;
+        };
+        let rest = after_bullet.trim_start();
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 4 && bytes[0] == b'[' && bytes[2] == b']' && bytes[3] == b' ' {
+            let status = bytes[1] as char;
+            let completed = matches!(status, 'x' | 'X');
+            let body = crate::bloques::sin_ids(rest[4..].trim()).into_owned();
+            let mut inline_raw = Vec::new();
+            crate::tags::extract_bracket_inline_fields(&body, &mut inline_raw);
+            let props = inline_raw
+                .into_iter()
+                .map(|(k, v)| (k, PropValue::Text(v)))
+                .collect();
+            let tags = extract_tags(&body, false)
+                .into_iter()
+                .map(|t| fold(&t.tag))
+                .collect();
+            out.push(TaskDoc {
+                text: body,
+                completed,
+                status,
+                line: idx + 1,
+                tags,
+                props,
+            });
+        }
+    }
+    out
 }
 
 /// Nombre de una nota para comparar destinos de `rel:` (049): el último componente de la ruta,
