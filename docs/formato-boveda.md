@@ -1085,4 +1085,15 @@ Sintaxis propia en Markdown sin HTML ni CSS (el disco conserva siempre el texto 
 - `==texto==`: resaltado rápido con el acento suave de Orbital.
 - Si un nombre personalizado no existe al dibujar, el tramo se muestra literalmente como `{nombre:texto}` sin perder contenido.
 
+## Tablas avanzadas y fórmulas (`<!-- TBLFM: ... -->`)
+
+Las tablas usan Markdown GFM estándar. En vista Código, `Tab`/`Shift+Tab`/`Enter` navegan entre celdas y autoformatean las columnas; una barra contextual aparece mientras el cursor está dentro de una tabla para filas, columnas, alineación, orden y CSV.
+
+Opcionalmente, una o más líneas `<!-- TBLFM: ... -->` inmediatamente debajo de la tabla declaran fórmulas (separadas por `::`) que se recalculan a pedido:
+
+- Destinos: `@fila$col` (p. ej. `@>$4` = última fila, cuarta columna) o `$col` (toda la columna de datos).
+- Referencias: `@I` (primera fila de datos), `@>` (última fila), `@-1` (fila anterior), rangos `@I..@-1`.
+- Funciones: `sum`, `avg`/`mean`, `min`, `max`, `count`, `round` y aritmética `+`, `-`, `*`, `/` con paréntesis.
+
+
 

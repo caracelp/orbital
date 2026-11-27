@@ -59,6 +59,7 @@ pub mod props;
 pub mod reader;
 pub mod right_sidebar;
 mod sugerencias;
+mod tablas;
 #[cfg(test)]
 #[path = "toc_tests.rs"]
 mod toc_tests;
@@ -263,6 +264,8 @@ struct Inner {
     enfoque: RefCell<Option<gtk::TextMark>>,
     /// Miga de pan del enfoque, arriba del editor.
     migas: enfoque::Migas,
+    /// Barra contextual de tablas avanzadas (064): oculta fuera de tablas Markdown.
+    barra_tabla: tablas::BarraTabla,
     on_enfoque: RefCell<Option<Box<dyn Fn()>>>,
     /// Canal de las flechitas (`flechas.rs`).
     flechas: sourceview5::GutterRendererPixbuf,
@@ -379,8 +382,10 @@ impl Editor {
         let completion = completion::LinkCompletionPopover::new(&view);
         let this = Self(Rc::new_cyclic(|weak| {
             let migas = enfoque::Migas::new(weak.clone());
+            let barra_tabla = tablas::BarraTabla::new(weak.clone());
             container.append(find_bar.widget());
             container.append(migas.widget());
+            container.append(barra_tabla.widget());
             container.append(&stack);
             Inner {
                 view,
@@ -450,6 +455,7 @@ impl Editor {
                 tag_fuera,
                 enfoque: RefCell::new(None),
                 migas,
+                barra_tabla,
                 on_enfoque: RefCell::new(None),
                 flechas,
                 numeros,
@@ -663,6 +669,7 @@ impl Editor {
                 let e = Editor(inner);
                 e.check_link_completion();
                 e.programar_vista_previa();
+                e.actualizar_barra_tabla();
             }
         });
 
