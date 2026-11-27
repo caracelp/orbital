@@ -27,23 +27,31 @@ impl Window {
         fill_menu(&popover, &items);
     }
 
-    /// Carpeta donde se crean las notas nuevas: la de la nota abierta, o `wiki/`.
+    /// Carpeta donde se crean las notas y carpetas nuevas (`None` = raíz de la bóveda):
+    /// 1. Si hay una carpeta seleccionada en el explorador, esa carpeta.
+    /// 2. Si hay un archivo seleccionado en el explorador (fuera de `raw/`), su carpeta (o raíz).
+    /// 3. Si no hay selección en el explorador, `wiki/` si existe, o la raíz de la bóveda.
     pub(super) fn target_dir(&self) -> Option<RelPath> {
         let vault = self.0.vault.borrow().clone()?;
-        let from_current = self.0.current_entry.borrow().as_ref().and_then(|e| {
-            let s = e.path.as_str();
-            s.rsplit_once('/')
-                .filter(|(d, _)| d.starts_with("wiki"))
-                .and_then(|(d, _)| RelPath::new(d).ok())
-        });
-        from_current.or_else(|| {
+        let default_dir = || {
             vault
                 .root()
                 .join("wiki")
                 .is_dir()
                 .then(|| RelPath::new("wiki").ok())
                 .flatten()
-        })
+        };
+        if let Some(rel) = self.selected_explorer_path()
+            && let Some(entry) = self.entry(&rel)
+        {
+            if entry.kind == EntryKind::Folder {
+                return RelPath::new(&rel).ok();
+            }
+            if entry.zone != orbital_vault::Zone::Raw {
+                return rel.rsplit_once('/').and_then(|(d, _)| RelPath::new(d).ok());
+            }
+        }
+        default_dir()
     }
 
     /// Pide el nombre de una nota nueva y la crea.
@@ -51,11 +59,16 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        let dir = self.target_dir();
+        let body = match &dir {
+            Some(d) => format!("Se crea en «{d}/». ¿Cómo se llama?"),
+            None => "Se crea en la raíz de la bóveda. ¿Cómo se llama?".to_owned(),
+        };
         let this = self.clone();
         glib::spawn_future_local(async move {
             let field = gtk::Entry::builder().activates_default(true).build();
             field.update_property(&[gtk::accessible::Property::Label("Nombre de la nota")]);
-            let dialog = adw::AlertDialog::new(Some("Nota nueva"), Some("¿Cómo se llama?"));
+            let dialog = adw::AlertDialog::new(Some("Nota nueva"), Some(&body));
             dialog.set_extra_child(Some(&field));
             dialog.add_response("cancel", "Cancelar");
             dialog.add_response("create", "Crear");
@@ -70,27 +83,22 @@ impl Window {
                 return;
             }
             let name = field.text().trim().to_owned();
-            if name.is_empty() || name.contains('/') {
-                return this.toast("El nombre no puede estar vacío ni tener «/»");
+            if name.is_empty() || name.contains('/') || name.starts_with('.') {
+                return this.toast("El nombre no puede estar vacío, tener «/» ni empezar con «.»");
             }
             warn_portable(&this, &name);
-            let dir = this.target_dir();
             let result = gio::spawn_blocking(move || {
                 let ctx = write_ctx::now(Some(vault.config()));
-                let dir = match dir {
-                    Some(d) => d,
-                    None => return Err(orbital_vault::VaultError::InvalidPath(name)),
-                };
                 match kind {
                     NewKind::Md => vault
-                        .create_note(&dir, &name, Format::Md, &ctx)
+                        .create_note_in(dir.as_ref(), &name, Format::Md, &ctx)
                         .map(|p| (p, Vec::new())),
                     NewKind::Html => vault
-                        .create_note(&dir, &name, Format::Html, &ctx)
+                        .create_note_in(dir.as_ref(), &name, Format::Html, &ctx)
                         .map(|p| (p, Vec::new())),
                     NewKind::Template(t) => {
                         let t = RelPath::new(&t)?;
-                        vault.create_from_template(&dir, &name, &t, &ctx)
+                        vault.create_from_template_in(dir.as_ref(), &name, &t, &ctx)
                     }
                 }
             })
@@ -146,8 +154,8 @@ impl Window {
                 return;
             }
             let name = field.text().trim().to_owned();
-            if name.is_empty() || name.contains('/') {
-                return this.toast("El nombre no puede estar vacío ni tener «/»");
+            if name.is_empty() || name.contains('/') || name.starts_with('.') {
+                return this.toast("El nombre no puede estar vacío, tener «/» ni empezar con «.»");
             }
             warn_portable(&this, &name);
             // La carpeta de la nota del índice; en la raíz (o sin nota), la de las notas nuevas.
@@ -161,10 +169,7 @@ impl Window {
                 .or_else(|| this.target_dir());
             let result = gio::spawn_blocking(move || {
                 let ctx = write_ctx::now(Some(vault.config()));
-                let Some(dir) = dir else {
-                    return Err(orbital_vault::VaultError::InvalidPath(name));
-                };
-                vault.create_note_with_tags(&dir, &name, &[tag], &ctx)
+                vault.create_note_with_tags_in(dir.as_ref(), &name, &[tag], &ctx)
             })
             .await;
             match result {

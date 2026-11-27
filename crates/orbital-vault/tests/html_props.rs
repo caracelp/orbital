@@ -170,6 +170,35 @@ fn create_note_html_and_md() {
 }
 
 #[test]
+fn create_note_in_root_and_arbitrary_folder() {
+    let tmp = TempDir::new("root-note");
+    fs::create_dir_all(tmp.path().join("Proyectos")).unwrap();
+    let v = orbital_vault::open(tmp.path()).unwrap();
+
+    let raiz = v
+        .create_note_in(None, "En raíz", Format::Md, &ctx())
+        .unwrap();
+    assert_eq!(raiz.as_str(), "En raíz.md");
+    assert!(tmp.path().join("En raíz.md").is_file());
+
+    let sub = v
+        .create_note_in(Some(&rel("Proyectos")), "Dentro", Format::Md, &ctx())
+        .unwrap();
+    assert_eq!(sub.as_str(), "Proyectos/Dentro.md");
+    assert!(tmp.path().join("Proyectos/Dentro.md").is_file());
+
+    let tagged = v
+        .create_note_with_tags_in(None, "Con etiqueta", &["tema".into()], &ctx())
+        .unwrap();
+    assert_eq!(tagged.as_str(), "Con etiqueta.md");
+    assert!(
+        fs::read_to_string(tmp.path().join("Con etiqueta.md"))
+            .unwrap()
+            .contains("tema")
+    );
+}
+
+#[test]
 fn warnings_for_okf_and_known_keys() {
     let (t, v) = setup();
     fs::write(

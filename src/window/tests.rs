@@ -2223,4 +2223,125 @@ mod ventana_tests {
         });
         std::fs::remove_dir_all(config).unwrap();
     }
+
+    /// Crear notas en bóveda sin `wiki/` y en la carpeta seleccionada del explorador,
+    /// invirtiendo colapso y selección al cliquear la carpeta.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn crear_nota_en_carpeta_seleccionada_y_sin_wiki() {
+        let app = app("CrearNotaCarpeta");
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "orbital-crear-carpeta-{}",
+                glib::uuid_string_random()
+            ));
+            std::fs::create_dir_all(root.join("Proyectos")).unwrap();
+            std::fs::write(root.join("Proyectos/existente.md"), "# Existente\n").unwrap();
+            let w = Window::new(&app);
+            w.open_path(root.clone()).await;
+            esperar("bóveda sin wiki cargada", || {
+                w.0.vault.borrow().is_some()
+                    && w.0.list_view.model().is_some_and(|m| m.n_items() > 0)
+            })
+            .await;
+
+            // Sin selección ni carpeta wiki/, se crea en la raíz de la bóveda.
+            assert_eq!(w.target_dir(), None);
+
+            // Clic en la carpeta «Proyectos»: se expande y queda seleccionada.
+            let sel =
+                w.0.list_view
+                    .model()
+                    .and_downcast::<gtk::SingleSelection>()
+                    .expect("SingleSelection");
+            let (pos, row) = (0..sel.n_items())
+                .find_map(|p| {
+                    let r = sel.item(p).and_downcast::<gtk::TreeListRow>()?;
+                    let o = r.item().and_downcast::<gtk::StringObject>()?;
+                    (o.string() == "Proyectos").then_some((p, r))
+                })
+                .expect("fila de Proyectos");
+            assert!(!row.is_expanded());
+            assert_ne!(sel.selected(), pos);
+
+            assert!(w.toggle_folder_row(pos, &row));
+            assert!(row.is_expanded(), "el clic expande la carpeta");
+            assert_eq!(sel.selected(), pos, "el clic selecciona la carpeta");
+            assert_eq!(
+                w.target_dir().as_ref().map(RelPath::as_str),
+                Some("Proyectos")
+            );
+
+            // Crear nota desde el diálogo: va dentro de Proyectos/.
+            w.ask_new_note(NewKind::Md);
+            esperar("diálogo Nota nueva", || {
+                w.0.window.visible_dialog().is_some()
+            })
+            .await;
+            let d =
+                w.0.window
+                    .visible_dialog()
+                    .and_downcast::<adw::AlertDialog>()
+                    .expect("AlertDialog");
+            d.extra_child()
+                .and_downcast::<gtk::Entry>()
+                .expect("Entry")
+                .set_text("Nueva en proyecto");
+            d.emit_by_name::<()>("response", &[&"create"]);
+            d.force_close();
+            esperar("nota creada en Proyectos", || {
+                root.join("Proyectos/Nueva en proyecto.md").is_file()
+                    && w.0.window.visible_dialog().is_none()
+            })
+            .await;
+
+            // Volver a seleccionar «Proyectos» y cliquearla otra vez: se colapsa y deselecciona.
+            let sel =
+                w.0.list_view
+                    .model()
+                    .and_downcast::<gtk::SingleSelection>()
+                    .expect("SingleSelection");
+            let (pos, row) = (0..sel.n_items())
+                .find_map(|p| {
+                    let r = sel.item(p).and_downcast::<gtk::TreeListRow>()?;
+                    let o = r.item().and_downcast::<gtk::StringObject>()?;
+                    (o.string() == "Proyectos").then_some((p, r))
+                })
+                .expect("fila de Proyectos tras recargar");
+            sel.set_selected(pos);
+            row.set_expanded(true);
+            assert!(w.toggle_folder_row(pos, &row));
+            assert!(!row.is_expanded(), "el segundo clic colapsa la carpeta");
+            assert_eq!(
+                sel.selected(),
+                gtk::INVALID_LIST_POSITION,
+                "el segundo clic deselecciona la carpeta"
+            );
+            assert_eq!(w.target_dir(), None);
+
+            // Crear nota sin carpeta seleccionada: va en la raíz (sin error de ruta inválida).
+            w.ask_new_note(NewKind::Md);
+            esperar("diálogo Nota nueva en raíz", || {
+                w.0.window.visible_dialog().is_some()
+            })
+            .await;
+            let d =
+                w.0.window
+                    .visible_dialog()
+                    .and_downcast::<adw::AlertDialog>()
+                    .expect("AlertDialog");
+            d.extra_child()
+                .and_downcast::<gtk::Entry>()
+                .expect("Entry")
+                .set_text("En raiz");
+            d.emit_by_name::<()>("response", &[&"create"]);
+            esperar("nota creada en la raíz", || {
+                root.join("En raiz.md").is_file()
+            })
+            .await;
+
+            w.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
 }

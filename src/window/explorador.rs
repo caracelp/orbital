@@ -23,6 +23,23 @@ impl Window {
             row.append(&drive);
             let expander = gtk::TreeExpander::new();
             expander.set_child(Some(&row));
+            // Clic izquierdo sobre una carpeta: invierte colapso y selección a la vez.
+            let clic_carpeta = gtk::GestureClick::builder()
+                .button(gtk::gdk::BUTTON_PRIMARY)
+                .propagation_phase(gtk::PropagationPhase::Capture)
+                .build();
+            let (w, it) = (tree_for_setup.clone(), item.downgrade());
+            clic_carpeta.connect_pressed(move |g, _, _, _| {
+                let Some(it) = it.upgrade() else {
+                    return;
+                };
+                if let Some(trow) = it.item().and_downcast::<gtk::TreeListRow>()
+                    && w.toggle_folder_row(it.position(), &trow)
+                {
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                }
+            });
+            expander.add_controller(clic_carpeta);
             item.set_child(Some(&expander));
             // Menú contextual (061b: la ubicación en Drive), solo con la bóveda conectada.
             let clic = gtk::GestureClick::builder()
@@ -214,6 +231,48 @@ impl Window {
         Some(popover)
     }
 
+    /// Invierte expansión y selección de una carpeta del explorador. Devuelve `true` si la fila
+    /// era una carpeta y se manejó.
+    pub(super) fn toggle_folder_row(&self, pos: u32, trow: &gtk::TreeListRow) -> bool {
+        let Some(path) = trow.item().and_downcast::<gtk::StringObject>() else {
+            return false;
+        };
+        if !self
+            .entry(path.string().as_str())
+            .is_some_and(|e| e.kind == EntryKind::Folder)
+        {
+            return false;
+        }
+        let Some(sel) = self
+            .0
+            .list_view
+            .model()
+            .and_downcast::<gtk::SingleSelection>()
+        else {
+            return false;
+        };
+        let estaba_elegida = sel.selected() == pos;
+        trow.set_expanded(!trow.is_expanded());
+        if estaba_elegida {
+            sel.set_selected(gtk::INVALID_LIST_POSITION);
+        } else {
+            sel.set_selected(pos);
+        }
+        true
+    }
+
+    /// Ruta de la fila actualmente seleccionada en el explorador (carpeta o archivo), si hay una.
+    pub(super) fn selected_explorer_path(&self) -> Option<String> {
+        self.0
+            .list_view
+            .model()
+            .and_downcast::<gtk::SingleSelection>()
+            .and_then(|s| s.selected_item())
+            .and_downcast::<gtk::TreeListRow>()
+            .and_then(|r| r.item().and_downcast::<gtk::StringObject>())
+            .map(|s| s.string().to_string())
+    }
+
     /// Busca una entrada por ruta en el árbol cargado.
     pub(super) fn entry(&self, path: &str) -> Option<Arc<Entry>> {
         let parent = path.rsplit_once('/').map_or("", |(p, _)| p);
@@ -241,9 +300,11 @@ impl Window {
                 .map(|_| children_model(&tree, path.as_str(), reversed).upcast::<gio::ListModel>())
         });
         let selection = gtk::SingleSelection::builder()
-            .model(&tree_model)
             .autoselect(false)
+            .can_unselect(true)
+            .model(&tree_model)
             .build();
+        selection.set_selected(gtk::INVALID_LIST_POSITION);
         // Elegir un archivo lo abre (clic, flechas o AT-SPI), como en las barras laterales de GNOME.
         let this = self.clone();
         selection.connect_selection_changed(move |sel, _, _| {
@@ -377,11 +438,16 @@ impl Window {
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
         };
+        let dir = self.target_dir();
+        let body = match &dir {
+            Some(d) => format!("Se crea en «{d}/». ¿Cómo se llama?"),
+            None => "Se crea en la raíz de la bóveda. ¿Cómo se llama?".to_owned(),
+        };
         let this = self.clone();
         glib::spawn_future_local(async move {
             let field = gtk::Entry::builder().activates_default(true).build();
             field.update_property(&[gtk::accessible::Property::Label("Nombre de la carpeta")]);
-            let dialog = adw::AlertDialog::new(Some("Carpeta nueva"), Some("¿Cómo se llama?"));
+            let dialog = adw::AlertDialog::new(Some("Carpeta nueva"), Some(&body));
             dialog.set_extra_child(Some(&field));
             dialog.add_response("cancel", "Cancelar");
             dialog.add_response("create", "Crear");
@@ -400,15 +466,22 @@ impl Window {
                 return this.toast("El nombre no puede estar vacío, tener «/» ni empezar con «.»");
             }
             warn_portable(&this, &name);
-            let dir = this
-                .target_dir()
-                .map_or_else(|| "wiki".to_owned(), |d| d.as_str().to_owned());
-            let abs = vault.root().join(&dir).join(&name);
+            let abs = match &dir {
+                Some(d) => vault.root().join(d.as_str()).join(&name),
+                None => vault.root().join(&name),
+            };
+            let destino = dir
+                .as_ref()
+                .map(|d| format!(" en {d}/"))
+                .unwrap_or_default();
             let result = gio::spawn_blocking(move || std::fs::create_dir(abs)).await;
             match result {
-                Ok(Ok(())) => this.toast(&format!("Carpeta «{name}» creada en {dir}/")),
+                Ok(Ok(())) => {
+                    this.reload(None).await;
+                    this.toast(&format!("Carpeta «{name}» creada{destino}"));
+                }
                 Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    this.toast(&format!("Ya existe «{name}» en {dir}/"))
+                    this.toast(&format!("Ya existe «{name}»{destino}"))
                 }
                 _ => this.toast("No se pudo crear la carpeta"),
             }

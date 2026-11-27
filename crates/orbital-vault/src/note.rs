@@ -353,7 +353,23 @@ impl Vault {
         format: Format,
         ctx: &WriteCtx,
     ) -> Result<RelPath, VaultError> {
-        let path = dir.join(&format!("{name}.{}", format.extension()))?;
+        self.create_note_in(Some(dir), name, format, ctx)
+    }
+
+    /// Como [`Vault::create_note`], permitiendo crear la nota en la raíz de la bóveda (`dir: None`)
+    /// además de en cualquier subcarpeta.
+    pub fn create_note_in(
+        &self,
+        dir: Option<&RelPath>,
+        name: &str,
+        format: Format,
+        ctx: &WriteCtx,
+    ) -> Result<RelPath, VaultError> {
+        let file = format!("{name}.{}", format.extension());
+        let path = match dir {
+            Some(d) => d.join(&file)?,
+            None => RelPath::new(&file)?,
+        };
         self.create_typed(&path, name, format, format.default_type(), &[], ctx)?;
         Ok(path)
     }
@@ -367,7 +383,22 @@ impl Vault {
         tags: &[String],
         ctx: &WriteCtx,
     ) -> Result<RelPath, VaultError> {
-        let path = dir.join(&format!("{name}.md"))?;
+        self.create_note_with_tags_in(Some(dir), name, tags, ctx)
+    }
+
+    /// Como [`Vault::create_note_with_tags`], permitiendo crear la nota en la raíz (`dir: None`).
+    pub fn create_note_with_tags_in(
+        &self,
+        dir: Option<&RelPath>,
+        name: &str,
+        tags: &[String],
+        ctx: &WriteCtx,
+    ) -> Result<RelPath, VaultError> {
+        let file = format!("{name}.md");
+        let path = match dir {
+            Some(d) => d.join(&file)?,
+            None => RelPath::new(&file)?,
+        };
         self.create_typed(
             &path,
             name,
@@ -444,14 +475,29 @@ impl Vault {
         template: &RelPath,
         ctx: &WriteCtx,
     ) -> Result<(RelPath, Vec<String>), VaultError> {
+        self.create_from_template_in(Some(dir), name, template, ctx)
+    }
+
+    /// Como [`Vault::create_from_template`], permitiendo crear la nota en la raíz (`dir: None`).
+    pub fn create_from_template_in(
+        &self,
+        dir: Option<&RelPath>,
+        name: &str,
+        template: &RelPath,
+        ctx: &WriteCtx,
+    ) -> Result<(RelPath, Vec<String>), VaultError> {
         let tpl = self.read_note(template)?;
-        let path = dir.join(&format!("{name}.{}", tpl.format.extension()))?;
+        let file = format!("{name}.{}", tpl.format.extension());
+        let path = match dir {
+            Some(d) => d.join(&file)?,
+            None => RelPath::new(&file)?,
+        };
         self.check_new(&path)?;
         let vars = crate::template::Vars {
             fecha: ctx.date.to_string(),
             hora: format!("{:02}:{:02}", ctx.time.hour, ctx.time.minute),
             titulo: name.to_owned(),
-            carpeta: dir.to_string(),
+            carpeta: dir.map_or_else(String::new, ToString::to_string),
         };
         let (rendered, unknown) = crate::template::render(&tpl.source, &vars);
         let note = parse(path.clone(), self.zone(&path), rendered, false)?;

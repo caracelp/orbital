@@ -269,14 +269,26 @@ impl Window {
                     .unwrap_or(&note_name)
                     .to_string();
 
-                let (dir_rel, file_name) = match clean_name.rsplit_once('/') {
-                    Some((d, f)) => (format!("wiki/{d}"), f.to_string()),
-                    None => ("wiki".to_string(), clean_name),
-                };
-
-                let Ok(dir) = RelPath::new(&dir_rel) else {
-                    self.toast(&format!("Ruta inválida «{}»", dir_rel));
-                    return;
+                let tiene_wiki = vault.root().join("wiki").is_dir();
+                let (dir, file_name, lugar) = match clean_name.rsplit_once('/') {
+                    Some((d, f)) => {
+                        let rel_dir = if tiene_wiki {
+                            format!("wiki/{d}")
+                        } else {
+                            d.to_string()
+                        };
+                        let Ok(dir) = RelPath::new(&rel_dir) else {
+                            self.toast(&format!("Ruta inválida «{rel_dir}»"));
+                            return;
+                        };
+                        (Some(dir), f.to_string(), format!("{rel_dir}/"))
+                    }
+                    None if tiene_wiki => (
+                        Some(RelPath::new("wiki").expect("wiki es una ruta válida")),
+                        clean_name,
+                        "wiki/".to_string(),
+                    ),
+                    None => (None, clean_name, "la raíz de la bóveda".to_string()),
                 };
 
                 let ask = vault.config().ask_create_missing_notes;
@@ -290,7 +302,7 @@ impl Window {
                     .margin_top(12)
                     .build();
 
-                let heading = format!("¿Crear la nota «{file_name}» en wiki/?");
+                let heading = format!("¿Crear la nota «{file_name}» en {lugar}?");
                 let dialog = adw::AlertDialog::builder()
                     .heading(&heading)
                     .body("El enlace apunta a una nota que todavía no existe en la bóveda.")
@@ -325,7 +337,7 @@ impl Window {
         }
     }
 
-    pub(super) fn create_missing_note(&self, dir: RelPath, name: String) {
+    pub(super) fn create_missing_note(&self, dir: Option<RelPath>, name: String) {
         let this = self.clone();
         let Some(vault) = self.0.vault.borrow().clone() else {
             return;
@@ -336,7 +348,7 @@ impl Window {
             let d = dir.clone();
             let result = gio::spawn_blocking(move || {
                 let ctx = write_ctx::now(Some(v.config()));
-                v.create_note(&d, &n, orbital_vault::Format::Md, &ctx)
+                v.create_note_in(d.as_ref(), &n, orbital_vault::Format::Md, &ctx)
             })
             .await;
             match result {
