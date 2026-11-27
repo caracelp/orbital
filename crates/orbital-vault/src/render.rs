@@ -278,6 +278,15 @@ pub enum Inline {
     /// Un ícono vectorial en línea `:nombre:` (062). Si `nombre` no existe al dibujar, se muestra
     /// el texto literal `:nombre:`.
     Icon(String),
+    /// Texto coloreado o resaltado con sintaxis propia `{color:texto}` / `==texto==` (063).
+    /// `raw_spec` conserva el especificador original (`"=="` para resaltado rápido) para volver al
+    /// texto literal si un nombre personalizado no existe.
+    Styled {
+        raw_spec: String,
+        fg: Option<String>,
+        bg: Option<String>,
+        children: Vec<Inline>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1299,7 +1308,11 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
             Inline::Text(t) => {
                 for piece in expand_text_wikilinks(&t) {
                     match piece {
-                        Inline::Text(plain) => out.extend(expand_text_icons(&plain)),
+                        Inline::Text(plain) => {
+                            for st in expand_text_styled(&plain) {
+                                out.push(expand_icons_in_inline(st));
+                            }
+                        }
                         other => out.push(other),
                     }
                 }
@@ -1311,8 +1324,197 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
                 url,
                 children: collapse_and_expand_inlines(children),
             }),
+            Inline::Styled {
+                raw_spec,
+                fg,
+                bg,
+                children,
+            } => out.push(Inline::Styled {
+                raw_spec,
+                fg,
+                bg,
+                children: collapse_and_expand_inlines(children),
+            }),
             other => out.push(other),
         }
+    }
+    expand_cross_inline_styled(out)
+}
+
+fn expand_icons_in_inline(inl: Inline) -> Inline {
+    match inl {
+        Inline::Text(t) => {
+            let mut v = expand_text_icons(&t);
+            if v.len() == 1 {
+                v.pop().unwrap()
+            } else {
+                Inline::Styled {
+                    raw_spec: String::new(),
+                    fg: None,
+                    bg: None,
+                    children: v,
+                }
+            }
+        }
+        Inline::Styled {
+            raw_spec,
+            fg,
+            bg,
+            children,
+        } => {
+            let mut flat = Vec::with_capacity(children.len());
+            for c in children {
+                match c {
+                    Inline::Text(t) => flat.extend(expand_text_icons(&t)),
+                    other => flat.push(expand_icons_in_inline(other)),
+                }
+            }
+            Inline::Styled {
+                raw_spec,
+                fg,
+                bg,
+                children: flat,
+            }
+        }
+        other => other,
+    }
+}
+
+/// Expande `{spec:texto}` y `==texto==` dentro de un tramo de texto plano (063).
+fn expand_text_styled(text: &str) -> Vec<Inline> {
+    if !text.contains('{') && !text.contains("==") {
+        return vec![Inline::Text(text.to_owned())];
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut emitted = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        // 1. Resaltado rápido `==…==`
+        if i + 4 <= bytes.len()
+            && bytes[i] == b'='
+            && bytes[i + 1] == b'='
+            && (i == 0 || bytes[i - 1] != b'\\')
+            && bytes[i + 2] != b'='
+            && bytes[i + 2] != b' '
+            && let Some(rel) = text[i + 2..].find("==")
+        {
+            let inner = &text[i + 2..i + 2 + rel];
+            if !inner.is_empty() && !inner.ends_with(' ') && !inner.contains('\n') {
+                if i > emitted {
+                    out.push(Inline::Text(text[emitted..i].to_owned()));
+                }
+                out.push(Inline::Styled {
+                    raw_spec: "==".to_owned(),
+                    fg: None,
+                    bg: Some("==".to_owned()),
+                    children: vec![Inline::Text(inner.to_owned())],
+                });
+                emitted = i + 2 + rel + 2;
+                i = emitted;
+                continue;
+            }
+        }
+        // 2. Color / fondo `{spec:texto}`
+        if bytes[i] == b'{'
+            && (i == 0 || bytes[i - 1] != b'\\')
+            && let Some(colon_rel) = text[i + 1..].find(':')
+        {
+            let colon = i + 1 + colon_rel;
+            let spec = &text[i + 1..colon];
+            if !spec.contains('}')
+                && !spec.contains('{')
+                && !spec.contains('\n')
+                && let Some(estilo) = crate::colores::parse_spec(spec)
+                && let Some(close_rel) = text[colon + 1..].find('}')
+            {
+                let close = colon + 1 + close_rel;
+                let inner = &text[colon + 1..close];
+                if !inner.is_empty() && !inner.contains("\n\n") {
+                    if i > emitted {
+                        out.push(Inline::Text(text[emitted..i].to_owned()));
+                    }
+                    out.push(Inline::Styled {
+                        raw_spec: spec.to_owned(),
+                        fg: estilo.fg,
+                        bg: estilo.bg,
+                        children: vec![Inline::Text(inner.to_owned())],
+                    });
+                    emitted = close + 1;
+                    i = emitted;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    if emitted < text.len() {
+        out.push(Inline::Text(text[emitted..].to_owned()));
+    }
+    out
+}
+
+/// Resuelve también casos donde el texto coloreado envuelve formato Markdown (`{rosa:**negrita**}`
+/// o `==**negrita**==`) y aplana envoltorios vacíos de `expand_icons_in_inline`.
+fn expand_cross_inline_styled(items: Vec<Inline>) -> Vec<Inline> {
+    let mut flat = Vec::with_capacity(items.len());
+    for it in items {
+        match it {
+            Inline::Styled {
+                raw_spec,
+                fg: None,
+                bg: None,
+                children,
+            } if raw_spec.is_empty() => flat.extend(children),
+            other => flat.push(other),
+        }
+    }
+    // Buscar `{spec:` al final de un Inline::Text y `}` al inicio de un Inline::Text posterior.
+    let mut out = Vec::with_capacity(flat.len());
+    let mut i = 0;
+    while i < flat.len() {
+        if let Inline::Text(t) = &flat[i]
+            && let Some(open) = t.rfind('{')
+            && (open == 0 || t.as_bytes()[open - 1] != b'\\')
+            && let Some(rest) = t[open + 1..].strip_suffix(':')
+            && let Some(estilo) = crate::colores::parse_spec(rest)
+            && let Some((close_idx, close_pos)) =
+                flat[i + 1..].iter().enumerate().find_map(|(k, n)| {
+                    if let Inline::Text(nt) = n
+                        && let Some(pos) = nt.find('}')
+                    {
+                        return Some((i + 1 + k, pos));
+                    }
+                    None
+                })
+        {
+            if open > 0 {
+                out.push(Inline::Text(t[..open].to_owned()));
+            }
+            let mut inner: Vec<Inline> = flat[i + 1..close_idx].to_vec();
+            let mut tail = String::new();
+            if let Inline::Text(nt) = &flat[close_idx] {
+                if close_pos > 0 {
+                    inner.push(Inline::Text(nt[..close_pos].to_owned()));
+                }
+                if close_pos + 1 < nt.len() {
+                    tail.push_str(&nt[close_pos + 1..]);
+                }
+            }
+            out.push(Inline::Styled {
+                raw_spec: rest.to_owned(),
+                fg: estilo.fg,
+                bg: estilo.bg,
+                children: inner,
+            });
+            if !tail.is_empty() {
+                out.push(Inline::Text(tail));
+            }
+            i = close_idx + 1;
+            continue;
+        }
+        out.push(flat[i].clone());
+        i += 1;
     }
     out
 }
@@ -1528,7 +1730,8 @@ pub fn plain_text(inlines: &[Inline]) -> String {
             Inline::Strong(c)
             | Inline::Emph(c)
             | Inline::Strike(c)
-            | Inline::Link { children: c, .. } => {
+            | Inline::Link { children: c, .. }
+            | Inline::Styled { children: c, .. } => {
                 s.push_str(&plain_text(c));
             }
             Inline::Image { alt, .. } => s.push_str(alt),

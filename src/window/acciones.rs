@@ -234,6 +234,13 @@ impl Window {
                 }
             }),
             simple("reglas-iconos", Window::abrir_reglas_iconos),
+            simple("color-texto", |w| w.0.code_editor.abrir_selector_color()),
+            simple("resaltar-texto", |w| {
+                w.0.code_editor.resaltar_texto_rapido()
+            }),
+            simple("quitar-color-texto", |w| {
+                w.0.code_editor.quitar_color_texto()
+            }),
             gio::ActionEntry::builder("elegir-icono-de")
                 .parameter_type(Some(glib::VariantTy::STRING))
                 .activate({
@@ -294,6 +301,8 @@ impl Window {
         app.set_accels_for_action("win.open-as", &["<Control><Shift>o"]);
         app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
         app.set_accels_for_action("win.ecuacion", &["<Control>m"]);
+        app.set_accels_for_action("win.color-texto", &["<Control><Alt>c"]);
+        app.set_accels_for_action("win.resaltar-texto", &["<Control><Alt>h"]);
     }
 
     pub(super) fn show_shortcuts(&self) {
@@ -450,6 +459,19 @@ impl Window {
             None,
             false,
         ),
+        (
+            "Color y resaltado de texto…",
+            "color-texto",
+            Some("Ctrl+Alt+C"),
+            true,
+        ),
+        (
+            "Resaltar texto rápido (==…==)",
+            "resaltar-texto",
+            Some("Ctrl+Alt+H"),
+            true,
+        ),
+        ("Quitar color del texto", "quitar-color-texto", None, true),
         ("Archivar la nota", "archive", Some("Ctrl+Mayús+A"), true),
         (
             "Pegar imagen como adjunto",

@@ -11,6 +11,7 @@ pub mod bases;
 mod bloque_medios;
 pub mod bloques;
 pub mod carrusel;
+pub mod colores;
 pub mod config;
 pub mod consulta;
 pub mod diff;

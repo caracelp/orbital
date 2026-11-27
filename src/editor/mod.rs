@@ -9,6 +9,7 @@ mod buscar_en_nota;
 #[path = "carrusel_tests.rs"]
 mod carrusel_tests;
 pub mod code;
+mod color_texto;
 pub mod completion;
 pub mod conflict;
 mod cursores;

@@ -44,6 +44,8 @@ pub struct AppState {
     pub toc: orbital_vault::toc::TocDefaults,
     /// Valores por defecto del índice por etiqueta (036).
     pub indice: orbital_vault::indice::IndiceDefaults,
+    /// Colores propios para texto y resaltado `{nombre:texto}` (063): `(nombre, "#rrggbb")`.
+    pub text_colors: Vec<(String, String)>,
 }
 
 fn state_file() -> PathBuf {
@@ -119,6 +121,19 @@ impl AppState {
         });
         let toc = toc_from(&entries);
         let indice = indice_from(&entries);
+        let text_colors = match find(&entries, "text_colors").map(|e| &e.value) {
+            Some(PropValue::Map(pairs)) => pairs
+                .iter()
+                .filter_map(|(k, v)| {
+                    let hex = v
+                        .as_text()
+                        .and_then(orbital_vault::iconos_catalogo::normalizar_color)?;
+                    orbital_vault::colores::nombre_color_valido(k)
+                        .then(|| (k.to_ascii_lowercase(), hex))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         Self {
             last_vault,
             recent,
@@ -131,6 +146,7 @@ impl AppState {
             hide_line_numbers,
             toc,
             indice,
+            text_colors,
         }
     }
 
@@ -218,6 +234,14 @@ impl AppState {
         }
         toc_entries(&self.toc, &mut entries);
         indice_entries(&self.indice, &mut entries);
+        if !self.text_colors.is_empty() {
+            let pairs = self
+                .text_colors
+                .iter()
+                .map(|(k, v)| (k.clone(), PropValue::Text(v.clone())))
+                .collect();
+            entries.push(("text_colors", PropValue::Map(pairs)));
+        }
         atomic_write(path, emit::document(&entries, LineEnding::Lf).as_bytes()).map(|_| ())
     }
 }
