@@ -2511,4 +2511,60 @@ mod ventana_tests {
             let _ = std::fs::remove_dir_all(&root);
         });
     }
+
+    /// 064: tablas avanzadas en Código (formateo, navegación, orden y fórmulas TBLFM).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn tablas_avanzadas_flujo_completo() {
+        let app = app("Tablas064");
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("orbital-064-tablas-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(&root).unwrap();
+            let contenido = "\
+---
+type: atomo
+---
+| Item | Cant | Precio | Total |
+| --- | ---: | ---: | ---: |
+| Pan | 2 | 250 |  |
+| Manzana | 3 | 120 |  |
+| Total |  |  |  |
+<!-- TBLFM: $4=$2*$3 :: @>$4=sum(@I..@-1) -->
+";
+            std::fs::write(root.join("tabla.md"), contenido).unwrap();
+
+            let w = Window::new(&app);
+            w.present();
+            w.open_path(root.clone()).await;
+            esperar("bóveda cargada", || w.0.vault.borrow().is_some()).await;
+
+            w.show_path("tabla.md");
+            esperar("nota abierta", || {
+                w.0.current_entry
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.path.as_str() == "tabla.md")
+            })
+            .await;
+
+            let editor = w.0.code_editor.clone();
+            editor.set_view(crate::editor::View::Codigo);
+            // Colocar el cursor en una fila de la tabla (línea 5 = Pan).
+            let buf = editor.buffer();
+            let mut it = buf.start_iter();
+            for _ in 0..5 {
+                it.forward_line();
+            }
+            buf.place_cursor(&it);
+            editor.tabla_recalcular_formulas();
+            let texto = editor.text();
+            assert!(texto.contains("500"), "2*250 = 500: {texto}");
+            assert!(texto.contains("360"), "3*120 = 360: {texto}");
+            assert!(texto.contains("860"), "500+360 = 860: {texto}");
+
+            w.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
 }

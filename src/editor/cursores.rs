@@ -133,6 +133,20 @@ impl Editor {
                 {
                     return glib::Propagation::Stop;
                 }
+                // Tablas avanzadas (064): Tab / Shift+Tab / Enter navegan y autoformatean.
+                if !ctrl && !alt {
+                    let tabla_hecho = match (keyval, shift) {
+                        (gtk::gdk::Key::Tab, false) => this.tabla_tab(true),
+                        (gtk::gdk::Key::ISO_Left_Tab, true) => this.tabla_tab(false),
+                        (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, false) => {
+                            this.tabla_enter()
+                        }
+                        _ => false,
+                    };
+                    if tabla_hecho {
+                        return glib::Propagation::Stop;
+                    }
+                }
                 let en_lista = outliner::item_en_cursor(&inner.buffer).is_some();
                 let intervenir = match (keyval, ctrl, alt, shift) {
                     (gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter, false, false, _)

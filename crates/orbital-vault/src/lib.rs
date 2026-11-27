@@ -49,6 +49,7 @@ pub mod saved;
 pub mod scan;
 pub mod search;
 pub mod session;
+pub mod tablas;
 pub mod tags;
 pub mod tarjetas;
 pub mod template;

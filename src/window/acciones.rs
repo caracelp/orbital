@@ -241,6 +241,17 @@ impl Window {
             simple("quitar-color-texto", |w| {
                 w.0.code_editor.quitar_color_texto()
             }),
+            simple("tabla-insertar", |w| w.0.code_editor.tabla_insertar_nueva()),
+            simple("tabla-formatear", |w| w.0.code_editor.tabla_formatear()),
+            simple("tabla-ordenar-asc", |w| w.0.code_editor.tabla_ordenar_asc()),
+            simple("tabla-ordenar-desc", |w| {
+                w.0.code_editor.tabla_ordenar_desc()
+            }),
+            simple("tabla-formulas", |w| {
+                w.0.code_editor.tabla_recalcular_formulas();
+            }),
+            simple("tabla-pegar-csv", |w| w.0.code_editor.tabla_pegar_csv()),
+            simple("tabla-copiar-csv", |w| w.0.code_editor.tabla_copiar_csv()),
             gio::ActionEntry::builder("elegir-icono-de")
                 .parameter_type(Some(glib::VariantTy::STRING))
                 .activate({
@@ -472,6 +483,43 @@ impl Window {
             true,
         ),
         ("Quitar color del texto", "quitar-color-texto", None, true),
+        (
+            "Tabla: insertar tabla Markdown",
+            "tabla-insertar",
+            None,
+            true,
+        ),
+        (
+            "Tabla: formatear y alinear columnas",
+            "tabla-formatear",
+            None,
+            true,
+        ),
+        (
+            "Tabla: ordenar columna ascendente",
+            "tabla-ordenar-asc",
+            None,
+            true,
+        ),
+        (
+            "Tabla: ordenar columna descendente",
+            "tabla-ordenar-desc",
+            None,
+            true,
+        ),
+        (
+            "Tabla: recalcular fórmulas (TBLFM)",
+            "tabla-formulas",
+            None,
+            true,
+        ),
+        ("Tabla: pegar CSV como tabla", "tabla-pegar-csv", None, true),
+        (
+            "Tabla: copiar tabla como CSV",
+            "tabla-copiar-csv",
+            None,
+            true,
+        ),
         ("Archivar la nota", "archive", Some("Ctrl+Mayús+A"), true),
         (
             "Pegar imagen como adjunto",
