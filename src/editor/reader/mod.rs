@@ -175,6 +175,8 @@ struct Inner {
     resaltar_programado: Cell<bool>,
     /// SVGs locales de `.orbital/iconos/` para resolver `:nombre:` en línea (062).
     iconos_locales: RefCell<Vec<orbital_vault::SvgLocal>>,
+    /// Colores propios del usuario para `{nombre:texto}` y `{fondo-nombre:texto}` (063).
+    colores_propios: RefCell<Vec<(String, String)>>,
 }
 
 #[derive(Clone)]
@@ -263,6 +265,7 @@ impl Reader {
             resaltar: RefCell::new(Vec::new()),
             resaltar_programado: Cell::new(false),
             iconos_locales: RefCell::new(Vec::new()),
+            colores_propios: RefCell::new(crate::state::AppState::load().text_colors),
         }));
         this.create_tags();
         // Tooltip de notas al pie (012, US1): si el mouse está sobre una referencia, muestra
@@ -341,6 +344,11 @@ impl Reader {
     /// Registra los SVGs locales de `.orbital/iconos/` para `:nombre:` en línea (062).
     pub fn set_iconos_locales(&self, svgs: Vec<orbital_vault::SvgLocal>) {
         *self.0.iconos_locales.borrow_mut() = svgs;
+    }
+
+    /// Actualiza los colores propios del usuario para `{nombre:texto}` en Lectura (063).
+    pub fn set_colores_propios(&self, colores: Vec<(String, String)>) {
+        *self.0.colores_propios.borrow_mut() = colores;
     }
 
     /// Limpia los resaltados de búsqueda en la vista formateada.

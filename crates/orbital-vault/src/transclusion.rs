@@ -760,6 +760,43 @@ fn inlines_html(out: &mut String, inlines: &[crate::render::Inline]) {
                     out.push(':');
                 }
             }
+            Inline::Styled {
+                raw_spec,
+                fg,
+                bg,
+                children,
+            } => {
+                let fg_hex = fg
+                    .as_deref()
+                    .and_then(|c| crate::colores::resolver_fg(c, &[]));
+                let bg_hex = bg
+                    .as_deref()
+                    .and_then(|c| crate::colores::resolver_bg(c, &[]));
+                if fg_hex.is_none() && bg_hex.is_none() {
+                    if raw_spec == "==" {
+                        out.push_str("==");
+                        inlines_html(out, children);
+                        out.push_str("==");
+                    } else {
+                        out.push('{');
+                        out.push_str(&escape(raw_spec));
+                        out.push(':');
+                        inlines_html(out, children);
+                        out.push('}');
+                    }
+                } else {
+                    let mut style = String::new();
+                    if let Some(f) = fg_hex {
+                        style.push_str(&format!("color:{f};"));
+                    }
+                    if let Some(b) = bg_hex {
+                        style.push_str(&format!("background:{b};padding:0 3px;border-radius:3px;"));
+                    }
+                    out.push_str(&format!("<span style=\"{style}\">"));
+                    inlines_html(out, children);
+                    out.push_str("</span>");
+                }
+            }
             Inline::SoftBreak => out.push(' '),
             Inline::HardBreak => out.push_str("<br>"),
         }

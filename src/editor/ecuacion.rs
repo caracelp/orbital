@@ -48,6 +48,20 @@ impl Editor {
             }
         });
         grupo.add_action(&accion);
+        for (nombre, f) in [
+            ("color-texto", Editor::abrir_selector_color as fn(&Editor)),
+            ("resaltar-texto", Editor::resaltar_texto_rapido),
+            ("quitar-color-texto", Editor::quitar_color_texto),
+        ] {
+            let a = gio::SimpleAction::new(nombre, None);
+            let weak = Rc::downgrade(&self.0);
+            a.connect_activate(move |_, _| {
+                if let Some(inner) = weak.upgrade() {
+                    f(&Editor(inner));
+                }
+            });
+            grupo.add_action(&a);
+        }
         i.view.insert_action_group("editor", Some(&grupo));
         self.rotular_menu(Sobre::Nada);
         // Con el clic derecho, el rótulo según lo que hay bajo el puntero (el teclado usa el de
@@ -97,6 +111,14 @@ impl Editor {
         let item = gio::MenuItem::new(Some(rotulo), Some("editor.ecuacion"));
         item.set_attribute_value("accel", Some(&"<Control>m".to_variant()));
         menu.append_item(&item);
+        let item_color = gio::MenuItem::new(Some("Color y resaltado…"), Some("editor.color-texto"));
+        item_color.set_attribute_value("accel", Some(&"<Control><Alt>c".to_variant()));
+        menu.append_item(&item_color);
+        let item_resaltar =
+            gio::MenuItem::new(Some("Resaltar texto"), Some("editor.resaltar-texto"));
+        item_resaltar.set_attribute_value("accel", Some(&"<Control><Alt>h".to_variant()));
+        menu.append_item(&item_resaltar);
+        menu.append(Some("Quitar color"), Some("editor.quitar-color-texto"));
         i.view.set_extra_menu(Some(&menu));
     }
 

@@ -1075,3 +1075,14 @@ la nota queda intacta y se informa el conflicto. Los cambios aplicados se pueden
 - Prioridad de resolución: frontmatter `icon:` → asignación explícita → carpeta ancestra más cercana con `heredar: true` → primera regla coincidente → ícono predeterminado.
 - En Markdown, `:nombre:` fuera de código, fórmulas y enlaces dibuja el ícono vectorial en línea en Lectura, OnStage y al exportar HTML (si `nombre` no existe, queda como texto literal `:nombre:`).
 
+## Color rápido de texto y resaltado
+
+Sintaxis propia en Markdown sin HTML ni CSS (el disco conserva siempre el texto plano):
+
+- `{color:texto}`: aplica color al texto (10 colores base: `rosa`, `rojo`, `naranja`, `amarillo`, `verde`, `turquesa`, `celeste`, `azul`, `violeta`, `gris`; un hex `#rrggbb`; o un color propio definido en `estado.yaml`).
+- `{fondo-color:texto}` (alias `{bg-color:texto}`): aplica color de fondo / resaltado.
+- `{color/fondo:texto}`: combina color de texto y fondo a la vez.
+- `==texto==`: resaltado rápido con el acento suave de Orbital.
+- Si un nombre personalizado no existe al dibujar, el tramo se muestra literalmente como `{nombre:texto}` sin perder contenido.
+
+

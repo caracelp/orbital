@@ -45,7 +45,9 @@ impl Reader {
                         out.push(Clave::new(tex, modo, e));
                     }
                     Inline::Strong(c) | Inline::Emph(c) | Inline::Strike(c) => inl(out, c, e),
-                    Inline::Link { children, .. } => inl(out, children, e),
+                    Inline::Link { children, .. } | Inline::Styled { children, .. } => {
+                        inl(out, children, e)
+                    }
                     _ => {}
                 }
             }

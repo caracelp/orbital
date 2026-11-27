@@ -1201,6 +1201,54 @@ impl Reader {
                         buf.insert_with_tags(end, &format!(":{nombre}:"), &refs);
                     }
                 }
+                Inline::Styled {
+                    raw_spec,
+                    fg,
+                    bg,
+                    children,
+                } => {
+                    let propios = self.0.colores_propios.borrow();
+                    let fg_hex = fg
+                        .as_deref()
+                        .and_then(|c| orbital_vault::colores::resolver_fg(c, &propios));
+                    let bg_hex = bg
+                        .as_deref()
+                        .and_then(|c| orbital_vault::colores::resolver_bg(c, &propios));
+                    drop(propios);
+                    if fg_hex.is_none() && bg_hex.is_none() {
+                        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+                        if raw_spec == "==" {
+                            buf.insert_with_tags(end, "==", &refs);
+                            self.inlines(s, end, children, tags);
+                            buf.insert_with_tags(end, "==", &refs);
+                        } else {
+                            buf.insert_with_tags(end, &format!("{{{raw_spec}:"), &refs);
+                            self.inlines(s, end, children, tags);
+                            buf.insert_with_tags(end, "}", &refs);
+                        }
+                    } else {
+                        let key = format!(
+                            "color:{}:{}",
+                            fg_hex.as_deref().unwrap_or(""),
+                            bg_hex.as_deref().unwrap_or("")
+                        );
+                        let tag = table.lookup(&key).unwrap_or_else(|| {
+                            let mut b = gtk::TextTag::builder().name(&key);
+                            if let Some(f) = &fg_hex {
+                                b = b.foreground(f);
+                            }
+                            if let Some(bg_c) = &bg_hex {
+                                b = b.background(bg_c);
+                            }
+                            let t = b.build();
+                            table.add(&t);
+                            t
+                        });
+                        let mut more = tags.to_vec();
+                        more.push(tag);
+                        self.inlines(s, end, children, &more);
+                    }
+                }
                 // Un salto simple dentro del párrafo es un salto de línea. Va con
                 // las etiquetas del contexto, así la línea siguiente conserva la sangría del
                 // callout, la cita o el ítem.

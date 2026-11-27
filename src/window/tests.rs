@@ -2451,4 +2451,64 @@ mod ventana_tests {
             let _ = std::fs::remove_dir_all(&root);
         });
     }
+
+    /// 063: color rápido de texto y resaltado sin HTML (`{color:texto}`, `{fondo-color:texto}`,
+    /// `==texto==`), colores propios y renderizado con `GtkTextTag` en Lectura.
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn color_rapido_de_texto_y_resaltado() {
+        let app = app("Color063");
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "orbital-063-color-{}",
+                glib::uuid_string_random()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("colores.md"),
+                "---\ntype: atomo\n---\nPalabra {rosa:importante}, {fondo-amarillo:aviso}, ==rapido==, {menta:propio} y {desconocido:literal}.\n",
+            )
+            .unwrap();
+
+            let w = Window::new(&app);
+            w.present();
+            w.open_path(root.clone()).await;
+            esperar("bóveda cargada", || w.0.vault.borrow().is_some()).await;
+
+            w.show_path("colores.md");
+            esperar("nota abierta", || {
+                w.0.current_entry
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.path.as_str() == "colores.md")
+            })
+            .await;
+
+            let editor = w.0.code_editor.clone();
+            editor.actualizar_colores_propios(vec![("menta".into(), "#88ffcc".into())]);
+            editor.set_view(crate::editor::View::Lectura);
+            esperar("lectura con colores", || {
+                editor.render_now();
+                let txt = editor.texto_lectura();
+                txt.contains("importante")
+                    && !txt.contains("{rosa:")
+                    && txt.contains("propio")
+                    && !txt.contains("{menta:")
+                    && txt.contains("{desconocido:literal}")
+            })
+            .await;
+
+            // Verificar que el archivo en disco no tiene HTML ni CSS.
+            let disco = std::fs::read_to_string(root.join("colores.md")).unwrap();
+            assert!(!disco.contains("<span") && !disco.contains("style="));
+
+            // Aplicar color y quitar color desde Código.
+            editor.set_view(crate::editor::View::Codigo);
+            editor.aplicar_color_texto(Some("rosa"), None);
+            editor.quitar_color_texto();
+
+            w.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
 }
