@@ -71,6 +71,7 @@ impl Window {
                 this.0.search_panel.set_search_index(arc_idx.clone());
                 this.0.code_editor.set_search_index(arc_idx);
                 this.apply_tag_snapshot(snapshot);
+                this.refrescar_iconos_ui();
                 this.drain_search_updates();
             }
         });

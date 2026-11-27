@@ -639,6 +639,81 @@ pub fn insert_link_completion(
     view.grab_focus();
 }
 
+/// Detecta `:prefijo` en el cursor para autocompletar íconos en línea (062).
+/// Exige al menos 1 carácter después de `:` y descarta `::`, `12:30`, URLs, código y frontmatter.
+pub fn icon_query_at_cursor(buffer: &sourceview5::Buffer) -> Option<(String, i32)> {
+    let cursor = buffer.iter_at_offset(buffer.cursor_position());
+    let mut line_start = cursor;
+    line_start.set_line_offset(0);
+    let before = buffer.text(&line_start, &cursor, true);
+    let before_str = before.as_str();
+    let colon = before_str.rfind(':')?;
+    let query = &before_str[colon + 1..];
+    if query.is_empty()
+        || !query
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || !query.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return None;
+    }
+    let prev_ok = colon == 0
+        || !matches!(before_str.as_bytes()[colon - 1], b':' | b'/' | b'\\')
+            && !before_str[..colon]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+    if !prev_ok {
+        return None;
+    }
+    // Evitar dentro de código en línea simple (cantidad impar de backticks en la línea).
+    if before_str[..colon].bytes().filter(|&b| b == b'`').count() % 2 == 1 {
+        return None;
+    }
+    // Evitar dentro de frontmatter YAML o bloque cercado.
+    let full = buffer.text(&buffer.start_iter(), &cursor, true);
+    let full_str = full.as_str();
+    let mut in_fence = false;
+    let mut in_front = false;
+    for (idx, l) in full_str.lines().enumerate() {
+        let t = l.trim();
+        if idx == 0 && t == "---" {
+            in_front = true;
+            continue;
+        }
+        if in_front {
+            if t == "---" {
+                in_front = false;
+            }
+            continue;
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+    }
+    if in_front || in_fence {
+        return None;
+    }
+    let char_pos = before_str[..colon].chars().count() as i32;
+    Some((query.to_ascii_lowercase(), line_start.offset() + char_pos))
+}
+
+/// Reemplaza `:prefijo` desde `start_offset` hasta el cursor por `:nombre:` (062).
+pub fn insert_icon_completion(buffer: &sourceview5::Buffer, start_offset: i32, icon_name: &str) {
+    let mut end_iter = buffer.iter_at_offset(buffer.cursor_position());
+    if end_iter.char() == ':' {
+        end_iter.forward_char();
+    }
+    buffer.begin_user_action();
+    let mut start_iter = buffer.iter_at_offset(start_offset);
+    buffer.delete(&mut start_iter, &mut end_iter);
+    let replacement = format!(":{icon_name}:");
+    let mut at = buffer.iter_at_offset(start_offset);
+    buffer.insert(&mut at, &replacement);
+    buffer.place_cursor(&at);
+    buffer.end_user_action();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

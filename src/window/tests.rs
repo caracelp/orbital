@@ -2238,6 +2238,7 @@ mod ventana_tests {
             std::fs::create_dir_all(root.join("Proyectos")).unwrap();
             std::fs::write(root.join("Proyectos/existente.md"), "# Existente\n").unwrap();
             let w = Window::new(&app);
+            w.present();
             w.open_path(root.clone()).await;
             esperar("bóveda sin wiki cargada", || {
                 w.0.vault.borrow().is_some()
@@ -2339,6 +2340,112 @@ mod ventana_tests {
                 root.join("En raiz.md").is_file()
             })
             .await;
+
+            w.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
+
+    /// 062: íconos personalizados (asignación con herencia, reglas, frontmatter `icon:`,
+    /// persistencia en `.orbital/iconos.yaml`, `:nombre:` en Lectura y autocompletado en Código).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn iconos_personalizados_flujo_completo() {
+        let app = app("Iconos062");
+        glib::MainContext::default().block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "orbital-062-iconos-{}",
+                glib::uuid_string_random()
+            ));
+            std::fs::create_dir_all(root.join("Proyectos")).unwrap();
+            std::fs::write(
+                root.join("Proyectos/nota.md"),
+                "---\ntype: atomo\n---\nLanzar :cohete: y literal :desconocido:.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("Proyectos/propia.md"),
+                "---\ntype: atomo\nicon: atomo\nicon_color: \"#9ece6a\"\n---\nCon icon en frontmatter.\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("diario.md"),
+                "---\ntype: diario\n---\nHoy.\n",
+            )
+            .unwrap();
+
+            let w = Window::new(&app);
+            w.present();
+            w.open_path(root.clone()).await;
+            esperar("índice e íconos cargados", || {
+                w.0.vault.borrow().is_some()
+                    && w.0.search_index.borrow().is_some()
+                    && w.0.iconos.borrow().is_some()
+            })
+            .await;
+
+            // Asignar ícono a carpeta con herencia y regla por prop_tipo.
+            {
+                let mut snap = w.0.iconos.borrow_mut();
+                let s = snap.as_mut().expect("snapshot iconos");
+                s.config.asignar(
+                    RelPath::new("Proyectos").unwrap(),
+                    "cohete".into(),
+                    Some("#ff8cc6".into()),
+                    true,
+                );
+                s.config.reglas.push(orbital_vault::ReglaIcono {
+                    tipo: orbital_vault::TipoRegla::PropTipo,
+                    valor: "diario".into(),
+                    icono: "calendario".into(),
+                    color: Some("#7dcfff".into()),
+                });
+            }
+            w.refrescar_iconos_ui();
+
+            // Herencia, override por frontmatter y regla automática.
+            let (res_hijo, _) = w.resolver_icono("Proyectos/nota.md").expect("hereda cohete");
+            assert_eq!(res_hijo.icono, "cohete");
+            assert_eq!(res_hijo.color.as_deref(), Some("#ff8cc6"));
+
+            let (res_fm, _) = w.resolver_icono("Proyectos/propia.md").expect("gana frontmatter");
+            assert_eq!(res_fm.icono, "atomo");
+            assert_eq!(res_fm.color.as_deref(), Some("#9ece6a"));
+
+            let (res_regla, _) = w.resolver_icono("diario.md").expect("regla prop_tipo");
+            assert_eq!(res_regla.icono, "calendario");
+
+            // Pintable y GIcon se crean sin error.
+            assert!(w.paintable_icono_de("Proyectos/nota.md", 16).is_some());
+            assert!(w.gicon_icono_de("Proyectos/nota.md").is_some());
+
+            // Abrir nota y verificar `:cohete:` dibujado como paintable y `:desconocido:` literal en Lectura.
+            w.show_path("Proyectos/nota.md");
+            esperar("nota abierta", || {
+                w.0.current_entry
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.path.as_str() == "Proyectos/nota.md")
+            })
+            .await;
+            let editor = w.0.code_editor.clone();
+            editor.set_view(crate::editor::View::Lectura);
+            esperar("lectura con ícono inline", || {
+                editor.render_now();
+                let txt = editor.texto_lectura();
+                txt.contains(":desconocido:") && !txt.contains(":cohete:")
+            })
+            .await;
+
+            // Autocompletado `:coh` en Código.
+            let (_, buf) = crate::editor::code::new_view();
+            buf.set_text("Hola :coh");
+            buf.place_cursor(&buf.end_iter());
+            let (q, start) = crate::editor::code::icon_query_at_cursor(&buf).expect("query icono");
+            assert_eq!(q, "coh");
+            crate::editor::code::insert_icon_completion(&buf, start, "cohete");
+            let final_txt = buf.text(&buf.start_iter(), &buf.end_iter(), true);
+            assert_eq!(final_txt, "Hola :cohete:");
 
             w.0.window.destroy();
             let _ = std::fs::remove_dir_all(&root);

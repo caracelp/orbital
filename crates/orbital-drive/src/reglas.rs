@@ -24,6 +24,7 @@ pub const ORBITAL_COMPARTIDOS: &[&str] = &[
     "plegado.yaml",
     "enlaces.yaml",
     "busquedas.yaml",
+    "iconos.yaml",
 ];
 
 /// Conexión de una bóveda.

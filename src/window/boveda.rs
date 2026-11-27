@@ -261,6 +261,7 @@ impl Window {
         // Favoritos y Guardados (027): se cargan después del primer cuadro.
         self.listas_en_show_vault();
         self.plegado_en_show_vault();
+        self.iconos_en_show_vault();
         self.set_list_model(tree);
         crate::medir_arranque::marca("show_vault: lista");
         // Google Drive (061a): nada hasta después del primer cuadro, y nada si no está conectada.

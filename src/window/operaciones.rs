@@ -369,6 +369,8 @@ impl Window {
                 self.seguir_renombre_en_listas(&from, &to);
                 // El plegado también (028).
                 self.seguir_renombre_en_plegado(&from, &to);
+                // Los íconos personalizados también (062).
+                self.seguir_renombre_en_iconos(&from, &to);
                 if let Some(error) = enlaces_err {
                     self.toast(&format!("No se pudo migrar la URL asociada: {error}"));
                 }
@@ -543,6 +545,7 @@ impl Window {
         // Sale de Favoritos y de las colecciones (027, FR-008); «Deshacer» la repone.
         let quitadas = self.quitar_de_listas(&path);
         let quitadas_plegado = self.quitar_de_plegado(&path);
+        let quitadas_iconos = self.quitar_de_iconos(&path);
         let msg = match &in_vault {
             None => format!("«{}» se movió a la papelera", path.file_name()),
             Some(_) => format!(
@@ -552,13 +555,14 @@ impl Window {
         };
         let this = self.clone();
         self.toast_undo(&msg, move || {
-            let (this, plan, abs, in_vault, quitadas, quitadas_plegado) = (
+            let (this, plan, abs, in_vault, quitadas, quitadas_plegado, quitadas_iconos) = (
                 this.clone(),
                 plan.clone(),
                 abs.clone(),
                 in_vault.clone(),
                 quitadas.clone(),
                 quitadas_plegado.clone(),
+                quitadas_iconos.clone(),
             );
             glib::spawn_future_local(async move {
                 let repuesta = match in_vault {
@@ -568,6 +572,7 @@ impl Window {
                 if repuesta {
                     this.reponer_en_listas(&quitadas);
                     this.reponer_en_plegado(&quitadas_plegado);
+                    this.reponer_iconos(quitadas_iconos);
                 }
             });
         });

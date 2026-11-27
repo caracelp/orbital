@@ -109,6 +109,7 @@ struct Suggestion {
     label: String,
     detail: String,
     target: String,
+    icon: Option<(String, Option<std::path::PathBuf>)>,
 }
 
 /// Nombres y claves plegadas preparados al cambiar el índice, nunca al escribir.
@@ -227,6 +228,8 @@ struct Inner {
     markers: RefCell<Vec<MarkerCandidate>>,
     /// Tipos de relación (049): la lista base y los usados en la bóveda.
     relation_types: RefCell<Vec<String>>,
+    /// SVGs locales en `.orbital/iconos/` para autocompletado `:nombre:` (062).
+    local_icons: RefCell<Vec<orbital_vault::SvgLocal>>,
     on_selected: RefCell<Option<SelectedFn>>,
 }
 
@@ -318,6 +321,7 @@ impl LinkCompletionPopover {
             tags: RefCell::new(Vec::new()),
             markers: RefCell::new(Vec::new()),
             relation_types: RefCell::new(base_relation_types(&[])),
+            local_icons: RefCell::new(Vec::new()),
             on_selected: RefCell::new(None),
         }));
 
@@ -391,6 +395,7 @@ impl LinkCompletionPopover {
                     label,
                     detail,
                     target,
+                    icon: None,
                 }
             })
             .collect();
@@ -409,6 +414,7 @@ impl LinkCompletionPopover {
                 label: format!("#{name}"),
                 detail: String::new(),
                 target: name,
+                icon: None,
             })
             .collect();
         self.show_suggestions(suggestions, "etiquetas")
@@ -425,6 +431,7 @@ impl LinkCompletionPopover {
                 label: format!("[%{key}]"),
                 detail: String::new(),
                 target: key,
+                icon: None,
             })
             .collect();
         self.show_suggestions(suggestions, "marcadores")
@@ -449,6 +456,7 @@ impl LinkCompletionPopover {
                         format!("en la otra nota: «{inversa}»")
                     },
                     target: t.to_owned(),
+                    icon: None,
                 }
             })
             .collect();
@@ -473,9 +481,54 @@ impl LinkCompletionPopover {
                 },
                 detail: format!("^{} · línea {}", b.id, b.linea + 1),
                 target: format!("{nota}#^{}", b.id),
+                icon: None,
             })
             .collect();
         self.show_suggestions(suggestions, "bloques")
+    }
+
+    /// Registra los SVGs locales de `.orbital/iconos/` para autocompletar `:nombre:` (062).
+    pub fn set_local_icons(&self, svgs: Vec<orbital_vault::SvgLocal>) {
+        *self.0.local_icons.borrow_mut() = svgs;
+    }
+
+    /// Filtra íconos locales y del catálogo por nombre, etiqueta o palabras clave (062).
+    pub fn filter_icon_query(&self, query: &str) -> usize {
+        let q = orbital_vault::fold(query.trim());
+        let mut starts = Vec::new();
+        let mut contains = Vec::new();
+        for sv in self.0.local_icons.borrow().iter() {
+            let nf = orbital_vault::fold(&sv.nombre);
+            let sug = || Suggestion {
+                label: format!(":{}:", sv.nombre),
+                detail: "SVG local".to_owned(),
+                target: sv.nombre.clone(),
+                icon: Some((sv.nombre.clone(), Some(sv.ruta.clone()))),
+            };
+            if nf.starts_with(&q) {
+                starts.push(sug());
+            } else if nf.contains(&q) {
+                contains.push(sug());
+            }
+        }
+        for ic in orbital_vault::iconos_catalogo::CATALOGO {
+            let nf = orbital_vault::fold(ic.nombre);
+            let ef = orbital_vault::fold(ic.etiqueta);
+            let cf = orbital_vault::fold(ic.claves);
+            let sug = || Suggestion {
+                label: format!(":{}:", ic.nombre),
+                detail: format!("{} · {}", ic.etiqueta, ic.categoria),
+                target: ic.nombre.to_owned(),
+                icon: Some((ic.nombre.to_owned(), None)),
+            };
+            if nf.starts_with(&q) || ef.starts_with(&q) {
+                starts.push(sug());
+            } else if nf.contains(&q) || ef.contains(&q) || cf.contains(&q) {
+                contains.push(sug());
+            }
+        }
+        let matches: Vec<Suggestion> = starts.into_iter().chain(contains).take(8).collect();
+        self.show_suggestions(matches, "íconos")
     }
 
     fn show_suggestions(&self, matches: Vec<Suggestion>, kind: &str) -> usize {
@@ -493,11 +546,18 @@ impl LinkCompletionPopover {
             self.0.list.remove(&row);
         }
         for c in &matches {
+            let outer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            outer.set_margin_top(6);
+            outer.set_margin_bottom(6);
+            outer.set_margin_start(10);
+            outer.set_margin_end(10);
+            if let Some((nombre, svg)) = &c.icon
+                && let Some(img) =
+                    crate::iconos_personalizados::imagen(nombre, None, 16, svg.as_deref())
+            {
+                outer.append(&img);
+            }
             let row_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            row_box.set_margin_top(6);
-            row_box.set_margin_bottom(6);
-            row_box.set_margin_start(10);
-            row_box.set_margin_end(10);
             row_box.append(
                 &gtk::Label::builder()
                     .label(&c.label)
@@ -514,11 +574,12 @@ impl LinkCompletionPopover {
                         .build(),
                 );
             }
+            outer.append(&row_box);
             let row_btn = gtk::Button::builder()
                 .has_frame(false)
                 .focusable(false)
                 .css_classes(["flat"])
-                .child(&row_box)
+                .child(&outer)
                 .build();
             row_btn.update_property(&[gtk::accessible::Property::Label(&format!(
                 "Sugerencia: {}",

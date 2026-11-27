@@ -34,6 +34,11 @@ impl Window {
                 Window(i).orden_de_listas(orden);
             }
         });
+        let weak = Rc::downgrade(&self.0);
+        self.0.listas_panel.set_resolver_icono(move |ruta| {
+            weak.upgrade()
+                .and_then(|i| Window(i).paintable_icono_de(ruta, 16))
+        });
         // La página Guardados se arma la primera vez que se muestra.
         let weak = Rc::downgrade(&self.0);
         self.0

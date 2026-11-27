@@ -1181,6 +1181,26 @@ impl Reader {
                     };
                     self.formula(s, end, tex, modo, tags);
                 }
+                Inline::Icon(nombre) => {
+                    let ruta_svg = self
+                        .0
+                        .iconos_locales
+                        .borrow()
+                        .iter()
+                        .find(|sv| sv.nombre == *nombre)
+                        .map(|sv| sv.ruta.clone());
+                    if let Some(p) = crate::iconos_personalizados::paintable(
+                        nombre,
+                        None,
+                        16,
+                        ruta_svg.as_deref(),
+                    ) {
+                        buf.insert_paintable(end, &p);
+                    } else {
+                        let refs: Vec<&gtk::TextTag> = tags.iter().collect();
+                        buf.insert_with_tags(end, &format!(":{nombre}:"), &refs);
+                    }
+                }
                 // Un salto simple dentro del párrafo es un salto de línea. Va con
                 // las etiquetas del contexto, así la línea siguiente conserva la sangría del
                 // callout, la cita o el ítem.

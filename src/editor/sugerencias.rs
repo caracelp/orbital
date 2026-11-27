@@ -32,10 +32,23 @@ impl Editor {
             .then(|| code::relation_query_at_cursor(&i.buffer))
             .flatten();
         let is_relation = relation_query.is_some();
-        let query_info = link_query.or(tag_query).or(marker_query).or(relation_query);
+        let icon_query = (link_query.is_none()
+            && tag_query.is_none()
+            && marker_query.is_none()
+            && relation_query.is_none()
+            && i.format.get() == Format::Md)
+            .then(|| code::icon_query_at_cursor(&i.buffer))
+            .flatten();
+        let is_icon = icon_query.is_some();
+        let query_info = link_query
+            .or(tag_query)
+            .or(marker_query)
+            .or(relation_query)
+            .or(icon_query);
         i.completion_is_tag.set(is_tag);
         i.completion_is_marker.set(is_marker);
         i.completion_is_relation.set(is_relation);
+        i.completion_is_icon.set(is_icon);
         match query_info {
             Some((query, start_offset)) => {
                 if i.completion_dismissed_at.get() == Some(start_offset) {
@@ -57,6 +70,8 @@ impl Editor {
                     i.completion.filter_marker_query(&query)
                 } else if is_relation {
                     i.completion.filter_relation_query(&query)
+                } else if is_icon {
+                    i.completion.filter_icon_query(&query)
                 } else {
                     i.completion.filter(&query)
                 };
@@ -89,6 +104,7 @@ impl Editor {
         i.completion_is_tag.set(false);
         i.completion_is_marker.set(false);
         i.completion_is_relation.set(false);
+        i.completion_is_icon.set(false);
         let cache = i.completion_bloques.borrow().clone();
         let bloques = match cache {
             Some((n, Some(b))) if n == nota => b,
@@ -149,6 +165,12 @@ impl Editor {
         } else {
             i.completion.popdown();
         }
+    }
+
+    /// Registra los SVGs locales de `.orbital/iconos/` para `:nombre:` en Código y Lectura (062).
+    pub fn set_iconos_locales(&self, svgs: Vec<orbital_vault::SvgLocal>) {
+        self.0.completion.set_local_icons(svgs.clone());
+        self.0.reader.set_iconos_locales(svgs);
     }
 
     /// Los tipos de relación usados en la bóveda (049), para el autocompletado de Conexiones.

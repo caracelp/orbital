@@ -154,6 +154,24 @@ impl SearchIndex {
     }
 
     /// Construye el índice recorriendo la bóveda en paralelo con `std::thread::scope` (R3).
+    /// Metadatos livianos de una nota para resolver íconos personalizados (062) sin tocar el disco.
+    pub fn meta_icono(&self, path: &RelPath) -> Option<crate::MetaNotaIcono> {
+        let doc = self.docs.get(path)?;
+        let buscar = |clave: &str| {
+            doc.values
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(clave))
+                .and_then(|(_, v)| v.as_text())
+                .map(str::to_owned)
+        };
+        Some(crate::MetaNotaIcono {
+            prop_icon: buscar("icon").or_else(|| buscar("icono")),
+            prop_color: buscar("icon_color").or_else(|| buscar("color_icono")),
+            prop_tipo: buscar("type").or_else(|| buscar("tipo")),
+            tags: doc.tags.clone(),
+        })
+    }
+
     pub fn build(vault: &Vault) -> Self {
         let entries: Vec<RelPath> = vault
             .entries()

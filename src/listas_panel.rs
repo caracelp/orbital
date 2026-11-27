@@ -44,6 +44,9 @@ type Ordenar = Rc<dyn Fn(Orden)>;
 /// Una sección plegable con el estilo del explorador (la arma la ventana).
 pub type Plegable = fn(&str, &gtk::Widget, bool, bool) -> (gtk::Box, gtk::Button);
 
+/// Resuelve un pintable de ícono personalizado para una ruta (062).
+type ResolverIcono = Rc<dyn Fn(&str) -> Option<gtk::gdk::Paintable>>;
+
 struct Inner {
     favoritos: gtk::ListBox,
     favoritos_vacio: gtk::Label,
@@ -57,6 +60,7 @@ struct Inner {
     plegable: Plegable,
     abrir: RefCell<Option<Abrir>>,
     orden: RefCell<Option<Ordenar>>,
+    resolver_icono: RefCell<Option<ResolverIcono>>,
 }
 
 /// Widgets de Favoritos y Guardados.
@@ -134,8 +138,18 @@ fn fila(
     total: usize,
 ) -> gtk::ListBoxRow {
     let caja = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let icono_archivo = crate::iconos::Icono::new("archivo", 16);
-    caja.append(&icono_archivo);
+    let icono_custom = panel
+        .upgrade()
+        .and_then(|i| i.resolver_icono.borrow().clone())
+        .and_then(|f| f(ruta.as_str()));
+    if let Some(p) = icono_custom {
+        let img = gtk::Image::from_paintable(Some(&p));
+        img.set_pixel_size(16);
+        caja.append(&img);
+    } else {
+        let icono_archivo = crate::iconos::Icono::new("archivo", 16);
+        caja.append(&icono_archivo);
+    }
     let nombre = gtk::Label::builder()
         .label(nombre_de(ruta))
         .xalign(0.0)
@@ -340,6 +354,7 @@ impl ListasPanel {
             plegable,
             abrir: RefCell::new(None),
             orden: RefCell::new(None),
+            resolver_icono: RefCell::new(None),
         }));
         arrastre_en(&this.0.favoritos, Lista::Favoritos, &Rc::downgrade(&this.0));
         let weak = Rc::downgrade(&this.0);
@@ -390,6 +405,17 @@ impl ListasPanel {
 
     pub fn connect_orden(&self, f: impl Fn(Orden) + 'static) {
         *self.0.orden.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// Registra un resolvedor de íconos personalizados (062) para Favoritos y Guardados.
+    pub fn set_resolver_icono(&self, f: impl Fn(&str) -> Option<gtk::gdk::Paintable> + 'static) {
+        *self.0.resolver_icono.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// Limpia la caché de filas de Favoritos para que el próximo [`Self::mostrar_favoritos`]
+    /// redibuje con los íconos actualizados.
+    pub fn forzar_refresco_iconos(&self) {
+        self.0.favoritos_filas.borrow_mut().clear();
     }
 
     /// Redibuja Favoritos.

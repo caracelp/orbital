@@ -1066,3 +1066,12 @@ reescribir la base en silencio. `raw/` sigue siendo de solo lectura.
 `![[x.base]]` incrusta el resultado sin copiarlo al archivo de la nota. El renombre de propiedades
 previsualiza también las referencias en bases; ante valores diferentes de origen y destino,
 la nota queda intacta y se informa el conflicto. Los cambios aplicados se pueden deshacer.
+
+## Íconos personalizados
+
+- `.orbital/iconos.yaml` (`format_version: 1`): guarda las asignaciones explícitas (`asignaciones`: `ruta`, `icono`, opcionales `color: "#rrggbb"` y `heredar: true` en carpetas) y las reglas automáticas (`reglas`: `tipo` en `carpeta` | `patron` | `prop_tipo` | `etiqueta`, `valor`, `icono` y opcional `color`). Viaja con la bóveda y con Google Drive, se escribe de forma atómica con respaldo previo y sigue los renombrados y borrados.
+- `.orbital/iconos/<nombre>.svg`: íconos SVG locales propios, disponibles junto al catálogo vectorial embebido sin conexión.
+- En el frontmatter de una nota, `icon: <nombre>` (y opcional `icon_color: "#rrggbb"`) tiene prioridad sobre `.orbital/iconos.yaml`.
+- Prioridad de resolución: frontmatter `icon:` → asignación explícita → carpeta ancestra más cercana con `heredar: true` → primera regla coincidente → ícono predeterminado.
+- En Markdown, `:nombre:` fuera de código, fórmulas y enlaces dibuja el ícono vectorial en línea en Lectura, OnStage y al exportar HTML (si `nombre` no existe, queda como texto literal `:nombre:`).
+

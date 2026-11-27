@@ -94,7 +94,12 @@ impl Window {
                 .last_child()
                 .and_downcast::<gtk::Image>()
                 .expect("Image de Drive");
-            icon.set_icon_name(Some(icon_for(entry.kind)));
+            if let Some(p) = tree_for_bind.paintable_icono_de(entry.path.as_str(), 16) {
+                icon.set_paintable(Some(&p));
+                icon.set_pixel_size(16);
+            } else {
+                icon.set_icon_name(Some(icon_for(entry.kind)));
+            }
             label.set_label(&name);
             let what = match entry.kind {
                 EntryKind::Folder => "Carpeta",
@@ -178,42 +183,70 @@ impl Window {
         });
     }
 
-    /// Menú contextual de una fila del explorador. Hoy solo tiene lo de Google Drive (la
-    /// ubicación, el enlace y el conflicto): sin la bóveda conectada no se abre (`false`).
+    /// Menú contextual de una fila del explorador: íconos personalizados (062) y, cuando la
+    /// bóveda está conectada con Google Drive, ubicación, enlace y conflictos (061b).
     pub(super) fn menu_contextual(
         &self,
         rel: &str,
         sobre: &gtk::Widget,
         punto: Option<(f64, f64)>,
     ) -> Option<gtk::Popover> {
-        if !self.drive_activo() && !self.drive_es_marcador(rel) {
-            return None;
-        }
         let carpeta = self.entry(rel).is_some_and(|e| e.kind == EntryKind::Folder);
         let mut items = Vec::new();
-        if !carpeta {
-            // Lo «solo en Drive» se baja antes, con el progreso y «Cancelar» (061b).
-            let mut m = MenuItem::new("Abrir con otra aplicación", "win.abrir-con-de", "");
-            m.target = Some(rel.to_owned());
-            items.push(m);
+
+        // Íconos personalizados (062).
+        let asig = self.asignacion_icono_de(rel);
+        let mut m_icono = MenuItem::new("Elegir ícono…", "win.elegir-icono-de", "");
+        m_icono.target = Some(rel.to_owned());
+        items.push(m_icono);
+        if carpeta && let Some(a) = &asig {
+            let texto = if a.heredar {
+                "Dejar de heredar ícono a hijos"
+            } else {
+                "Heredar ícono a hijos"
+            };
+            let mut m_her = MenuItem::new(texto, "win.alternar-heredar-icono-de", "");
+            m_her.target = Some(rel.to_owned());
+            items.push(m_her);
         }
-        items.extend(self.items_ubicacion(rel, carpeta));
-        if self.drive_ubicacion(rel) != orbital_drive::reglas::Ubicacion::Local {
-            let mut m = MenuItem::new("Copiar enlace de Drive", "win.drive-enlace-de", "");
-            m.target = Some(rel.to_owned());
-            items.push(m);
+        if asig.is_some() {
+            let mut m_quitar = MenuItem::new("Quitar ícono", "win.quitar-icono-de", "");
+            m_quitar.target = Some(rel.to_owned());
+            items.push(m_quitar);
         }
-        if self
-            .0
-            .drive
-            .borrow()
-            .conflictos
-            .iter()
-            .any(|c| c.ruta == rel)
-        {
-            let mut m = MenuItem::new("Resolver el conflicto con Drive…", "win.drive-resolver", "");
-            m.target = Some(rel.to_owned());
-            items.push(m);
+        items.push(MenuItem::new(
+            "Reglas automáticas de íconos…",
+            "win.reglas-iconos",
+            "",
+        ));
+
+        // Google Drive (061b), solo si está conectado o es un marcador.
+        if self.drive_activo() || self.drive_es_marcador(rel) {
+            if !carpeta {
+                // Lo «solo en Drive» se baja antes, con el progreso y «Cancelar» (061b).
+                let mut m = MenuItem::new("Abrir con otra aplicación", "win.abrir-con-de", "");
+                m.target = Some(rel.to_owned());
+                items.push(m);
+            }
+            items.extend(self.items_ubicacion(rel, carpeta));
+            if self.drive_ubicacion(rel) != orbital_drive::reglas::Ubicacion::Local {
+                let mut m = MenuItem::new("Copiar enlace de Drive", "win.drive-enlace-de", "");
+                m.target = Some(rel.to_owned());
+                items.push(m);
+            }
+            if self
+                .0
+                .drive
+                .borrow()
+                .conflictos
+                .iter()
+                .any(|c| c.ruta == rel)
+            {
+                let mut m =
+                    MenuItem::new("Resolver el conflicto con Drive…", "win.drive-resolver", "");
+                m.target = Some(rel.to_owned());
+                items.push(m);
+            }
         }
         let popover = gtk::Popover::builder().has_arrow(punto.is_none()).build();
         popover.add_css_class("menu");

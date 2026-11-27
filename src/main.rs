@@ -16,6 +16,7 @@ mod grafo;
 mod guardar_en;
 mod html_view;
 mod iconos;
+mod iconos_personalizados;
 mod imagenes;
 mod listas_panel;
 mod medios;

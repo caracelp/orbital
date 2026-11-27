@@ -223,6 +223,50 @@ impl Window {
             simple("archive", Window::archive_current),
             simple("paste-image", Window::paste_image),
             simple("open-missing", Window::test_open_missing),
+            simple("elegir-icono", |w| {
+                if let Some(rel) = w.selected_explorer_path().or_else(|| {
+                    w.0.current_entry
+                        .borrow()
+                        .as_ref()
+                        .map(|e| e.path.as_str().to_owned())
+                }) {
+                    w.abrir_selector_icono(&rel);
+                }
+            }),
+            simple("reglas-iconos", Window::abrir_reglas_iconos),
+            gio::ActionEntry::builder("elegir-icono-de")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate({
+                    let this = self.clone();
+                    move |_: &adw::ApplicationWindow, _, param| {
+                        if let Some(rel) = param.and_then(|v| v.get::<String>()) {
+                            this.abrir_selector_icono(&rel);
+                        }
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("quitar-icono-de")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate({
+                    let this = self.clone();
+                    move |_: &adw::ApplicationWindow, _, param| {
+                        if let Some(rel) = param.and_then(|v| v.get::<String>()) {
+                            this.quitar_icono_de(&rel);
+                        }
+                    }
+                })
+                .build(),
+            gio::ActionEntry::builder("alternar-heredar-icono-de")
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate({
+                    let this = self.clone();
+                    move |_: &adw::ApplicationWindow, _, param| {
+                        if let Some(rel) = param.and_then(|v| v.get::<String>()) {
+                            this.alternar_heredar_icono_de(&rel);
+                        }
+                    }
+                })
+                .build(),
             from_template,
         ]);
         app.set_accels_for_action("win.new-note", &["<Control>n"]);
@@ -377,9 +421,18 @@ impl Window {
         let state = AppState::load();
         let recent = state.recent_notes_for(vault.root()).to_vec();
         let this = self.clone();
-        crate::switcher::SwitcherDialog::present(&self.0.window, candidates, recent, move |path| {
-            this.show_path(path.as_str());
-        });
+        let this_ic = self.clone();
+        let resolver: crate::switcher::IconResolver =
+            Rc::new(move |ruta| this_ic.paintable_icono_de(ruta, 16));
+        crate::switcher::SwitcherDialog::present_with_icons(
+            &self.0.window,
+            candidates,
+            recent,
+            Some(resolver),
+            move |path| {
+                this.show_path(path.as_str());
+            },
+        );
     }
 
     /// Registro de comandos de la paleta (US8): nombre visible, acción `win.*`
@@ -390,6 +443,13 @@ impl Window {
         ("Nota nueva", "new-note", Some("Ctrl+N"), false),
         ("Nota HTML nueva", "new-html", None, false),
         ("Diario de hoy", "journal", Some("Ctrl+Alt+D"), false),
+        ("Elegir ícono…", "elegir-icono", None, false),
+        (
+            "Reglas automáticas de íconos…",
+            "reglas-iconos",
+            None,
+            false,
+        ),
         ("Archivar la nota", "archive", Some("Ctrl+Mayús+A"), true),
         (
             "Pegar imagen como adjunto",

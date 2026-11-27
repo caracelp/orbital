@@ -275,6 +275,9 @@ pub enum Inline {
         tex: String,
         display: bool,
     },
+    /// Un ícono vectorial en línea `:nombre:` (062). Si `nombre` no existe al dibujar, se muestra
+    /// el texto literal `:nombre:`.
+    Icon(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1293,7 +1296,14 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
     let mut out = Vec::with_capacity(merged.len());
     for item in merged {
         match item {
-            Inline::Text(t) => out.extend(expand_text_wikilinks(&t)),
+            Inline::Text(t) => {
+                for piece in expand_text_wikilinks(&t) {
+                    match piece {
+                        Inline::Text(plain) => out.extend(expand_text_icons(&plain)),
+                        other => out.push(other),
+                    }
+                }
+            }
             Inline::Strong(c) => out.push(Inline::Strong(collapse_and_expand_inlines(c))),
             Inline::Emph(c) => out.push(Inline::Emph(collapse_and_expand_inlines(c))),
             Inline::Strike(c) => out.push(Inline::Strike(collapse_and_expand_inlines(c))),
@@ -1303,6 +1313,68 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
             }),
             other => out.push(other),
         }
+    }
+    out
+}
+
+/// Expande `:nombre:` en nodos `Inline::Icon(nombre)` (062). Evita falsos positivos en horas
+/// (`12:30:00`), campos inline (`clave:: valor`) o URLs.
+fn expand_text_icons(text: &str) -> Vec<Inline> {
+    if !text.as_bytes().contains(&b':') {
+        return vec![Inline::Text(text.to_owned())];
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut emitted = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b':' {
+            let prev_ok = i == 0
+                || !matches!(bytes[i - 1], b':' | b'/' | b'\\')
+                    && !text[..i]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_alphanumeric);
+            if prev_ok {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_lowercase()
+                        || bytes[end].is_ascii_digit()
+                        || bytes[end] == b'-'
+                        || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                let len = end - start;
+                if (2..=48).contains(&len)
+                    && bytes[start].is_ascii_alphabetic()
+                    && end < bytes.len()
+                    && bytes[end] == b':'
+                {
+                    let after = end + 1;
+                    let next_ok = after == bytes.len()
+                        || !matches!(bytes[after], b':' | b'/')
+                            && !text[after..]
+                                .chars()
+                                .next()
+                                .is_some_and(char::is_alphanumeric);
+                    if next_ok {
+                        if i > emitted {
+                            out.push(Inline::Text(text[emitted..i].to_owned()));
+                        }
+                        out.push(Inline::Icon(text[start..end].to_owned()));
+                        emitted = after;
+                        i = after;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if emitted < text.len() {
+        out.push(Inline::Text(text[emitted..].to_owned()));
     }
     out
 }
@@ -1467,6 +1539,11 @@ pub fn plain_text(inlines: &[Inline]) -> String {
                 s.push_str(d);
                 s.push_str(tex);
                 s.push_str(d);
+            }
+            Inline::Icon(nombre) => {
+                s.push(':');
+                s.push_str(nombre);
+                s.push(':');
             }
         }
     }
