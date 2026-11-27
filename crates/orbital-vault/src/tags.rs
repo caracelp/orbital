@@ -767,6 +767,7 @@ pub fn inline_fields(text: &str) -> Vec<(String, String)> {
             }
         }
 
+        let mut found_line_field = false;
         if let Some((raw_key, raw_val)) = rest.split_once("::") {
             let key = raw_key.trim();
             if !key.is_empty()
@@ -774,13 +775,65 @@ pub fn inline_fields(text: &str) -> Vec<(String, String)> {
                 && !raw_key.starts_with(' ')
                 && !key.contains(':')
                 && !key.contains('`')
+                && !key.contains('[')
+                && !key.contains('(')
                 && !key.chars().any(char::is_whitespace)
             {
                 let val = raw_val.trim();
                 out.push((key.to_string(), val.to_string()));
+                found_line_field = true;
             }
+        }
+        if !found_line_field {
+            extract_bracket_inline_fields(line, &mut out);
         }
     }
 
     out
+}
+
+/// Extrae campos inline con delimitadores `[clave:: valor]` y `(clave:: valor)` dentro de una
+/// línea (065, sintaxis Dataview), ignorando tramos de código en línea.
+pub fn extract_bracket_inline_fields(line: &str, out: &mut Vec<(String, String)>) {
+    if !line.contains("::") {
+        return;
+    }
+    let bytes = line.as_bytes();
+    let mut in_code = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if !in_code && matches!(bytes[i], b'[' | b'(') {
+            let open = bytes[i];
+            let close = if open == b'[' { b']' } else { b')' };
+            // Evitar wikilinks `[[...]]`
+            if open == b'[' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                i += 2;
+                continue;
+            }
+            if let Some(rel_end) = line[i + 1..].find(close as char) {
+                let inner = &line[i + 1..i + 1 + rel_end];
+                if let Some((raw_k, raw_v)) = inner.split_once("::") {
+                    let k = raw_k.trim();
+                    let v = raw_v.trim();
+                    if !k.is_empty()
+                        && !k.contains(':')
+                        && !k.contains('`')
+                        && !k.contains('[')
+                        && !k.contains('(')
+                        && !k.chars().any(char::is_whitespace)
+                    {
+                        out.push((k.to_string(), v.to_string()));
+                        i += 1 + rel_end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
 }

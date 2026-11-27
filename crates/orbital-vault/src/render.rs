@@ -156,6 +156,8 @@ pub enum GeneratedKind {
     CardLink,
     /// Consulta viva (048): el cuerpo lo lee [`crate::consulta::parse`].
     Consulta,
+    /// Consulta Dataview sin JS (065): `dataview` o `dv` ([`crate::dataview`]).
+    Dataview,
 }
 
 impl GeneratedKind {
@@ -166,6 +168,7 @@ impl GeneratedKind {
             "toc" | "table-of-contents" | "tabla-de-contenidos" => Some(Self::Toc),
             "cardlink" => Some(Self::CardLink),
             "consulta" => Some(Self::Consulta),
+            "dataview" | "dv" => Some(Self::Dataview),
             _ => None,
         }
     }
@@ -287,6 +290,8 @@ pub enum Inline {
         bg: Option<String>,
         children: Vec<Inline>,
     },
+    /// Expresión Dataview en línea `` `= expr` `` (065): se evalúa en Lectura contra el índice.
+    DataviewExpr(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1197,7 +1202,10 @@ fn parse_generated(kind: GeneratedKind, body: &str) -> Option<Vec<crate::props::
     // YAML: un error de su cuerpo se muestra en la vista.
     if matches!(
         kind,
-        GeneratedKind::Toc | GeneratedKind::Consulta | GeneratedKind::Indice
+        GeneratedKind::Toc
+            | GeneratedKind::Consulta
+            | GeneratedKind::Indice
+            | GeneratedKind::Dataview
     ) {
         return Some(Vec::new());
     }
@@ -1306,7 +1314,8 @@ fn collapse_and_expand_inlines(raw: Vec<Inline>) -> Vec<Inline> {
     for item in merged {
         match item {
             Inline::Text(t) => {
-                for piece in expand_text_wikilinks(&t) {
+                let limpio = clean_inline_fields(&t);
+                for piece in expand_text_wikilinks(&limpio) {
                     match piece {
                         Inline::Text(plain) => {
                             for st in expand_text_styled(&plain) {
@@ -1581,6 +1590,91 @@ fn expand_text_icons(text: &str) -> Vec<Inline> {
     out
 }
 
+/// Limpia campos inline `[clave:: valor]` (muestra `clave: valor`) y `(clave:: valor)` (oculta la
+/// clave y muestra solo `valor`) para Lectura (065), sin modificar el archivo en disco.
+fn clean_inline_fields(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("::") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut emitted = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let open = bytes[i];
+        let close = match open {
+            b'(' => b')',
+            b'[' => b']',
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        // Evitar `[[...]]`, `![[...]]` y aperturas escapadas `\(`.
+        if (i > 0 && bytes[i - 1] == b'\\')
+            || (open == b'[' && bytes.get(i + 1) == Some(&b'['))
+            || (open == b'[' && i > 0 && bytes[i - 1] == b'[')
+        {
+            i += 1;
+            continue;
+        }
+        if let Some(sep_rel) = text[i + 1..].find("::") {
+            let sep = i + 1 + sep_rel;
+            let clave = text[i + 1..sep].trim();
+            let clave_ok = !clave.is_empty()
+                && clave.len() <= 64
+                && !clave.contains(['\n', '[', ']', '(', ')', ':'])
+                && clave
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_');
+            if clave_ok {
+                // Buscar el cierre correspondiente respetando anidación (p. ej. `[autor:: [[Ana]]]`).
+                let mut depth = 1usize;
+                let mut j = sep + 2;
+                let mut fin = None;
+                while j < bytes.len() {
+                    let b = bytes[j];
+                    if b == b'\n' {
+                        break;
+                    }
+                    if b == open {
+                        depth += 1;
+                    } else if b == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            fin = Some(j);
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                if let Some(end) = fin {
+                    let valor = text[sep + 2..end].trim();
+                    if !valor.is_empty() {
+                        out.push_str(&text[emitted..i]);
+                        if open == b'[' {
+                            out.push_str(clave);
+                            out.push_str(": ");
+                        }
+                        out.push_str(valor);
+                        emitted = end + 1;
+                        i = emitted;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if emitted == 0 {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        out.push_str(&text[emitted..]);
+        std::borrow::Cow::Owned(out)
+    }
+}
+
 /// Expande texto plano separando los wikilinks `[[...]]` en nodos `Inline::Link`.
 fn expand_text_wikilinks(text: &str) -> Vec<Inline> {
     let mut out = Vec::new();
@@ -1667,7 +1761,17 @@ fn parse_inline_many(ctx: &Ctx, evs: &[Ev], i: &mut usize) -> Vec<Inline> {
     *i += 1;
     match ev {
         Event::Text(t) => text_with_tags(ctx, t, &ctx.abs(range)),
-        Event::Code(t) => vec![Inline::Code(t.to_string())],
+        Event::Code(t) => {
+            if let Some(rest) = t.strip_prefix('=') {
+                let valido = rest.starts_with(' ')
+                    || (!rest.is_empty() && !rest.starts_with(['=', '>', '<', '!']));
+                let expr = rest.trim();
+                if valido && !expr.is_empty() {
+                    return vec![Inline::DataviewExpr(expr.to_owned())];
+                }
+            }
+            vec![Inline::Code(t.to_string())]
+        }
         Event::InlineHtml(t) | Event::Html(t) => vec![Inline::Text(t.to_string())],
         Event::FootnoteReference(t) => vec![Inline::FootnoteRef(t.to_string())],
         Event::SoftBreak => vec![Inline::SoftBreak],
@@ -1747,6 +1851,10 @@ pub fn plain_text(inlines: &[Inline]) -> String {
                 s.push(':');
                 s.push_str(nombre);
                 s.push(':');
+            }
+            Inline::DataviewExpr(expr) => {
+                s.push_str("= ");
+                s.push_str(expr);
             }
         }
     }

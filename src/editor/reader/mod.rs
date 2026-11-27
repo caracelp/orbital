@@ -494,6 +494,7 @@ mod bloques;
 mod capas;
 mod carrusel;
 mod consulta;
+mod dataview;
 mod diagramas;
 mod enlaces;
 mod etiquetas;

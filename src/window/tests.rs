@@ -2567,4 +2567,113 @@ type: atomo
             let _ = std::fs::remove_dir_all(&root);
         });
     }
+
+    /// 065: consultas Dataview sin JS (`TABLE`, `TASK`, `CALENDAR`, campos inline y `` `= expr` ``).
+    #[test]
+    #[ignore = "requiere GTK/DBus; tools/pruebas-gtk.sh"]
+    fn dataview_sin_js_flujo_completo() {
+        let app = app("Dataview065");
+        glib::MainContext::default().block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("orbital-065-dv-{}", glib::uuid_string_random()));
+            std::fs::create_dir_all(root.join("libros")).unwrap();
+            std::fs::write(
+                root.join("libros/dune.md"),
+                "\
+---
+autor: Frank Herbert
+puntaje: 5
+fecha: 2026-11-10
+tags: [lectura]
+---
+Clásico de ciencia ficción (origen:: [[panel]]).
+- [ ] Releer capítulo final #pendiente
+- [x] Tomar notas
+",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("libros/fundacion.md"),
+                "\
+---
+autor: Isaac Asimov
+puntaje: 4
+fecha: 2026-11-18
+tags: [lectura]
+---
+Trilogía clásica [estado:: terminado].
+- [ ] Armar línea de tiempo
+",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("panel.md"),
+                "\
+---
+titulo: Panel de lecturas
+meta: 10
+---
+Resumen de `= this.titulo` (entrantes: `= length(this.file.inlinks)`).
+
+```dataview
+TABLE autor AS \"Autor\", puntaje AS \"Nota\"
+FROM #lectura
+WHERE puntaje >= 4
+SORT puntaje DESC
+```
+
+```dv
+TASK
+FROM \"libros\"
+WHERE !completed
+```
+
+```dataview
+CALENDAR fecha
+FROM #lectura
+```
+",
+            )
+            .unwrap();
+
+            let w = Window::new(&app);
+            w.present();
+            w.open_path(root.clone()).await;
+            esperar("bóveda e índice cargados", || {
+                w.0.vault.borrow().is_some() && w.0.search_index.borrow().is_some()
+            })
+            .await;
+
+            w.show_path("panel.md");
+            esperar("panel abierto", || {
+                w.0.current_entry
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|e| e.path.as_str() == "panel.md")
+            })
+            .await;
+
+            let editor = w.0.code_editor.clone();
+            editor.set_view(crate::editor::View::Lectura);
+            esperar("lectura con Dataview evaluado", || {
+                editor.render_now();
+                let txt = editor.texto_lectura();
+                txt.contains("Panel de lecturas")
+                    && txt.contains("entrantes: 1")
+                    && txt.contains("Frank Herbert")
+                    && txt.contains("Isaac Asimov")
+                    && txt.contains("Releer capítulo final")
+                    && !txt.contains("Tomar notas")
+                    && txt.contains("Noviembre 2026")
+            })
+            .await;
+
+            // Verificar que el archivo en disco no contiene JavaScript ni HTML inyectado.
+            let disco = std::fs::read_to_string(root.join("panel.md")).unwrap();
+            assert!(!disco.contains("<script") && !disco.contains("dataviewjs"));
+
+            w.0.window.destroy();
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
 }
